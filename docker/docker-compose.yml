@@ -1,0 +1,48 @@
+version: "3.9"
+
+services:
+  server:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.server
+    container_name: bannkenn-server
+    restart: unless-stopped
+    ports:
+      - "3022:3022"
+    environment:
+      - BANNKENN_BIND=0.0.0.0:3022
+      - BANNKENN_DB_PATH=/data/bannkenn.db
+      - BANNKENN_JWT_SECRET=${BANNKENN_JWT_SECRET:-change-me-in-production}
+      - RUST_LOG=info
+    volumes:
+      - bannkenn-data:/data
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3022/api/v1/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+  dashboard:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.dashboard
+    container_name: bannkenn-dashboard
+    restart: unless-stopped
+    ports:
+      - "3021:3021"
+    environment:
+      - BANNKENN_SERVER_URL=http://server:3022
+    depends_on:
+      server:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3021/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+
+volumes:
+  bannkenn-data:
+    driver: local

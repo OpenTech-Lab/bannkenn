@@ -1,0 +1,27 @@
+[package]
+name = "bannkenn-server"
+version = { workspace = true }
+edition = { workspace = true }
+
+[[bin]]
+name = "bannkenn-server"
+path = "src/main.rs"
+
+[dependencies]
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+toml = { workspace = true }
+reqwest = { workspace = true }
+chrono = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+axum = { version = "0.7", features = ["macros"] }
+sqlx = { version = "0.7", features = ["runtime-tokio-rustls", "sqlite", "chrono"] }
+jsonwebtoken = "9"
+tower = "0.4"
+tower-http = { version = "0.5", features = ["trace"] }
+sha2 = "0.10"
+rand = "0.8"
