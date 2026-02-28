@@ -1,6 +1,6 @@
-# RustSec – Self-Hosted Collaborative Intrusion Prevention System
+# BannKenn – Self-Hosted Collaborative Intrusion Prevention System
 
-**RustSec** is a modern, self-managed alternative to CrowdSec: an open-source, behavior-based Intrusion Prevention System (IPS) with lightweight agents for PCs and cloud servers, a central threat aggregation server, and a real-time web dashboard.
+**BannKenn** is a modern, self-managed alternative to CrowdSec: an open-source, behavior-based Intrusion Prevention System (IPS) with lightweight agents for PCs and cloud servers, a central threat aggregation server, and a real-time web dashboard.
 
 Built for privacy-focused users, homelabs, small teams, or anyone who wants full control without relying on external SaaS or community consoles.
 
@@ -138,11 +138,11 @@ Separating them early avoids coupling and makes it much easier later when you:
 ## Installation (Future)
 ```bash
 # Agent (example Linux)
-curl -sSL https://get.rustsec.sh/agent | bash
+curl -sSL https://get.BannKenn.sh/agent | bash
 
 # Server + Dashboard (Docker Compose)
-git clone https://github.com/yourname/rustsec
-cd rustsec
+git clone https://github.com/yourname/BannKenn
+cd BannKenn
 docker compose up -d
 ```
 
