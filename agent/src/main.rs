@@ -120,7 +120,11 @@ async fn run() -> Result<()> {
                 match block_ip(&d.ip, &backend).await {
                     Ok(_) => restored += 1,
                     Err(e) => {
-                        tracing::warn!("startup: failed to restore firewall block for {}: {}", d.ip, e);
+                        tracing::warn!(
+                            "startup: failed to restore firewall block for {}: {}",
+                            d.ip,
+                            e
+                        );
                         failed += 1;
                     }
                 }
