@@ -1,12 +1,7 @@
 use crate::auth::{create_token, AuthenticatedAgent};
 use crate::db::Db;
 use axum::{
-    extract::Path,
-    extract::Query,
-    extract::State,
-    http::StatusCode,
-    response::IntoResponse,
-    Json,
+    extract::Path, extract::Query, extract::State, http::StatusCode, response::IntoResponse, Json,
 };
 use chrono::{DateTime, Duration, Utc};
 use rand::Rng;

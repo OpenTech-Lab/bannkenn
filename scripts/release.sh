@@ -150,6 +150,14 @@ mv "$CHANGELOG_FILE" "$CHANGELOG_DIR/${TAG}.md"
 CHANGELOG_FILE="$CHANGELOG_DIR/${TAG}.md"
 info "Created ${TAG}.md"
 
+git add "$CHANGELOG_FILE"
+# Stage renamed previous changelog if present
+if [[ -n "$PREV_TAG_FOR_RENAME" ]]; then
+    git add "$CHANGELOG_DIR/${PREV_TAG_FOR_RENAME}.md" 2>/dev/null || true
+fi
+git commit -m "chore: add changelog for ${TAG}"
+info "Committed changelog"
+
 # ── Tag and push ──────────────────────────────────────────────────────────────
 
 step "Tagging and pushing"

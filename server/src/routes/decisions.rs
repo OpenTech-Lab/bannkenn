@@ -36,10 +36,7 @@ pub async fn create(
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
-    Ok((
-        StatusCode::CREATED,
-        Json(CreateDecisionResponse { id }),
-    ))
+    Ok((StatusCode::CREATED, Json(CreateDecisionResponse { id })))
 }
 
 #[derive(Debug, Deserialize)]
