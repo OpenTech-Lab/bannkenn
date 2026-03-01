@@ -80,11 +80,10 @@ pub struct CommunityFeedIpRow {
 
 impl Db {
     pub async fn new(path: &str) -> anyhow::Result<Self> {
-        let opts =
-            SqliteConnectOptions::from_str(&format!("sqlite:{}", path))?
-                .create_if_missing(true)
-                .busy_timeout(Duration::from_secs(30))
-                .journal_mode(SqliteJournalMode::Wal);
+        let opts = SqliteConnectOptions::from_str(&format!("sqlite:{}", path))?
+            .create_if_missing(true)
+            .busy_timeout(Duration::from_secs(30))
+            .journal_mode(SqliteJournalMode::Wal);
         let pool = SqlitePool::connect_with(opts).await?;
         let db = Db(pool);
         db.migrate().await?;
@@ -267,16 +266,18 @@ impl Db {
         Ok(rows
             .into_iter()
             .map(
-                |(id, ip, reason, action, source, country, asn_org, created_at, expires_at)| DecisionRow {
-                    id,
-                    ip,
-                    reason,
-                    action,
-                    source,
-                    country,
-                    asn_org,
-                    created_at,
-                    expires_at,
+                |(id, ip, reason, action, source, country, asn_org, created_at, expires_at)| {
+                    DecisionRow {
+                        id,
+                        ip,
+                        reason,
+                        action,
+                        source,
+                        country,
+                        asn_org,
+                        created_at,
+                        expires_at,
+                    }
                 },
             )
             .collect())
@@ -293,16 +294,18 @@ impl Db {
         Ok(rows
             .into_iter()
             .map(
-                |(id, ip, reason, action, source, country, asn_org, created_at, expires_at)| DecisionRow {
-                    id,
-                    ip,
-                    reason,
-                    action,
-                    source,
-                    country,
-                    asn_org,
-                    created_at,
-                    expires_at,
+                |(id, ip, reason, action, source, country, asn_org, created_at, expires_at)| {
+                    DecisionRow {
+                        id,
+                        ip,
+                        reason,
+                        action,
+                        source,
+                        country,
+                        asn_org,
+                        created_at,
+                        expires_at,
+                    }
                 },
             )
             .collect())
@@ -324,16 +327,18 @@ impl Db {
         Ok(rows
             .into_iter()
             .map(
-                |(id, ip, reason, action, source, country, asn_org, created_at, expires_at)| DecisionRow {
-                    id,
-                    ip,
-                    reason,
-                    action,
-                    source,
-                    country,
-                    asn_org,
-                    created_at,
-                    expires_at,
+                |(id, ip, reason, action, source, country, asn_org, created_at, expires_at)| {
+                    DecisionRow {
+                        id,
+                        ip,
+                        reason,
+                        action,
+                        source,
+                        country,
+                        asn_org,
+                        created_at,
+                        expires_at,
+                    }
                 },
             )
             .collect())
@@ -368,16 +373,18 @@ impl Db {
         Ok(rows
             .into_iter()
             .map(
-                |(id, ip, reason, level, source, log_path, country, asn_org, created_at)| TelemetryRow {
-                    id,
-                    ip,
-                    reason,
-                    level,
-                    source,
-                    log_path,
-                    country,
-                    asn_org,
-                    created_at,
+                |(id, ip, reason, level, source, log_path, country, asn_org, created_at)| {
+                    TelemetryRow {
+                        id,
+                        ip,
+                        reason,
+                        level,
+                        source,
+                        log_path,
+                        country,
+                        asn_org,
+                        created_at,
+                    }
                 },
             )
             .collect())
@@ -407,16 +414,18 @@ impl Db {
         Ok(rows
             .into_iter()
             .map(
-                |(id, ip, reason, level, source, log_path, country, asn_org, created_at)| TelemetryRow {
-                    id,
-                    ip,
-                    reason,
-                    level,
-                    source,
-                    log_path,
-                    country,
-                    asn_org,
-                    created_at,
+                |(id, ip, reason, level, source, log_path, country, asn_org, created_at)| {
+                    TelemetryRow {
+                        id,
+                        ip,
+                        reason,
+                        level,
+                        source,
+                        log_path,
+                        country,
+                        asn_org,
+                        created_at,
+                    }
                 },
             )
             .collect())

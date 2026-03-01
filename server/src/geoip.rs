@@ -35,7 +35,8 @@ struct AsnRecord {
 
 impl GeoIpResolver {
     fn load() -> Self {
-        let mmdb_dir = std::env::var("BANNKENN_MMDB_DIR").unwrap_or_else(|_| "server/data".to_string());
+        let mmdb_dir =
+            std::env::var("BANNKENN_MMDB_DIR").unwrap_or_else(|_| "server/data".to_string());
         let country_path = PathBuf::from(&mmdb_dir).join("GeoLite2-Country.mmdb");
         let asn_path = PathBuf::from(&mmdb_dir).join("GeoLite2-ASN.mmdb");
 
@@ -60,7 +61,11 @@ impl GeoIpResolver {
                 Some(reader)
             }
             Err(err) => {
-                warn!("GeoIP ASN DB unavailable at {}: {}", asn_path.display(), err);
+                warn!(
+                    "GeoIP ASN DB unavailable at {}: {}",
+                    asn_path.display(),
+                    err
+                );
                 None
             }
         };

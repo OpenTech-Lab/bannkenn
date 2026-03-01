@@ -58,14 +58,7 @@ pub async fn watch(config: Arc<AgentConfig>, tx: mpsc::Sender<SecurityEvent>) ->
     let mut already_blocked: HashSet<String> = HashSet::new();
 
     while let Some(raw) = raw_rx.recv().await {
-        process_failed_attempt(
-            &raw,
-            &mut ip_attempts,
-            &mut already_blocked,
-            &config,
-            &tx,
-        )
-        .await;
+        process_failed_attempt(&raw, &mut ip_attempts, &mut already_blocked, &config, &tx).await;
     }
 
     Ok(())

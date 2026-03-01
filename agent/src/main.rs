@@ -137,7 +137,12 @@ async fn run() -> Result<()> {
         );
 
         match api_client
-            .report_telemetry(&event.ip, &event.reason, &event.level, Some(&event.log_path))
+            .report_telemetry(
+                &event.ip,
+                &event.reason,
+                &event.level,
+                Some(&event.log_path),
+            )
             .await
         {
             Ok(_) => tracing::debug!("Telemetry sent: {} {}", event.level, event.ip),
