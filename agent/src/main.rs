@@ -69,7 +69,9 @@ async fn run() -> Result<()> {
     let config = AgentConfig::load()?;
 
     if config.server_url.is_empty() || config.jwt_token.is_empty() {
-        tracing::error!("Configuration incomplete. Run 'bannkenn-agent init' then 'bannkenn-agent connect'");
+        tracing::error!(
+            "Configuration incomplete. Run 'bannkenn-agent init' then 'bannkenn-agent connect'"
+        );
         return Err(anyhow::anyhow!(
             "Configuration incomplete. Run 'bannkenn-agent init' then 'bannkenn-agent connect'"
         ));
@@ -99,16 +101,11 @@ async fn run() -> Result<()> {
         }
     });
 
-    let sync_client = ApiClient::new(
-        config_arc.server_url.clone(),
-        config_arc.jwt_token.clone(),
-    );
+    let sync_client = ApiClient::new(config_arc.server_url.clone(), config_arc.jwt_token.clone());
     tokio::spawn(sync::sync_loop(sync_client));
 
-    let heartbeat_client = ApiClient::new(
-        config_arc.server_url.clone(),
-        config_arc.jwt_token.clone(),
-    );
+    let heartbeat_client =
+        ApiClient::new(config_arc.server_url.clone(), config_arc.jwt_token.clone());
     tokio::spawn(async move {
         let mut ticker = interval(Duration::from_secs(30));
         ticker.tick().await;
@@ -180,8 +177,8 @@ async fn init() -> Result<()> {
 
     // Log source discovery (no manual path entry)
     let log_candidates = discover_log_candidates();
-    let log_path = select_primary_log_path(&log_candidates)
-        .unwrap_or_else(|| "/var/log/auth.log".to_string());
+    let log_path =
+        select_primary_log_path(&log_candidates).unwrap_or_else(|| "/var/log/auth.log".to_string());
 
     println!("\nDetected log sources:");
     if log_candidates.is_empty() {

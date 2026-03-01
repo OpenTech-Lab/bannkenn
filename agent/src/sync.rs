@@ -30,7 +30,10 @@ pub async fn sync_loop(client: ApiClient) {
                 if !rows.is_empty() {
                     tracing::info!("sync fetch: {} new decision(s)", rows.len());
                 } else {
-                    tracing::debug!("sync fetch: no new decisions since id={}", state.last_synced_id);
+                    tracing::debug!(
+                        "sync fetch: no new decisions since id={}",
+                        state.last_synced_id
+                    );
                 }
 
                 for row in &rows {

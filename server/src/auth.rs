@@ -94,10 +94,11 @@ pub async fn auth_middleware(
 
     let token = &auth_header[7..]; // Remove "Bearer " prefix
 
-    let claims = verify_token(token, &config.jwt_secret)
-        .map_err(|_| StatusCode::UNAUTHORIZED)?;
+    let claims = verify_token(token, &config.jwt_secret).map_err(|_| StatusCode::UNAUTHORIZED)?;
 
-    request.extensions_mut().insert(AuthenticatedAgent(claims.sub));
+    request
+        .extensions_mut()
+        .insert(AuthenticatedAgent(claims.sub));
 
     Ok(next.run(request).await)
 }

@@ -55,10 +55,8 @@ async fn main() -> anyhow::Result<()> {
     let health_route = get(routes::health::health);
 
     // Auth middleware (protects POST /decisions only)
-    let auth_middleware_layer = middleware::from_fn_with_state(
-        Arc::new(auth_config),
-        auth::auth_middleware,
-    );
+    let auth_middleware_layer =
+        middleware::from_fn_with_state(Arc::new(auth_config), auth::auth_middleware);
 
     // Agent registration/listing is public; heartbeat is protected
     let agents_state = Arc::new(routes::agents::AppState {

@@ -100,7 +100,9 @@ async fn process_failed_attempt(
     let window = Duration::from_secs(config.window_secs);
 
     // Get or create entry for this IP
-    let attempts = ip_attempts.entry(ip.to_string()).or_insert_with(VecDeque::new);
+    let attempts = ip_attempts
+        .entry(ip.to_string())
+        .or_insert_with(VecDeque::new);
 
     // Remove old attempts outside the window
     while let Some(&oldest) = attempts.front() {
@@ -122,7 +124,11 @@ async fn process_failed_attempt(
             timestamp: Utc::now(),
         };
 
-        tracing::info!("Threshold exceeded for IP {}: {} attempts", ip, attempts.len());
+        tracing::info!(
+            "Threshold exceeded for IP {}: {} attempts",
+            ip,
+            attempts.len()
+        );
 
         // Send block event (ignore send errors if receiver dropped)
         let _ = tx.send(block_event).await;

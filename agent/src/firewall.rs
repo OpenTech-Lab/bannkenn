@@ -40,7 +40,10 @@ pub async fn block_ip(ip: &str, backend: &FirewallBackend) -> Result<()> {
         FirewallBackend::Nftables => block_ip_nftables(ip).await,
         FirewallBackend::Iptables => block_ip_iptables(ip).await,
         FirewallBackend::None => {
-            tracing::warn!("No firewall backend available; skipping block for IP: {}", ip);
+            tracing::warn!(
+                "No firewall backend available; skipping block for IP: {}",
+                ip
+            );
             Ok(())
         }
     }
@@ -62,11 +65,7 @@ async fn block_ip_nftables(ip: &str) -> Result<()> {
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(anyhow!(
-            "nftables block failed for {}: {}",
-            ip,
-            stderr
-        ));
+        return Err(anyhow!("nftables block failed for {}: {}", ip, stderr));
     }
 
     tracing::info!("Blocked IP {} using nftables", ip);
@@ -82,11 +81,7 @@ async fn block_ip_iptables(ip: &str) -> Result<()> {
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(anyhow!(
-            "iptables block failed for {}: {}",
-            ip,
-            stderr
-        ));
+        return Err(anyhow!("iptables block failed for {}: {}", ip, stderr));
     }
 
     tracing::info!("Blocked IP {} using iptables", ip);

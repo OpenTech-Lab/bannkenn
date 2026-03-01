@@ -62,8 +62,8 @@ pub struct CommunityFeedIpRow {
 
 impl Db {
     pub async fn new(path: &str) -> anyhow::Result<Self> {
-        let opts = SqliteConnectOptions::from_str(&format!("sqlite:{}", path))?
-            .create_if_missing(true);
+        let opts =
+            SqliteConnectOptions::from_str(&format!("sqlite:{}", path))?.create_if_missing(true);
         let pool = SqlitePool::connect_with(opts).await?;
         let db = Db(pool);
         db.migrate().await?;
@@ -160,26 +160,29 @@ impl Db {
         since_id: i64,
         limit: i64,
     ) -> anyhow::Result<Vec<DecisionRow>> {
-        let rows = sqlx::query_as::<_, (i64, String, String, String, String, String, Option<String>)>(
-            "SELECT id, ip, reason, action, source, created_at, expires_at FROM decisions \
+        let rows =
+            sqlx::query_as::<_, (i64, String, String, String, String, String, Option<String>)>(
+                "SELECT id, ip, reason, action, source, created_at, expires_at FROM decisions \
              WHERE id > ? ORDER BY id ASC LIMIT ?",
-        )
-        .bind(since_id)
-        .bind(limit)
-        .fetch_all(&self.0)
-        .await?;
+            )
+            .bind(since_id)
+            .bind(limit)
+            .fetch_all(&self.0)
+            .await?;
 
         Ok(rows
             .into_iter()
-            .map(|(id, ip, reason, action, source, created_at, expires_at)| DecisionRow {
-                id,
-                ip,
-                reason,
-                action,
-                source,
-                created_at,
-                expires_at,
-            })
+            .map(
+                |(id, ip, reason, action, source, created_at, expires_at)| DecisionRow {
+                    id,
+                    ip,
+                    reason,
+                    action,
+                    source,
+                    created_at,
+                    expires_at,
+                },
+            )
             .collect())
     }
 
@@ -193,15 +196,17 @@ impl Db {
 
         Ok(rows
             .into_iter()
-            .map(|(id, ip, reason, action, source, created_at, expires_at)| DecisionRow {
-                id,
-                ip,
-                reason,
-                action,
-                source,
-                created_at,
-                expires_at,
-            })
+            .map(
+                |(id, ip, reason, action, source, created_at, expires_at)| DecisionRow {
+                    id,
+                    ip,
+                    reason,
+                    action,
+                    source,
+                    created_at,
+                    expires_at,
+                },
+            )
             .collect())
     }
 
@@ -282,7 +287,17 @@ impl Db {
         &self,
         limit: i64,
     ) -> anyhow::Result<Vec<AgentStatusRow>> {
-        let rows = sqlx::query_as::<_, (i64, String, Option<String>, Option<String>, String, Option<String>)>(
+        let rows = sqlx::query_as::<
+            _,
+            (
+                i64,
+                String,
+                Option<String>,
+                Option<String>,
+                String,
+                Option<String>,
+            ),
+        >(
             r#"
             SELECT
                 a.id,
@@ -303,14 +318,16 @@ impl Db {
 
         Ok(rows
             .into_iter()
-            .map(|(id, name, uuid, nickname, created_at, last_seen_at)| AgentStatusRow {
-                id,
-                name,
-                uuid,
-                nickname,
-                created_at,
-                last_seen_at,
-            })
+            .map(
+                |(id, name, uuid, nickname, created_at, last_seen_at)| AgentStatusRow {
+                    id,
+                    name,
+                    uuid,
+                    nickname,
+                    created_at,
+                    last_seen_at,
+                },
+            )
             .collect())
     }
 
@@ -363,12 +380,14 @@ impl Db {
 
         Ok(rows
             .into_iter()
-            .map(|(source, ip_count, first_seen_at, last_seen_at)| CommunityFeedRow {
-                source,
-                ip_count,
-                first_seen_at,
-                last_seen_at,
-            })
+            .map(
+                |(source, ip_count, first_seen_at, last_seen_at)| CommunityFeedRow {
+                    source,
+                    ip_count,
+                    first_seen_at,
+                    last_seen_at,
+                },
+            )
             .collect())
     }
 
@@ -399,13 +418,15 @@ impl Db {
 
         Ok(rows
             .into_iter()
-            .map(|(ip, reason, sightings, first_seen_at, last_seen_at)| CommunityFeedIpRow {
-                ip,
-                reason,
-                sightings,
-                first_seen_at,
-                last_seen_at,
-            })
+            .map(
+                |(ip, reason, sightings, first_seen_at, last_seen_at)| CommunityFeedIpRow {
+                    ip,
+                    reason,
+                    sightings,
+                    first_seen_at,
+                    last_seen_at,
+                },
+            )
             .collect())
     }
 

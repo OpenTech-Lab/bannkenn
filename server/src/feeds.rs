@@ -6,8 +6,8 @@ use tracing::{error, info};
 pub async fn fetch_ipsum_feed(db: Arc<Db>) -> anyhow::Result<()> {
     info!("Fetching ipsum feed...");
 
-    let response = reqwest::get("https://raw.githubusercontent.com/stamparm/ipsum/master/ipsum.txt")
-        .await?;
+    let response =
+        reqwest::get("https://raw.githubusercontent.com/stamparm/ipsum/master/ipsum.txt").await?;
 
     let text = response.text().await?;
 
@@ -18,7 +18,10 @@ pub async fn fetch_ipsum_feed(db: Arc<Db>) -> anyhow::Result<()> {
             if let Ok(count) = parts[1].trim().parse::<i32>() {
                 if count >= 3 {
                     let ip = parts[0].trim();
-                    match db.insert_decision(ip, "ipsum_feed", "block", "ipsum_feed").await {
+                    match db
+                        .insert_decision(ip, "ipsum_feed", "block", "ipsum_feed")
+                        .await
+                    {
                         Ok(_) => {
                             // Successfully inserted
                         }
