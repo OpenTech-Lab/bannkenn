@@ -97,3 +97,6 @@ The dashboard agent status is `online` when heartbeat updates are received withi
   - confirm `/root/.config/bannkenn/agent.toml` exists
   - confirm `server_url` points to reachable server
   - check `journalctl` output for exact error text
+
+## License
+MIT
