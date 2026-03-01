@@ -22,7 +22,7 @@ use uuid::Uuid;
 
 use crate::client::ApiClient;
 use crate::config::AgentConfig;
-use crate::firewall::{block_ip, detect_backend};
+use crate::firewall::{block_ip, detect_backend, init_firewall};
 use crate::watcher::{watch, SecurityEvent};
 
 #[derive(Parser)]
@@ -92,6 +92,14 @@ async fn run() -> Result<()> {
 
     let backend = detect_backend();
     tracing::info!("Detected firewall backend: {:?}", backend);
+
+    // Ensure required firewall infrastructure exists (nftables: creates set + drop rule).
+    if let Err(e) = init_firewall(&backend).await {
+        tracing::error!(
+            "Failed to initialize firewall infrastructure: {}. IP blocking will not work.",
+            e
+        );
+    }
 
     let api_client = ApiClient::new(config.server_url.clone(), config.jwt_token.clone());
 

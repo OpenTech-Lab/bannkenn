@@ -106,7 +106,7 @@ After registration succeeds, press `Ctrl+C` to return to shell.
 
 ### 6. Start the systemd service
 
-`nano /etc/systemd/system/bannkenn-agent.service`
+`sudo nano /etc/systemd/system/bannkenn-agent.service`
 ```yml
 [Unit]
 Description=BannKenn IPS Agent

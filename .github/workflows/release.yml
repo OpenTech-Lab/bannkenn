@@ -110,3 +110,4 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: ${{ matrix.artifact }}
+          body_path: scripts/version/${{ github.ref_name }}.md
