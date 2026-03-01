@@ -46,10 +46,15 @@ const FEED_META: Record<string, FeedMeta> = {
     description: 'Daily curated blocklist of IPs with multiple abuse reports aggregated from various threat intel sources.',
     tags: ['threat-intel', 'blocklist', 'daily'],
   },
-  firehol_feed: {
-    title: 'FireHOL',
-    description: 'FireHOL IP lists — aggressive blocklists from FireHOL Level 1 & Level 3, targeting known attackers and botnets.',
-    tags: ['firehol', 'botnet', 'attacker'],
+  firehol_level1: {
+    title: 'FireHOL Level 1',
+    description: 'FireHOL Level 1 — minimal false positives. Contains the most dangerous IPs: spammers, scanners, and known attackers from high-confidence sources.',
+    tags: ['firehol', 'attacker', 'low-fp'],
+  },
+  firehol_level2: {
+    title: 'FireHOL Level 2',
+    description: 'FireHOL Level 2 — broader coverage including botnets, proxies, and Tor exit nodes. Slightly higher false positive risk than Level 1.',
+    tags: ['firehol', 'botnet', 'proxy', 'tor'],
   },
 };
 

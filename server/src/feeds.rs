@@ -39,21 +39,82 @@ pub async fn fetch_ipsum_feed(db: Arc<Db>) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Fetch a FireHOL netset feed and insert all non-comment entries into the DB.
+/// Lines starting with '#' are comments; all other non-empty lines are IPs or CIDRs.
+async fn fetch_firehol_feed(db: Arc<Db>, url: &str, source: &str) -> anyhow::Result<()> {
+    info!("Fetching FireHOL feed: {}", source);
+
+    let response = reqwest::get(url).await?;
+    let text = response.text().await?;
+
+    for line in text.lines() {
+        let entry = line.trim();
+        if entry.is_empty() || entry.starts_with('#') {
+            continue;
+        }
+        match db.insert_decision(entry, source, "block", source).await {
+            Ok(_) => {}
+            Err(e) => {
+                error!("Failed to insert decision for {}: {}", entry, e);
+            }
+        }
+    }
+
+    info!("FireHOL feed fetch completed: {}", source);
+    Ok(())
+}
+
 pub async fn start_feed_task(db: Arc<Db>) {
     // Spawn a background task
     tokio::spawn(async move {
-        // Run immediately on startup
+        // Run all feeds immediately on startup
         if let Err(e) = fetch_ipsum_feed(db.clone()).await {
             error!("Failed to fetch ipsum feed on startup: {}", e);
         }
+        if let Err(e) = fetch_firehol_feed(
+            db.clone(),
+            "https://raw.githubusercontent.com/firehol/blocklist-ipsets/master/firehol_level1.netset",
+            "firehol_level1",
+        )
+        .await
+        {
+            error!("Failed to fetch FireHOL level1 feed on startup: {}", e);
+        }
+        if let Err(e) = fetch_firehol_feed(
+            db.clone(),
+            "https://raw.githubusercontent.com/firehol/blocklist-ipsets/master/firehol_level2.netset",
+            "firehol_level2",
+        )
+        .await
+        {
+            error!("Failed to fetch FireHOL level2 feed on startup: {}", e);
+        }
 
         // Then run every 24 hours
-        let mut interval = interval(Duration::from_secs(24 * 60 * 60));
+        let mut ticker = interval(Duration::from_secs(24 * 60 * 60));
 
         loop {
-            interval.tick().await;
+            ticker.tick().await;
             if let Err(e) = fetch_ipsum_feed(db.clone()).await {
                 error!("Failed to fetch ipsum feed: {}", e);
+            }
+            if let Err(e) = fetch_firehol_feed(
+                db.clone(),
+                "https://raw.githubusercontent.com/firehol/blocklist-ipsets/master/firehol_level1.netset",
+                "firehol_level1",
+            )
+            .await
+            {
+                error!("Failed to fetch FireHOL level1 feed: {}", e);
+            }
+            if let Err(e) = fetch_firehol_feed(
+                db.clone(),
+                "https://raw.githubusercontent.com/firehol/blocklist-ipsets/master/firehol_level2.netset",
+                "firehol_level2",
+            )
+            .await
+            {
+                error!("Failed to fetch FireHOL level2 feed: {}", e);
             }
         }
     });
