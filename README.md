@@ -1,5 +1,7 @@
 # BannKenn – Self-Hosted Collaborative Intrusion Prevention System
 
+![Bannkenn](docs/images/Bannkenn.png)
+
 **BannKenn** is a modern, fully open-source, self-managed alternative to CrowdSec.
 
 It is a behavior-based Intrusion Prevention System (IPS) with lightweight agents for servers/PCs, a central threat aggregation server, and a real-time web dashboard.
