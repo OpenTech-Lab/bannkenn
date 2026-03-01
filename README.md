@@ -65,7 +65,7 @@ This installs:
 Option B: install from GitHub Release URL (Linux x64 example)
 
 ```bash
-VERSION=v1.0.4
+VERSION=v1.0.6
 curl -fL "https://github.com/OpenTech-Lab/bannkenn/releases/download/${VERSION}/bannkenn-agent-linux-x64" -o bannkenn-agent
 chmod +x bannkenn-agent
 sudo mv bannkenn-agent /usr/local/bin/bannkenn-agent
@@ -122,6 +122,11 @@ RestartSec=5
 ```bash
 sudo systemctl daemon-reload
 sudo systemctl enable --now bannkenn-agent
+```
+
+```bash
+sudo systemctl status bannkenn-agent
+sudo systemctl restart bannkenn-agent
 ```
 
 ### 7. Verify agent status

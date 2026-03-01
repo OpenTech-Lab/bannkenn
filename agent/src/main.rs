@@ -1,6 +1,7 @@
 mod client;
 mod config;
 mod firewall;
+mod patterns;
 mod sync;
 mod watcher;
 
