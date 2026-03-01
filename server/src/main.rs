@@ -106,7 +106,9 @@ async fn main() -> anyhow::Result<()> {
                 .merge(agents_admin_router),
         )
         .nest("/api/v1/decisions", decisions_read.merge(decisions_write))
-        .route("/api/v1/community/ips", get(routes::community::list_ips).with_state(community_state))
+        .route("/api/v1/community/ips", get(routes::community::list_ips).with_state(community_state.clone()))
+        .route("/api/v1/community/feeds", get(routes::community::list_feeds).with_state(community_state.clone()))
+        .route("/api/v1/community/feeds/:source/ips", get(routes::community::list_feed_ips).with_state(community_state))
         .layer(TraceLayer::new_for_http());
 
     // Parse bind address

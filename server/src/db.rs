@@ -43,6 +43,23 @@ pub struct CommunityIpRow {
     pub last_seen_at: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CommunityFeedRow {
+    pub source: String,
+    pub ip_count: i64,
+    pub first_seen_at: String,
+    pub last_seen_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CommunityFeedIpRow {
+    pub ip: String,
+    pub reason: String,
+    pub sightings: i64,
+    pub first_seen_at: String,
+    pub last_seen_at: String,
+}
+
 impl Db {
     pub async fn new(path: &str) -> anyhow::Result<Self> {
         let opts = SqliteConnectOptions::from_str(&format!("sqlite:{}", path))?
@@ -322,6 +339,71 @@ impl Db {
                 ip,
                 source,
                 sightings,
+                last_seen_at,
+            })
+            .collect())
+    }
+
+    pub async fn list_community_feeds(&self) -> anyhow::Result<Vec<CommunityFeedRow>> {
+        let rows = sqlx::query_as::<_, (String, i64, String, String)>(
+            r#"
+            SELECT
+                source,
+                COUNT(DISTINCT ip) as ip_count,
+                MIN(created_at) as first_seen_at,
+                MAX(created_at) as last_seen_at
+            FROM decisions
+            WHERE source != 'agent'
+            GROUP BY source
+            ORDER BY last_seen_at DESC
+            "#,
+        )
+        .fetch_all(&self.0)
+        .await?;
+
+        Ok(rows
+            .into_iter()
+            .map(|(source, ip_count, first_seen_at, last_seen_at)| CommunityFeedRow {
+                source,
+                ip_count,
+                first_seen_at,
+                last_seen_at,
+            })
+            .collect())
+    }
+
+    pub async fn list_community_feed_ips(
+        &self,
+        source: &str,
+        limit: i64,
+    ) -> anyhow::Result<Vec<CommunityFeedIpRow>> {
+        let rows = sqlx::query_as::<_, (String, String, i64, String, String)>(
+            r#"
+            SELECT
+                ip,
+                MAX(reason) as reason,
+                COUNT(*) as sightings,
+                MIN(created_at) as first_seen_at,
+                MAX(created_at) as last_seen_at
+            FROM decisions
+            WHERE source = ?
+            GROUP BY ip
+            ORDER BY last_seen_at DESC
+            LIMIT ?
+            "#,
+        )
+        .bind(source)
+        .bind(limit)
+        .fetch_all(&self.0)
+        .await?;
+
+        Ok(rows
+            .into_iter()
+            .map(|(ip, reason, sightings, first_seen_at, last_seen_at)| CommunityFeedIpRow {
+                ip,
+                reason,
+                sightings,
+                first_seen_at,
                 last_seen_at,
             })
             .collect())
