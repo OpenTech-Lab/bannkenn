@@ -33,6 +33,7 @@ pub struct AgentStatusRow {
     pub nickname: Option<String>,
     pub created_at: String,
     pub last_seen_at: Option<String>,
+    pub butterfly_shield_enabled: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -126,6 +127,12 @@ impl Db {
         let _ = sqlx::query("ALTER TABLE agents ADD COLUMN nickname TEXT")
             .execute(&self.0)
             .await;
+
+        // Add butterfly_shield_enabled column to heartbeats (idempotent)
+        let _ =
+            sqlx::query("ALTER TABLE agent_heartbeats ADD COLUMN butterfly_shield_enabled INTEGER")
+                .execute(&self.0)
+                .await;
 
         Ok(())
     }
@@ -296,6 +303,7 @@ impl Db {
                 Option<String>,
                 String,
                 Option<String>,
+                Option<i64>,
             ),
         >(
             r#"
@@ -305,7 +313,8 @@ impl Db {
                 a.uuid,
                 a.nickname,
                 a.created_at,
-                h.last_heartbeat_at as last_seen_at
+                h.last_heartbeat_at as last_seen_at,
+                h.butterfly_shield_enabled
             FROM agents a
             LEFT JOIN agent_heartbeats h ON h.agent_name = a.name
             ORDER BY a.created_at DESC
@@ -319,13 +328,16 @@ impl Db {
         Ok(rows
             .into_iter()
             .map(
-                |(id, name, uuid, nickname, created_at, last_seen_at)| AgentStatusRow {
-                    id,
-                    name,
-                    uuid,
-                    nickname,
-                    created_at,
-                    last_seen_at,
+                |(id, name, uuid, nickname, created_at, last_seen_at, butterfly_shield_enabled)| {
+                    AgentStatusRow {
+                        id,
+                        name,
+                        uuid,
+                        nickname,
+                        created_at,
+                        last_seen_at,
+                        butterfly_shield_enabled: butterfly_shield_enabled.map(|v| v != 0),
+                    }
                 },
             )
             .collect())
@@ -430,18 +442,25 @@ impl Db {
             .collect())
     }
 
-    pub async fn upsert_agent_heartbeat(&self, agent_name: &str) -> anyhow::Result<()> {
+    pub async fn upsert_agent_heartbeat(
+        &self,
+        agent_name: &str,
+        butterfly_shield_enabled: Option<bool>,
+    ) -> anyhow::Result<()> {
         let now = Utc::now().to_rfc3339();
+        let flag: Option<i64> = butterfly_shield_enabled.map(|v| v as i64);
         sqlx::query(
             r#"
-            INSERT INTO agent_heartbeats (agent_name, last_heartbeat_at)
-            VALUES (?, ?)
+            INSERT INTO agent_heartbeats (agent_name, last_heartbeat_at, butterfly_shield_enabled)
+            VALUES (?, ?, ?)
             ON CONFLICT(agent_name) DO UPDATE SET
-                last_heartbeat_at = excluded.last_heartbeat_at
+                last_heartbeat_at = excluded.last_heartbeat_at,
+                butterfly_shield_enabled = excluded.butterfly_shield_enabled
             "#,
         )
         .bind(agent_name)
         .bind(now)
+        .bind(flag)
         .execute(&self.0)
         .await?;
 

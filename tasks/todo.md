@@ -181,3 +181,23 @@
 - Added best-effort VM/external mount scanning from `/mnt`, `/media`, `/run/media`, and `/vmfs/volumes` for common auth/system log names when readable.
 - `init()` now prints discovered logs as a numbered list and auto-selects a primary path via explicit priority order.
 - Verification: `cargo check -p bannkenn-agent` passes (existing unrelated warning in `agent/src/watcher.rs` about unused `timestamp` field).
+
+## Phase 14 – ButterflyShield Dynamic Detection Mode (Codex)
+- [x] Define a `butterfly_shield` config flag and parameters (seed source, base threshold multiplier bounds)
+- [x] Implement chaos-based dynamic threshold helper in agent detection path
+- [x] Apply dynamic thresholding to failed-attempt scoring without breaking existing static behavior
+- [x] Add server/dashboard visibility for dynamic mode status and effective threshold values
+- [x] Add tests for deterministic behavior under fixed seed and bounds safety
+- [x] Verify with `cargo fmt --all`, `cargo clippy --workspace --all-targets -- -D warnings`, and `cargo test --workspace`
+
+## Review (Phase 14)
+- Created `agent/src/butterfly.rs`: logistic-map chaos function (`r=3.99`, 10 iterations), `effective_threshold(base, ip, cfg)` with IP+timestamp seed via `DefaultHasher`, multiplier clamped to `[0.5, 1.5]` range. 5 unit tests (bounds, determinism, minimum threshold, sensitivity, disabled fallback).
+- Updated `agent/src/config.rs`: added `pub butterfly_shield: Option<ButterflyShieldConfig>` with `#[serde(default)]`. Updated `Default` impl.
+- Updated `agent/src/lib.rs`: added `pub mod butterfly;`.
+- Updated `agent/src/watcher.rs`: replaced static threshold check with dynamic chaos-based logic when `butterfly_shield.enabled = true`; reason string includes effective threshold value.
+- Updated `server/src/db.rs`: idempotent `ALTER TABLE agent_heartbeats ADD COLUMN butterfly_shield_enabled INTEGER` migration; `list_agents_with_last_seen` returns 7-tuple with `Option<i64>` mapped to `Option<bool>`; `upsert_agent_heartbeat` stores the flag.
+- Updated `server/src/routes/agents.rs`: `AgentStatusResponse` includes `butterfly_shield_enabled: Option<bool>`; `heartbeat()` accepts `Option<Json<HeartbeatRequest>>` and forwards flag to DB.
+- Updated `agent/src/client.rs`: `send_heartbeat` accepts and sends `butterfly_shield_enabled: Option<bool>` in JSON body.
+- Updated `agent/src/main.rs`: added `mod butterfly;`; `init()` sets `butterfly_shield: None`; heartbeat loop captures and forwards butterfly config state.
+- Updated `dashboard/app/page.tsx`: added `butterfly_shield_enabled?: boolean | null` to `AgentStatus` interface; added "ButterflyShield" column with purple "Active" badge / "Inactive" / "—" rendering.
+- Verification: `cargo fmt --all` clean, `cargo clippy --workspace --all-targets -- -D warnings` 0 warnings, `cargo test --workspace` 97/97 tests pass.

@@ -85,14 +85,18 @@ impl ApiClient {
         Ok(())
     }
 
-    /// Send heartbeat so server can mark this agent as online
-    pub async fn send_heartbeat(&self) -> Result<()> {
+    /// Send heartbeat so server can mark this agent as online.
+    /// Optionally reports ButterflyShield status.
+    pub async fn send_heartbeat(&self, butterfly_shield_enabled: Option<bool>) -> Result<()> {
         let url = format!("{}/api/v1/agents/heartbeat", self.base_url);
+
+        let body = json!({ "butterfly_shield_enabled": butterfly_shield_enabled });
 
         let response = self
             .http
             .post(&url)
             .header("Authorization", format!("Bearer {}", self.token))
+            .json(&body)
             .send()
             .await?;
 

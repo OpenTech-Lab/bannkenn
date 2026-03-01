@@ -1,3 +1,4 @@
+use crate::butterfly;
 use crate::config::AgentConfig;
 use crate::patterns::all_patterns;
 use anyhow::Result;
@@ -126,16 +127,24 @@ async fn process_failed_attempt(
 
     attempts.push_back(now);
 
-    if attempts.len() >= config.threshold as usize {
+    // Compute effective threshold — use chaos-based dynamic value when
+    // ButterflyShield is enabled, otherwise fall back to the static base.
+    let effective = match &config.butterfly_shield {
+        Some(cfg) if cfg.enabled => butterfly::effective_threshold(config.threshold, ip, cfg),
+        _ => config.threshold,
+    };
+
+    if attempts.len() >= effective as usize {
         tracing::info!(
-            "Threshold exceeded for IP {}: {} attempts in window",
+            "Threshold exceeded for IP {}: {} attempts in window (effective threshold: {})",
             ip,
-            attempts.len()
+            attempts.len(),
+            effective,
         );
 
         let block_event = BlockEvent {
             ip: ip.to_string(),
-            reason: format!("{} (threshold: {})", reason, config.threshold),
+            reason: format!("{} (threshold: {})", reason, effective),
             timestamp: Utc::now(),
         };
 

@@ -1,3 +1,4 @@
+use crate::butterfly::ButterflyShieldConfig;
 use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -20,6 +21,10 @@ pub struct AgentConfig {
     pub threshold: u32,
     #[serde(default = "default_window_secs")]
     pub window_secs: u64,
+    /// Optional ButterflyShield chaos-based dynamic threshold configuration.
+    /// When absent or `enabled = false`, the static `threshold` is used.
+    #[serde(default)]
+    pub butterfly_shield: Option<ButterflyShieldConfig>,
 }
 
 fn default_log_path() -> String {
@@ -44,6 +49,7 @@ impl Default for AgentConfig {
             log_path: default_log_path(),
             threshold: default_threshold(),
             window_secs: default_window_secs(),
+            butterfly_shield: None,
         }
     }
 }
@@ -136,6 +142,7 @@ mod tests {
             log_path: "/var/log/auth.log".to_string(),
             threshold: 3,
             window_secs: 120,
+            butterfly_shield: None,
         };
 
         let toml_str = toml::to_string(&config).unwrap();

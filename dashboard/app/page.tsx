@@ -52,6 +52,7 @@ interface AgentStatus {
   created_at: string;
   last_seen_at: string | null;
   status: 'online' | 'offline' | 'unknown';
+  butterfly_shield_enabled?: boolean | null;
 }
 
 const POLL_INTERVAL = 10_000;
@@ -210,13 +211,14 @@ export default function Dashboard() {
                 <TableHead>Status</TableHead>
                 <TableHead>Last Seen</TableHead>
                 <TableHead>Registered</TableHead>
+                <TableHead>ButterflyShield</TableHead>
                 <TableHead className="text-right">Actions</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
               {agents.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={5} className="text-center py-10 text-muted-foreground">
+                  <TableCell colSpan={6} className="text-center py-10 text-muted-foreground">
                     No agents registered
                   </TableCell>
                 </TableRow>
@@ -256,6 +258,17 @@ export default function Dashboard() {
                     </TableCell>
                     <TableCell className="text-muted-foreground text-xs whitespace-nowrap">
                       {new Date(agent.created_at).toLocaleString()}
+                    </TableCell>
+                    <TableCell>
+                      {agent.butterfly_shield_enabled === true ? (
+                        <Badge className="bg-purple-900/50 text-purple-300 border-purple-800 hover:bg-purple-900/50 text-xs">
+                          Active
+                        </Badge>
+                      ) : agent.butterfly_shield_enabled === false ? (
+                        <span className="text-xs text-muted-foreground">Inactive</span>
+                      ) : (
+                        <span className="text-xs text-muted-foreground">—</span>
+                      )}
                     </TableCell>
                     <TableCell className="text-right">
                       <div className="flex items-center justify-end gap-2">

@@ -1,3 +1,4 @@
+mod butterfly;
 mod client;
 mod config;
 mod firewall;
@@ -106,12 +107,13 @@ async fn run() -> Result<()> {
 
     let heartbeat_client =
         ApiClient::new(config_arc.server_url.clone(), config_arc.jwt_token.clone());
+    let butterfly_enabled = config_arc.butterfly_shield.as_ref().map(|c| c.enabled);
     tokio::spawn(async move {
         let mut ticker = interval(Duration::from_secs(30));
         ticker.tick().await;
 
         loop {
-            match heartbeat_client.send_heartbeat().await {
+            match heartbeat_client.send_heartbeat(butterfly_enabled).await {
                 Ok(_) => tracing::debug!("Heartbeat sent"),
                 Err(e) => tracing::warn!("Failed to send heartbeat: {}", e),
             }
@@ -216,6 +218,7 @@ async fn init() -> Result<()> {
         log_path,
         threshold,
         window_secs,
+        butterfly_shield: None,
     };
 
     config.save()?;

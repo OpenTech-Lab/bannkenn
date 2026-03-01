@@ -39,6 +39,12 @@ pub struct AgentStatusResponse {
     pub created_at: String,
     pub last_seen_at: Option<String>,
     pub status: String,
+    pub butterfly_shield_enabled: Option<bool>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+pub struct HeartbeatRequest {
+    pub butterfly_shield_enabled: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -110,6 +116,7 @@ pub async fn list(
                 created_at: a.created_at,
                 last_seen_at: a.last_seen_at,
                 status,
+                butterfly_shield_enabled: a.butterfly_shield_enabled,
             }
         })
         .collect::<Vec<_>>();
@@ -120,10 +127,12 @@ pub async fn list(
 pub async fn heartbeat(
     State(state): State<Arc<AppState>>,
     agent: AuthenticatedAgent,
+    payload: Option<Json<HeartbeatRequest>>,
 ) -> Result<impl IntoResponse, StatusCode> {
+    let butterfly_shield_enabled = payload.and_then(|p| p.butterfly_shield_enabled);
     state
         .db
-        .upsert_agent_heartbeat(&agent.0)
+        .upsert_agent_heartbeat(&agent.0, butterfly_shield_enabled)
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
