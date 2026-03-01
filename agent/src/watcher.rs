@@ -3,12 +3,12 @@ use crate::config::AgentConfig;
 use crate::patterns::all_patterns;
 use anyhow::Result;
 use chrono::{DateTime, Utc};
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::fs::File;
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, RwLock};
 use tokio::time::{sleep, Duration};
 
 #[derive(Debug, Clone)]
@@ -34,7 +34,12 @@ pub struct SecurityEvent {
 
 /// Monitors multiple log files, emits telemetry events for every detection,
 /// and elevates to block when threshold is exceeded.
-pub async fn watch(config: Arc<AgentConfig>, tx: mpsc::Sender<SecurityEvent>) -> Result<()> {
+/// IPs already in `known_blocked_ips` are immediately emitted as `level=listed`.
+pub async fn watch(
+    config: Arc<AgentConfig>,
+    tx: mpsc::Sender<SecurityEvent>,
+    known_blocked_ips: Arc<RwLock<HashMap<String, String>>>,
+) -> Result<()> {
     let log_paths = config.effective_log_paths();
     if log_paths.is_empty() {
         return Err(anyhow::anyhow!("No log paths configured"));
@@ -55,10 +60,18 @@ pub async fn watch(config: Arc<AgentConfig>, tx: mpsc::Sender<SecurityEvent>) ->
     // Sliding window counters: IP -> deque of attempt timestamps
     let mut ip_attempts: HashMap<String, VecDeque<Instant>> = HashMap::new();
     // IPs already blocked — avoids re-reporting block action repeatedly.
-    let mut already_blocked: HashSet<String> = HashSet::new();
+    let mut already_blocked: HashMap<String, ()> = HashMap::new();
 
     while let Some(raw) = raw_rx.recv().await {
-        process_failed_attempt(&raw, &mut ip_attempts, &mut already_blocked, &config, &tx).await;
+        process_failed_attempt(
+            &raw,
+            &mut ip_attempts,
+            &mut already_blocked,
+            &config,
+            &tx,
+            &known_blocked_ips,
+        )
+        .await;
     }
 
     Ok(())
@@ -134,6 +147,15 @@ async fn tail_log_path(log_path: String, tx: mpsc::Sender<RawDetection>) -> Resu
     }
 }
 
+/// Convert an internal source identifier to a human-readable feed/database name.
+fn format_source(source: &str) -> String {
+    match source {
+        "ipsum_feed" => "IPsum".to_string(),
+        "agent" => "custom database".to_string(),
+        other => other.replace('_', " "),
+    }
+}
+
 /// Open log file and seek to the end (normal startup — skip existing content).
 async fn open_log_at_end(path: &str) -> Result<File> {
     let mut file = File::open(path).await?;
@@ -147,14 +169,34 @@ async fn open_log_from_start(path: &str) -> Result<File> {
 }
 
 /// Record a failed attempt and emit alert/block telemetry.
+/// If the IP is already in `known_blocked_ips` (block list DB), emits `level=listed`
+/// and applies the block immediately without going through threshold counting.
 async fn process_failed_attempt(
     raw: &RawDetection,
     ip_attempts: &mut HashMap<String, VecDeque<Instant>>,
-    already_blocked: &mut HashSet<String>,
+    already_blocked: &mut HashMap<String, ()>,
     config: &AgentConfig,
     tx: &mpsc::Sender<SecurityEvent>,
+    known_blocked_ips: &Arc<RwLock<HashMap<String, String>>>,
 ) {
-    if already_blocked.contains(&raw.ip) {
+    if already_blocked.contains_key(&raw.ip) {
+        return;
+    }
+
+    // IP is already in the block list DB — emit "listed" (with source name) and block immediately.
+    if let Some(source) = known_blocked_ips.read().await.get(&raw.ip).cloned() {
+        let display = format_source(&source);
+        let event = SecurityEvent {
+            ip: raw.ip.clone(),
+            reason: format!("Listed in {}", display),
+            level: "listed".to_string(),
+            log_path: raw.log_path.clone(),
+            attempts: 1,
+            effective_threshold: 0,
+            timestamp: Utc::now(),
+        };
+        let _ = tx.send(event).await;
+        already_blocked.insert(raw.ip.clone(), ());
         return;
     }
 
@@ -204,7 +246,7 @@ async fn process_failed_attempt(
             effective
         );
 
-        already_blocked.insert(raw.ip.clone());
+        already_blocked.insert(raw.ip.clone(), ());
         ip_attempts.remove(&raw.ip);
     }
 }

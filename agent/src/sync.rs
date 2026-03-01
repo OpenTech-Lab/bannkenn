@@ -1,4 +1,7 @@
+use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::Duration;
+use tokio::sync::RwLock;
 
 use crate::client::ApiClient;
 use crate::config::SyncState;
@@ -6,7 +9,8 @@ use crate::firewall::{block_ip, detect_backend};
 
 /// Polling loop that incrementally pulls block decisions from the server
 /// and applies them to the local firewall. Runs every 30 seconds.
-pub async fn sync_loop(client: ApiClient) {
+/// Also populates `known_blocked_ips` so the watcher can detect already-listed IPs.
+pub async fn sync_loop(client: ApiClient, known_blocked_ips: Arc<RwLock<HashMap<String, String>>>) {
     let state_path = match SyncState::state_path() {
         Ok(p) => p,
         Err(e) => {
@@ -41,6 +45,7 @@ pub async fn sync_loop(client: ApiClient) {
                         Ok(_) => tracing::info!("sync: blocked IP {}", row.ip),
                         Err(e) => tracing::warn!("sync block failed for {}: {}", row.ip, e),
                     }
+                    known_blocked_ips.write().await.insert(row.ip.clone(), row.source.clone());
                     state.last_synced_id = row.id;
                 }
 

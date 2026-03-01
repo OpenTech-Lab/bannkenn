@@ -27,7 +27,7 @@ type TelemetryEvent = {
   id: number;
   ip: string;
   reason: string;
-  level: 'alert' | 'block';
+  level: 'alert' | 'block' | 'listed';
   source: string;
   log_path?: string | null;
   country?: string | null;
@@ -77,7 +77,8 @@ export default function AgentDetailPage() {
   }, [id]);
 
   const scannedCount = telemetry.length;
-  const riskyCount = telemetry.filter((d) => d.level === 'block').length;
+  const newBlockCount = telemetry.filter((d) => d.level === 'block').length;
+  const listedCount = telemetry.filter((d) => d.level === 'listed').length;
   const alertCount = telemetry.filter((d) => d.level === 'alert').length;
 
   const reasonStats = useMemo(() => topBy(telemetry, (d) => normalizeReason(d.reason), 8), [telemetry]);
@@ -151,13 +152,14 @@ export default function AgentDetailPage() {
         </div>
       </div>
 
-      <div className="grid grid-cols-2 sm:grid-cols-5 gap-4">
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-4">
         <StatCard label="Detected / Scanned" value={scannedCount} />
         <StatCard label="Risky Alerts" value={alertCount} accent="yellow" />
-        <StatCard label="Real Risky (Blocked)" value={riskyCount} accent="red" />
+        <StatCard label="Blocked (Listed)" value={listedCount} accent="red" />
+        <StatCard label="New Blocks" value={newBlockCount} accent="orange" />
         <StatCard
           label="Risk Rate"
-          value={`${scannedCount > 0 ? Math.round((riskyCount / scannedCount) * 100) : 0}%`}
+          value={`${scannedCount > 0 ? Math.round(((listedCount + newBlockCount) / scannedCount) * 100) : 0}%`}
         />
         <StatCard label="Forecast Next Hour" value={forecastNextHour} accent="green" />
       </div>
@@ -206,7 +208,18 @@ export default function AgentDetailPage() {
                       <TableCell className="font-mono text-xs">{d.ip}</TableCell>
                       <TableCell className="text-muted-foreground max-w-sm truncate">{d.reason}</TableCell>
                       <TableCell>
-                        <Badge variant={d.level === 'block' ? 'destructive' : 'secondary'}>{d.level}</Badge>
+                        <Badge
+                          variant={
+                            d.level === 'block'
+                              ? 'destructive'
+                              : d.level === 'listed'
+                              ? 'outline'
+                              : 'secondary'
+                          }
+                          className={d.level === 'listed' ? 'border-orange-600 text-orange-400' : ''}
+                        >
+                          {d.level}
+                        </Badge>
                       </TableCell>
                       <TableCell className="text-xs text-muted-foreground max-w-sm truncate">
                         {d.log_path ?? '—'}
@@ -295,7 +308,7 @@ function StatCard({
 }: {
   label: string;
   value: string | number;
-  accent?: 'red' | 'green' | 'yellow';
+  accent?: 'red' | 'green' | 'yellow' | 'orange';
 }) {
   return (
     <div className="bg-card border border-border rounded-xl px-5 py-4">
@@ -308,6 +321,8 @@ function StatCard({
             ? 'text-green-400'
             : accent === 'yellow'
             ? 'text-yellow-300'
+            : accent === 'orange'
+            ? 'text-orange-400'
             : 'text-foreground'
         }`}
       >

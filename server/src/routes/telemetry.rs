@@ -37,7 +37,7 @@ pub async fn create(
     Json(payload): Json<CreateTelemetryRequest>,
 ) -> Result<impl IntoResponse, StatusCode> {
     let level = payload.level.trim().to_lowercase();
-    if level != "alert" && level != "block" {
+    if level != "alert" && level != "block" && level != "listed" {
         return Err(StatusCode::BAD_REQUEST);
     }
 

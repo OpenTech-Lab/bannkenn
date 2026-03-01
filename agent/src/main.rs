@@ -11,12 +11,12 @@ use clap::{Parser, Subcommand};
 use reqwest::Client as HttpClient;
 use serde::Deserialize;
 use serde_json::json;
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::fs;
 use std::io::{self, BufRead, Write};
 use std::path::Path;
 use std::sync::Arc;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, RwLock};
 use tokio::time::{interval, Duration};
 use uuid::Uuid;
 
@@ -95,19 +95,41 @@ async fn run() -> Result<()> {
 
     let api_client = ApiClient::new(config.server_url.clone(), config.jwt_token.clone());
 
+    // Shared set of IPs already present in the server's block list DB.
+    // Pre-populated at startup; kept in sync by sync_loop.
+    // Maps IP → source name (e.g. "ipsum_feed", "agent") so that watcher can
+    // report which database listed the IP when emitting level=listed events.
+    let known_blocked_ips: Arc<RwLock<HashMap<String, String>>> =
+        Arc::new(RwLock::new(HashMap::new()));
+
+    // Initial fetch: load all existing block-list IPs before starting the watcher
+    // so detections are classified "listed" from the very first event.
+    let init_client = ApiClient::new(config.server_url.clone(), config.jwt_token.clone());
+    match init_client.fetch_decisions_since(0).await {
+        Ok(decisions) => {
+            let mut set = known_blocked_ips.write().await;
+            for d in &decisions {
+                set.insert(d.ip.clone(), d.source.clone());
+            }
+            tracing::info!("Loaded {} known blocked IP(s) from server", decisions.len());
+        }
+        Err(e) => tracing::warn!("Failed to load initial block list: {}", e),
+    }
+
     let (tx, mut rx) = mpsc::channel::<SecurityEvent>(1000);
 
     let config_arc = Arc::new(config);
 
     let config_for_watcher = Arc::clone(&config_arc);
+    let known_ips_for_watcher = Arc::clone(&known_blocked_ips);
     let watcher_handle = tokio::spawn(async move {
-        if let Err(e) = watch(config_for_watcher, tx).await {
+        if let Err(e) = watch(config_for_watcher, tx, known_ips_for_watcher).await {
             tracing::error!("Watcher error: {}", e);
         }
     });
 
     let sync_client = ApiClient::new(config_arc.server_url.clone(), config_arc.jwt_token.clone());
-    tokio::spawn(sync::sync_loop(sync_client));
+    tokio::spawn(sync::sync_loop(sync_client, Arc::clone(&known_blocked_ips)));
 
     let heartbeat_client =
         ApiClient::new(config_arc.server_url.clone(), config_arc.jwt_token.clone());
@@ -150,6 +172,7 @@ async fn run() -> Result<()> {
         }
 
         if event.level == "block" {
+            // New block: enforce firewall, report decision (adds to DB), track in shared set.
             match block_ip(&event.ip, &backend).await {
                 Ok(_) => tracing::info!("Successfully blocked IP: {}", event.ip),
                 Err(e) => tracing::error!("Failed to block IP {}: {}", event.ip, e),
@@ -158,6 +181,14 @@ async fn run() -> Result<()> {
             match api_client.report_decision(&event.ip, &event.reason).await {
                 Ok(_) => tracing::info!("Successfully reported decision for IP: {}", event.ip),
                 Err(e) => tracing::warn!("Failed to report decision for IP {}: {}", event.ip, e),
+            }
+
+            known_blocked_ips.write().await.insert(event.ip.clone(), "agent".to_string());
+        } else if event.level == "listed" {
+            // IP already in block list DB: enforce firewall block, do NOT create a new decision.
+            match block_ip(&event.ip, &backend).await {
+                Ok(_) => tracing::info!("Listed IP blocked by firewall: {}", event.ip),
+                Err(e) => tracing::error!("Failed to block listed IP {}: {}", event.ip, e),
             }
         }
     }
