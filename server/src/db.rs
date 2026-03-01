@@ -1,7 +1,9 @@
+use crate::geoip;
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
-use sqlx::sqlite::{SqliteConnectOptions, SqlitePool};
+use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePool};
 use std::str::FromStr;
+use std::time::Duration;
 
 #[derive(Debug, Clone)]
 pub struct Db(SqlitePool);
@@ -13,6 +15,8 @@ pub struct DecisionRow {
     pub reason: String,
     pub action: String,
     pub source: String,
+    pub country: Option<String>,
+    pub asn_org: Option<String>,
     pub created_at: String,
     pub expires_at: Option<String>,
 }
@@ -64,7 +68,10 @@ pub struct CommunityFeedIpRow {
 impl Db {
     pub async fn new(path: &str) -> anyhow::Result<Self> {
         let opts =
-            SqliteConnectOptions::from_str(&format!("sqlite:{}", path))?.create_if_missing(true);
+            SqliteConnectOptions::from_str(&format!("sqlite:{}", path))?
+                .create_if_missing(true)
+                .busy_timeout(Duration::from_secs(30))
+                .journal_mode(SqliteJournalMode::Wal);
         let pool = SqlitePool::connect_with(opts).await?;
         let db = Db(pool);
         db.migrate().await?;
@@ -80,6 +87,8 @@ impl Db {
                 reason TEXT NOT NULL,
                 action TEXT NOT NULL DEFAULT 'block',
                 source TEXT NOT NULL DEFAULT 'agent',
+                country TEXT,
+                asn_org TEXT,
                 created_at TEXT NOT NULL,
                 expires_at TEXT
             )
@@ -127,6 +136,12 @@ impl Db {
         let _ = sqlx::query("ALTER TABLE agents ADD COLUMN nickname TEXT")
             .execute(&self.0)
             .await;
+        let _ = sqlx::query("ALTER TABLE decisions ADD COLUMN country TEXT")
+            .execute(&self.0)
+            .await;
+        let _ = sqlx::query("ALTER TABLE decisions ADD COLUMN asn_org TEXT")
+            .execute(&self.0)
+            .await;
 
         // Add butterfly_shield_enabled column to heartbeats (idempotent)
         let _ =
@@ -145,16 +160,19 @@ impl Db {
         source: &str,
     ) -> anyhow::Result<i64> {
         let created_at = Utc::now().to_rfc3339();
+        let geo = geoip::lookup(ip);
         let result = sqlx::query(
             r#"
-            INSERT INTO decisions (ip, reason, action, source, created_at)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO decisions (ip, reason, action, source, country, asn_org, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             "#,
         )
         .bind(ip)
         .bind(reason)
         .bind(action)
         .bind(source)
+        .bind(&geo.country)
+        .bind(&geo.asn_org)
         .bind(&created_at)
         .execute(&self.0)
         .await?;
@@ -168,8 +186,8 @@ impl Db {
         limit: i64,
     ) -> anyhow::Result<Vec<DecisionRow>> {
         let rows =
-            sqlx::query_as::<_, (i64, String, String, String, String, String, Option<String>)>(
-                "SELECT id, ip, reason, action, source, created_at, expires_at FROM decisions \
+            sqlx::query_as::<_, (i64, String, String, String, String, Option<String>, Option<String>, String, Option<String>)>(
+                "SELECT id, ip, reason, action, source, country, asn_org, created_at, expires_at FROM decisions \
              WHERE id > ? ORDER BY id ASC LIMIT ?",
             )
             .bind(since_id)
@@ -180,12 +198,14 @@ impl Db {
         Ok(rows
             .into_iter()
             .map(
-                |(id, ip, reason, action, source, created_at, expires_at)| DecisionRow {
+                |(id, ip, reason, action, source, country, asn_org, created_at, expires_at)| DecisionRow {
                     id,
                     ip,
                     reason,
                     action,
                     source,
+                    country,
+                    asn_org,
                     created_at,
                     expires_at,
                 },
@@ -194,8 +214,8 @@ impl Db {
     }
 
     pub async fn list_decisions(&self, limit: i64) -> anyhow::Result<Vec<DecisionRow>> {
-        let rows = sqlx::query_as::<_, (i64, String, String, String, String, String, Option<String>)>(
-            "SELECT id, ip, reason, action, source, created_at, expires_at FROM decisions ORDER BY id DESC LIMIT ?",
+        let rows = sqlx::query_as::<_, (i64, String, String, String, String, Option<String>, Option<String>, String, Option<String>)>(
+            "SELECT id, ip, reason, action, source, country, asn_org, created_at, expires_at FROM decisions ORDER BY id DESC LIMIT ?",
         )
         .bind(limit)
         .fetch_all(&self.0)
@@ -204,17 +224,136 @@ impl Db {
         Ok(rows
             .into_iter()
             .map(
-                |(id, ip, reason, action, source, created_at, expires_at)| DecisionRow {
+                |(id, ip, reason, action, source, country, asn_org, created_at, expires_at)| DecisionRow {
                     id,
                     ip,
                     reason,
                     action,
                     source,
+                    country,
+                    asn_org,
                     created_at,
                     expires_at,
                 },
             )
             .collect())
+    }
+
+    pub async fn list_decisions_by_source(
+        &self,
+        source: &str,
+        limit: i64,
+    ) -> anyhow::Result<Vec<DecisionRow>> {
+        let rows = sqlx::query_as::<_, (i64, String, String, String, String, Option<String>, Option<String>, String, Option<String>)>(
+            "SELECT id, ip, reason, action, source, country, asn_org, created_at, expires_at FROM decisions WHERE source = ? ORDER BY id DESC LIMIT ?",
+        )
+        .bind(source)
+        .bind(limit)
+        .fetch_all(&self.0)
+        .await?;
+
+        Ok(rows
+            .into_iter()
+            .map(
+                |(id, ip, reason, action, source, country, asn_org, created_at, expires_at)| DecisionRow {
+                    id,
+                    ip,
+                    reason,
+                    action,
+                    source,
+                    country,
+                    asn_org,
+                    created_at,
+                    expires_at,
+                },
+            )
+            .collect())
+    }
+
+    pub async fn backfill_decision_geoip_unknowns(&self) -> anyhow::Result<u64> {
+        let ips = sqlx::query_as::<_, (String,)>(
+            r#"
+            SELECT DISTINCT ip
+            FROM decisions
+            WHERE country IS NULL
+               OR asn_org IS NULL
+               OR TRIM(country) = ''
+               OR TRIM(asn_org) = ''
+            "#,
+        )
+        .fetch_all(&self.0)
+        .await?;
+
+        let mut updated = 0u64;
+        for (ip,) in ips {
+            let geo = geoip::lookup(&ip);
+            let result = sqlx::query(
+                r#"
+                UPDATE decisions
+                SET
+                    country = CASE WHEN country IS NULL OR TRIM(country) = '' THEN ? ELSE country END,
+                    asn_org = CASE WHEN asn_org IS NULL OR TRIM(asn_org) = '' THEN ? ELSE asn_org END
+                WHERE ip = ?
+                  AND (
+                    country IS NULL OR TRIM(country) = ''
+                    OR asn_org IS NULL OR TRIM(asn_org) = ''
+                  )
+                "#,
+            )
+                .bind(geo.country)
+                .bind(geo.asn_org)
+                .bind(ip)
+                .execute(&self.0)
+                .await?;
+            updated += result.rows_affected();
+        }
+
+        Ok(updated)
+    }
+
+    pub async fn backfill_decision_geoip_for_source(&self, source: &str) -> anyhow::Result<u64> {
+        let ips = sqlx::query_as::<_, (String,)>(
+            r#"
+            SELECT DISTINCT ip
+            FROM decisions
+            WHERE source = ?
+              AND (
+                country IS NULL OR TRIM(country) = ''
+                OR asn_org IS NULL OR TRIM(asn_org) = ''
+              )
+            "#,
+        )
+        .bind(source)
+        .fetch_all(&self.0)
+        .await?;
+
+        let mut updated = 0u64;
+        for (ip,) in ips {
+            let geo = geoip::lookup(&ip);
+            let result = sqlx::query(
+                r#"
+                UPDATE decisions
+                SET
+                    country = CASE WHEN country IS NULL OR TRIM(country) = '' THEN ? ELSE country END,
+                    asn_org = CASE WHEN asn_org IS NULL OR TRIM(asn_org) = '' THEN ? ELSE asn_org END
+                WHERE source = ?
+                  AND ip = ?
+                  AND (
+                    country IS NULL OR TRIM(country) = ''
+                    OR asn_org IS NULL OR TRIM(asn_org) = ''
+                  )
+                "#,
+            )
+            .bind(geo.country)
+            .bind(geo.asn_org)
+            .bind(source)
+            .bind(ip)
+            .execute(&self.0)
+            .await?;
+            updated += result.rows_affected();
+        }
+
+        Ok(updated)
     }
 
     pub async fn insert_agent(
@@ -272,6 +411,15 @@ impl Db {
             .await?;
 
         Ok(())
+    }
+
+    pub async fn get_agent_name_by_id(&self, id: i64) -> anyhow::Result<Option<String>> {
+        let row = sqlx::query_as::<_, (String,)>("SELECT name FROM agents WHERE id = ?")
+            .bind(id)
+            .fetch_optional(&self.0)
+            .await?;
+
+        Ok(row.map(|(name,)| name))
     }
 
     pub async fn find_agent_by_token_hash(&self, hash: &str) -> anyhow::Result<Option<AgentRow>> {

@@ -39,6 +39,7 @@ RUN apt-get update && apt-get install -y \
 WORKDIR /app
 
 COPY --from=builder /app/target/release/bannkenn-server /usr/local/bin/bannkenn-server
+COPY --from=builder /app/server/data /app/server/data
 
 # Create data directory for SQLite
 RUN mkdir -p /data

@@ -12,6 +12,7 @@ services:
     environment:
       - BANNKENN_BIND=0.0.0.0:3022
       - BANNKENN_DB_PATH=/data/bannkenn.db
+      - BANNKENN_MMDB_DIR=/app/server/data
       - BANNKENN_JWT_SECRET=${BANNKENN_JWT_SECRET:-change-me-in-production}
       - RUST_LOG=info
     volumes:

@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState, useCallback } from 'react';
+import Link from 'next/link';
 import { toast } from 'sonner';
 import { Pencil, Trash2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -226,7 +227,12 @@ export default function Dashboard() {
                 agents.map((agent) => (
                   <TableRow key={agent.id}>
                     <TableCell className="font-medium">
-                      {agent.nickname ?? agent.name}
+                      <Link
+                        href={`/agents/${agent.id}`}
+                        className="text-blue-400 hover:text-blue-300 hover:underline underline-offset-2"
+                      >
+                        {agent.nickname ?? agent.name}
+                      </Link>
                       {agent.nickname && (
                         <span className="ml-1.5 text-xs text-muted-foreground">
                           ({agent.name})

@@ -2,6 +2,7 @@ mod auth;
 mod config;
 mod db;
 mod feeds;
+mod geoip;
 mod routes;
 
 use axum::{
@@ -43,6 +44,15 @@ async fn main() -> anyhow::Result<()> {
     let db = Arc::new(db);
     let config = Arc::new(config);
 
+    // Run geo backfill in background so startup/healthcheck are not blocked on large datasets.
+    let db_for_backfill = db.clone();
+    tokio::spawn(async move {
+        match db_for_backfill.backfill_decision_geoip_unknowns().await {
+            Ok(count) => info!("GeoIP backfill complete: {} decision rows updated", count),
+            Err(err) => error!("GeoIP backfill failed: {}", err),
+        }
+    });
+
     // Start feed task
     feeds::start_feed_task(db.clone()).await;
     info!("Feed task started");
@@ -74,6 +84,8 @@ async fn main() -> anyhow::Result<()> {
         .layer(auth_middleware_layer.clone());
 
     let agents_admin_router = Router::new()
+        .route("/:id/backfill-geoip", post(routes::agents::backfill_geoip))
+        .route("/:id/decisions", get(routes::agents::list_decisions))
         .route(
             "/:id",
             patch(routes::agents::update_nickname).delete(routes::agents::delete_agent),

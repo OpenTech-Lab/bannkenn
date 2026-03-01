@@ -65,7 +65,7 @@ This installs:
 Option B: install from GitHub Release URL (Linux x64 example)
 
 ```bash
-VERSION=v1.0.6
+VERSION=v1.0.0
 curl -fL "https://github.com/OpenTech-Lab/bannkenn/releases/download/${VERSION}/bannkenn-agent-linux-x64" -o bannkenn-agent
 chmod +x bannkenn-agent
 sudo mv bannkenn-agent /usr/local/bin/bannkenn-agent
@@ -74,7 +74,7 @@ sudo mv bannkenn-agent /usr/local/bin/bannkenn-agent
 Linux ARM64:
 
 ```bash
-VERSION=v1.0.4
+VERSION=v1.0.0
 curl -fL "https://github.com/OpenTech-Lab/bannkenn/releases/download/${VERSION}/bannkenn-agent-linux-arm64" -o bannkenn-agent
 chmod +x bannkenn-agent
 sudo mv bannkenn-agent /usr/local/bin/bannkenn-agent
@@ -83,7 +83,7 @@ sudo mv bannkenn-agent /usr/local/bin/bannkenn-agent
 Windows PowerShell:
 
 ```powershell
-$version = "v1.0.4"
+$version = "v1.0.0"
 Invoke-WebRequest -Uri "https://github.com/OpenTech-Lab/bannkenn/releases/download/$version/bannkenn-agent-windows-x64.exe" -OutFile "bannkenn-agent.exe"
 ```
 

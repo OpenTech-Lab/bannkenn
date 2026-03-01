@@ -201,3 +201,52 @@
 - Updated `agent/src/main.rs`: added `mod butterfly;`; `init()` sets `butterfly_shield: None`; heartbeat loop captures and forwards butterfly config state.
 - Updated `dashboard/app/page.tsx`: added `butterfly_shield_enabled?: boolean | null` to `AgentStatus` interface; added "ButterflyShield" column with purple "Active" badge / "Inactive" / "—" rendering.
 - Verification: `cargo fmt --all` clean, `cargo clippy --workspace --all-targets -- -D warnings` 0 warnings, `cargo test --workspace` 97/97 tests pass.
+
+## Phase 15 – Agent detail dashboard page (Codex)
+- [x] Add server endpoint to fetch decisions for a specific agent
+- [x] Add dashboard API proxy for per-agent decisions
+- [x] Add dashboard API proxy for IP geolocation/organization lookup (best-effort fallback)
+- [x] Link agent rows on home page to agent detail page
+- [x] Build `/agents/[id]` detail page with:
+  - [x] scanned vs risky summary cards
+  - [x] bar/line visualizers for request reasons, top IPs, and recent trend/forecast
+  - [x] detailed table with IP, reason, country, organization, timestamp
+- [x] Verify with `cargo check -p bannkenn-server` and `npm run build` in `dashboard/`
+
+## Review (Phase 15)
+- Server:
+  - Added `GET /api/v1/agents/:id/decisions?limit=...` to return decisions for one agent source.
+  - Added DB helpers `get_agent_name_by_id` and `list_decisions_by_source`.
+- Dashboard:
+  - Home page agent names now link to `/agents/:id`.
+  - Added proxy route `GET /api/agents/:id/decisions`.
+  - Added proxy route `GET /api/ip-intel?ip=...` using `ipwho.is` with timeout + in-memory cache + graceful fallback.
+  - Added `/agents/[id]` detail page with:
+    - Detected/scanned and real-risky(blocked) metrics
+    - Top reason and top IP bar charts
+    - 24h trend chart and next-hour forecast bar
+    - Event table with IP, reason, action, country, organization, timestamp
+- Verification:
+  - `cargo check -p bannkenn-server` passed
+  - `npm run build` in `dashboard/` passed (includes new dynamic route)
+
+## Phase 16 – MMDB-based GeoIP/ASN enrichment + DB backfill (Codex)
+- [x] Add server-side GeoIP resolver using local MMDB files (`GeoLite2-Country.mmdb`, `GeoLite2-ASN.mmdb`)
+- [x] Extend `decisions` schema with `country` and `asn_org` columns (idempotent migration)
+- [x] Enrich new decisions at insert time from MMDB with `Unknown` fallback
+- [x] Add startup backfill to populate existing rows where values are null/empty/Unknown
+- [x] Update detail page to use DB-provided `country` and `asn_org`
+- [x] Ensure Docker runtime includes MMDB files and sets `BANNKENN_MMDB_DIR`
+- [x] Rebuild/restart server container to execute backfill against live `/data/bannkenn.db`
+
+## Review (Phase 16)
+- Added `server/src/geoip.rs` with lazy-loaded MMDB readers and `lookup(ip)` helper.
+- `server/src/db.rs` now stores `country` + `asn_org` in `DecisionRow`, migrates columns, enriches writes, and includes `backfill_decision_geoip_unknowns()`.
+- `server/src/main.rs` runs backfill on startup and logs updated row count.
+- `dashboard/app/agents/[id]/page.tsx` now reads country/ASN org directly from decision rows.
+- Docker updates:
+  - `docker/Dockerfile.server` copies `server/data` into runtime image.
+  - `docker/docker-compose.yml` sets `BANNKENN_MMDB_DIR=/app/server/data`.
+- Runtime follow-up:
+  - Changed backfill to run in background (non-blocking startup) and enabled SQLite `WAL` + `busy_timeout(30s)` to avoid lock contention with feed ingestion.
+  - Rebuilt/restarted `bannkenn-server`; container is healthy and API decisions now include `country` and `asn_org`.

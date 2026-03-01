@@ -47,3 +47,7 @@
 - Inferring agent health from decision traffic is incorrect because healthy agents may have no block events
 - Track liveness with dedicated heartbeat writes from agent to server on a fixed interval
 - Dashboard status should derive from heartbeat freshness windows, not decision table activity
+
+### GeoIP backfill validation must be agent-scoped
+- After schema/backfill changes, verify specific affected agent rows (e.g., `/api/v1/agents/:id/decisions`) instead of only sampling global endpoints.
+- If a user reports stale/null values, add a targeted backfill path and return post-update sample values from DB to confirm write success.

@@ -25,3 +25,4 @@ tower = "0.4"
 tower-http = { version = "0.5", features = ["trace"] }
 sha2 = "0.10"
 rand = "0.8"
+maxminddb = "0.24"

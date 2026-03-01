@@ -52,6 +52,19 @@ pub struct UpdateAgentRequest {
     pub nickname: String,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct AgentDecisionsParams {
+    pub limit: Option<i64>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct BackfillGeoipResponse {
+    pub updated_rows: u64,
+    pub latest_ip: Option<String>,
+    pub latest_country: Option<String>,
+    pub latest_asn_org: Option<String>,
+}
+
 pub async fn register(
     State(state): State<Arc<AppState>>,
     Json(payload): Json<RegisterAgentRequest>,
@@ -164,4 +177,63 @@ pub async fn delete_agent(
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     Ok(StatusCode::NO_CONTENT)
+}
+
+pub async fn list_decisions(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<i64>,
+    Query(params): Query<AgentDecisionsParams>,
+) -> Result<impl IntoResponse, StatusCode> {
+    let limit = params.limit.unwrap_or(500).clamp(1, 2000);
+    let Some(agent_name) = state
+        .db
+        .get_agent_name_by_id(id)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+    else {
+        return Err(StatusCode::NOT_FOUND);
+    };
+
+    let decisions = state
+        .db
+        .list_decisions_by_source(&agent_name, limit)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    Ok(Json(decisions))
+}
+
+pub async fn backfill_geoip(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<i64>,
+) -> Result<impl IntoResponse, StatusCode> {
+    let Some(agent_name) = state
+        .db
+        .get_agent_name_by_id(id)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+    else {
+        return Err(StatusCode::NOT_FOUND);
+    };
+
+    let updated_rows = state
+        .db
+        .backfill_decision_geoip_for_source(&agent_name)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let latest = state
+        .db
+        .list_decisions_by_source(&agent_name, 1)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .into_iter()
+        .next();
+
+    Ok(Json(BackfillGeoipResponse {
+        updated_rows,
+        latest_ip: latest.as_ref().map(|d| d.ip.clone()),
+        latest_country: latest.as_ref().and_then(|d| d.country.clone()),
+        latest_asn_org: latest.as_ref().and_then(|d| d.asn_org.clone()),
+    }))
 }
