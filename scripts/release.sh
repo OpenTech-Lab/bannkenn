@@ -78,13 +78,11 @@ else
     sed -i "s/^version = \"${CURRENT_VERSION}\"/version = \"${VERSION}\"/" "$CARGO_TOML"
     info "Updated $CURRENT_VERSION → $VERSION"
     git add "$CARGO_TOML"
-    git commit -m "chore: bump version to ${VERSION}"
-    info "Committed version bump"
 fi
 
 # ── Create changelog file ─────────────────────────────────────────────────────
 
-step "Creating changelog: $CHANGELOG_FILE → ${TAG}.md"
+step "Creating changelog: ${TAG}.md"
 
 # Rename existing changelog if present
 PREV_TAG_FOR_RENAME=""
@@ -158,8 +156,8 @@ git add "$CHANGELOG_FILE"
 if [[ -n "$PREV_TAG_FOR_RENAME" ]]; then
     git add "$CHANGELOG_DIR/${PREV_TAG_FOR_RENAME}.md" 2>/dev/null || true
 fi
-git commit -m "chore: add changelog for ${TAG}"
-info "Committed changelog"
+git commit -m "chore: release ${TAG}"
+info "Committed version bump and changelog"
 
 # ── Tag and push ──────────────────────────────────────────────────────────────
 
