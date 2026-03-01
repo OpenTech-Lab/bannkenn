@@ -11,77 +11,133 @@ use tokio::io::{AsyncReadExt, AsyncSeekExt};
 use tokio::sync::mpsc;
 use tokio::time::{sleep, Duration};
 
-/// Event indicating an IP should be blocked
 #[derive(Debug, Clone)]
-pub struct BlockEvent {
+struct RawDetection {
+    ip: String,
+    reason: String,
+    log_path: String,
+}
+
+/// A risk event generated for every matched log line.
+/// `level=alert` means risky but not blocked yet.
+/// `level=block` means threshold reached and block should be enforced.
+#[derive(Debug, Clone)]
+pub struct SecurityEvent {
     pub ip: String,
     pub reason: String,
+    pub level: String,
+    pub log_path: String,
+    pub attempts: u32,
+    pub effective_threshold: u32,
     pub timestamp: DateTime<Utc>,
 }
 
-/// Monitors log file for failed login attempts and sends block events
-/// when threshold is exceeded within a time window
-pub async fn watch(config: Arc<AgentConfig>, tx: mpsc::Sender<BlockEvent>) -> Result<()> {
-    let patterns = all_patterns()?;
+/// Monitors multiple log files, emits telemetry events for every detection,
+/// and elevates to block when threshold is exceeded.
+pub async fn watch(config: Arc<AgentConfig>, tx: mpsc::Sender<SecurityEvent>) -> Result<()> {
+    let log_paths = config.effective_log_paths();
+    if log_paths.is_empty() {
+        return Err(anyhow::anyhow!("No log paths configured"));
+    }
+
+    let (raw_tx, mut raw_rx) = mpsc::channel::<RawDetection>(1000);
+
+    for log_path in log_paths {
+        let tx_clone = raw_tx.clone();
+        tokio::spawn(async move {
+            if let Err(err) = tail_log_path(log_path.clone(), tx_clone).await {
+                tracing::error!("Tailer stopped for {}: {}", log_path, err);
+            }
+        });
+    }
+    drop(raw_tx);
 
     // Sliding window counters: IP -> deque of attempt timestamps
     let mut ip_attempts: HashMap<String, VecDeque<Instant>> = HashMap::new();
-
-    // IPs already blocked — avoids re-reporting to the server on every
-    // subsequent threshold crossing once a block is in effect.
+    // IPs already blocked — avoids re-reporting block action repeatedly.
     let mut already_blocked: HashSet<String> = HashSet::new();
 
-    let mut file = open_log_at_end(&config.log_path).await?;
-    let mut file_pos = file.seek(std::io::SeekFrom::Current(0)).await?;
+    while let Some(raw) = raw_rx.recv().await {
+        process_failed_attempt(
+            &raw,
+            &mut ip_attempts,
+            &mut already_blocked,
+            &config,
+            &tx,
+        )
+        .await;
+    }
 
-    let mut buffer = String::new();
+    Ok(())
+}
+
+async fn tail_log_path(log_path: String, tx: mpsc::Sender<RawDetection>) -> Result<()> {
+    let patterns = all_patterns()?;
     let poll_interval = Duration::from_millis(200);
 
     loop {
-        // Detect log rotation: if the file on disk is now shorter than our
-        // read position the log was rotated. Reopen from the start of the
-        // new file so we don't miss entries.
-        if let Ok(meta) = tokio::fs::metadata(&config.log_path).await {
-            if meta.len() < file_pos {
-                tracing::info!("Log rotation detected, reopening {}", config.log_path);
-                file = open_log_from_start(&config.log_path).await?;
-                file_pos = 0;
-            }
-        }
-
-        buffer.clear();
-        match file.read_to_string(&mut buffer).await {
-            Ok(0) => {
-                sleep(poll_interval).await;
+        let mut file = match open_log_at_end(&log_path).await {
+            Ok(file) => file,
+            Err(err) => {
+                tracing::warn!("Failed to open {}: {}", log_path, err);
+                sleep(Duration::from_secs(2)).await;
                 continue;
             }
-            Ok(_) => {
-                file_pos = file.seek(std::io::SeekFrom::Current(0)).await?;
+        };
 
-                for line in buffer.lines() {
-                    for pattern in &patterns {
-                        if let Some(caps) = pattern.regex.captures(line) {
-                            if let Some(m) = caps.get(1) {
-                                let ip = m.as_str().to_string();
-                                process_failed_attempt(
-                                    &ip,
-                                    &mut ip_attempts,
-                                    &mut already_blocked,
-                                    &config,
-                                    &tx,
-                                    pattern.reason,
-                                )
-                                .await;
-                            }
+        let mut file_pos = file.seek(std::io::SeekFrom::Current(0)).await?;
+        let mut buffer = String::new();
+
+        loop {
+            if let Ok(meta) = tokio::fs::metadata(&log_path).await {
+                if meta.len() < file_pos {
+                    tracing::info!("Log rotation detected, reopening {}", log_path);
+                    match open_log_from_start(&log_path).await {
+                        Ok(new_file) => {
+                            file = new_file;
+                            file_pos = 0;
+                        }
+                        Err(err) => {
+                            tracing::warn!("Failed to reopen {} after rotation: {}", log_path, err);
+                            break;
                         }
                     }
                 }
             }
-            Err(e) => {
-                tracing::warn!("Error reading log file: {}", e);
-                sleep(poll_interval).await;
+
+            buffer.clear();
+            match file.read_to_string(&mut buffer).await {
+                Ok(0) => {
+                    sleep(poll_interval).await;
+                    continue;
+                }
+                Ok(_) => {
+                    file_pos = file.seek(std::io::SeekFrom::Current(0)).await?;
+
+                    for line in buffer.lines() {
+                        for pattern in &patterns {
+                            if let Some(caps) = pattern.regex.captures(line) {
+                                if let Some(m) = caps.get(1) {
+                                    let _ = tx
+                                        .send(RawDetection {
+                                            ip: m.as_str().to_string(),
+                                            reason: pattern.reason.to_string(),
+                                            log_path: log_path.clone(),
+                                        })
+                                        .await;
+                                }
+                            }
+                        }
+                    }
+                }
+                Err(err) => {
+                    tracing::warn!("Error reading {}: {}", log_path, err);
+                    break;
+                }
             }
         }
+
+        sleep(Duration::from_secs(1)).await;
     }
 }
 
@@ -97,26 +153,23 @@ async fn open_log_from_start(path: &str) -> Result<File> {
     Ok(File::open(path).await?)
 }
 
-/// Record a failed attempt and fire a BlockEvent when threshold is reached.
+/// Record a failed attempt and emit alert/block telemetry.
 async fn process_failed_attempt(
-    ip: &str,
+    raw: &RawDetection,
     ip_attempts: &mut HashMap<String, VecDeque<Instant>>,
     already_blocked: &mut HashSet<String>,
     config: &AgentConfig,
-    tx: &mpsc::Sender<BlockEvent>,
-    reason: &str,
+    tx: &mpsc::Sender<SecurityEvent>,
 ) {
-    // Already blocked — firewall rule is in place, no need to re-report.
-    if already_blocked.contains(ip) {
+    if already_blocked.contains(&raw.ip) {
         return;
     }
 
     let now = Instant::now();
     let window = Duration::from_secs(config.window_secs);
 
-    let attempts = ip_attempts.entry(ip.to_string()).or_default();
+    let attempts = ip_attempts.entry(raw.ip.clone()).or_default();
 
-    // Prune attempts that fell outside the sliding window.
     while let Some(&oldest) = attempts.front() {
         if now.duration_since(oldest) > window {
             attempts.pop_front();
@@ -127,31 +180,38 @@ async fn process_failed_attempt(
 
     attempts.push_back(now);
 
-    // Compute effective threshold — use chaos-based dynamic value when
-    // ButterflyShield is enabled, otherwise fall back to the static base.
     let effective = match &config.butterfly_shield {
-        Some(cfg) if cfg.enabled => butterfly::effective_threshold(config.threshold, ip, cfg),
+        Some(cfg) if cfg.enabled => butterfly::effective_threshold(config.threshold, &raw.ip, cfg),
         _ => config.threshold,
     };
 
-    if attempts.len() >= effective as usize {
+    let level = if attempts.len() >= effective as usize {
+        "block"
+    } else {
+        "alert"
+    };
+
+    let security_event = SecurityEvent {
+        ip: raw.ip.clone(),
+        reason: format!("{} (threshold: {})", raw.reason, effective),
+        level: level.to_string(),
+        log_path: raw.log_path.clone(),
+        attempts: attempts.len() as u32,
+        effective_threshold: effective,
+        timestamp: Utc::now(),
+    };
+
+    let _ = tx.send(security_event).await;
+
+    if level == "block" {
         tracing::info!(
             "Threshold exceeded for IP {}: {} attempts in window (effective threshold: {})",
-            ip,
+            raw.ip,
             attempts.len(),
-            effective,
+            effective
         );
 
-        let block_event = BlockEvent {
-            ip: ip.to_string(),
-            reason: format!("{} (threshold: {})", reason, effective),
-            timestamp: Utc::now(),
-        };
-
-        let _ = tx.send(block_event).await;
-
-        // Mark as permanently blocked and drop the attempt history.
-        already_blocked.insert(ip.to_string());
-        ip_attempts.remove(ip);
+        already_blocked.insert(raw.ip.clone());
+        ip_attempts.remove(&raw.ip);
     }
 }

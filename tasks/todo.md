@@ -250,3 +250,31 @@
 - Runtime follow-up:
   - Changed backfill to run in background (non-blocking startup) and enabled SQLite `WAL` + `busy_timeout(30s)` to avoid lock contention with feed ingestion.
   - Rebuilt/restarted `bannkenn-server`; container is healthy and API decisions now include `country` and `asn_org`.
+
+## Phase 17 – Full telemetry pipeline + multi-log monitoring (Codex)
+- [x] Add server telemetry table + idempotent migration (`telemetry_events`)
+- [x] Add protected telemetry ingest endpoint for agents (`POST /api/v1/telemetry`)
+- [x] Add server query endpoints for per-agent telemetry (`GET /api/v1/agents/:id/telemetry`)
+- [x] Update agent watcher to emit telemetry events for every match (`alert` and `block`)
+- [x] Update agent runtime to send telemetry events and keep block decision flow for blocks
+- [x] Add multi-log-path support in agent config + watcher (host/docker/k8s concurrently)
+- [x] Update dashboard agent detail page counters/charts/table to use telemetry events
+- [x] Verify with `cargo check --workspace` and `npm run build` in `dashboard/`
+
+## Review (Phase 17)
+- Server:
+  - Added `telemetry_events` table with source/log_path/geo columns and index on `(source, created_at)`.
+  - Added protected telemetry ingest endpoint `POST /api/v1/telemetry` (agent identity from JWT subject).
+  - Added per-agent telemetry endpoint `GET /api/v1/agents/:id/telemetry`.
+- Agent:
+  - Replaced block-only watcher flow with `SecurityEvent` pipeline that emits telemetry for every matched detection:
+    - `level=alert` before threshold
+    - `level=block` when threshold reached
+  - Runtime now sends telemetry for every event and only executes firewall + decision report on `block`.
+  - Added multi-log monitoring via `log_paths` (backward-compatible with existing single `log_path`).
+- Dashboard:
+  - Added API proxy `GET /api/agents/:id/telemetry`.
+  - Agent detail page now uses telemetry events for scanned/risky counters, charts, and event table.
+- Verification:
+  - `cargo check --workspace` passed
+  - `npm run build` in `dashboard/` passed

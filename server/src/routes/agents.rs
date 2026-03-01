@@ -57,6 +57,11 @@ pub struct AgentDecisionsParams {
     pub limit: Option<i64>,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct AgentTelemetryParams {
+    pub limit: Option<i64>,
+}
+
 #[derive(Debug, Serialize)]
 pub struct BackfillGeoipResponse {
     pub updated_rows: u64,
@@ -201,6 +206,30 @@ pub async fn list_decisions(
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     Ok(Json(decisions))
+}
+
+pub async fn list_telemetry(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<i64>,
+    Query(params): Query<AgentTelemetryParams>,
+) -> Result<impl IntoResponse, StatusCode> {
+    let limit = params.limit.unwrap_or(2000).clamp(1, 10000);
+    let Some(agent_name) = state
+        .db
+        .get_agent_name_by_id(id)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+    else {
+        return Err(StatusCode::NOT_FOUND);
+    };
+
+    let telemetry = state
+        .db
+        .list_telemetry_by_source(&agent_name, limit)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    Ok(Json(telemetry))
 }
 
 pub async fn backfill_geoip(

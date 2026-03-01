@@ -23,7 +23,7 @@ use uuid::Uuid;
 use crate::client::ApiClient;
 use crate::config::AgentConfig;
 use crate::firewall::{block_ip, detect_backend};
-use crate::watcher::{watch, BlockEvent};
+use crate::watcher::{watch, SecurityEvent};
 
 #[derive(Parser)]
 #[command(name = "bannkenn-agent")]
@@ -79,7 +79,11 @@ async fn run() -> Result<()> {
     }
 
     tracing::info!("Configured to connect to: {}", config.server_url);
-    tracing::info!("Monitoring log file: {}", config.log_path);
+    let monitored_paths = config.effective_log_paths();
+    tracing::info!("Monitoring {} log path(s)", monitored_paths.len());
+    for path in &monitored_paths {
+        tracing::info!("  - {}", path);
+    }
     tracing::info!(
         "Threshold: {} attempts in {} seconds",
         config.threshold,
@@ -91,7 +95,7 @@ async fn run() -> Result<()> {
 
     let api_client = ApiClient::new(config.server_url.clone(), config.jwt_token.clone());
 
-    let (tx, mut rx) = mpsc::channel::<BlockEvent>(100);
+    let (tx, mut rx) = mpsc::channel::<SecurityEvent>(1000);
 
     let config_arc = Arc::new(config);
 
@@ -124,20 +128,32 @@ async fn run() -> Result<()> {
 
     while let Some(event) = rx.recv().await {
         tracing::info!(
-            "Block event received: IP={}, reason={}, at={}",
+            "Security event received: IP={}, level={}, attempts={}/{}, at={}",
             event.ip,
-            event.reason,
+            event.level,
+            event.attempts,
+            event.effective_threshold,
             event.timestamp
         );
 
-        match block_ip(&event.ip, &backend).await {
-            Ok(_) => tracing::info!("Successfully blocked IP: {}", event.ip),
-            Err(e) => tracing::error!("Failed to block IP {}: {}", event.ip, e),
+        match api_client
+            .report_telemetry(&event.ip, &event.reason, &event.level, Some(&event.log_path))
+            .await
+        {
+            Ok(_) => tracing::debug!("Telemetry sent: {} {}", event.level, event.ip),
+            Err(e) => tracing::warn!("Failed to report telemetry for IP {}: {}", event.ip, e),
         }
 
-        match api_client.report_decision(&event.ip, &event.reason).await {
-            Ok(_) => tracing::info!("Successfully reported decision for IP: {}", event.ip),
-            Err(e) => tracing::warn!("Failed to report decision for IP {}: {}", event.ip, e),
+        if event.level == "block" {
+            match block_ip(&event.ip, &backend).await {
+                Ok(_) => tracing::info!("Successfully blocked IP: {}", event.ip),
+                Err(e) => tracing::error!("Failed to block IP {}: {}", event.ip, e),
+            }
+
+            match api_client.report_decision(&event.ip, &event.reason).await {
+                Ok(_) => tracing::info!("Successfully reported decision for IP: {}", event.ip),
+                Err(e) => tracing::warn!("Failed to report decision for IP {}: {}", event.ip, e),
+            }
         }
     }
 
@@ -215,6 +231,7 @@ async fn init() -> Result<()> {
         jwt_token: String::new(), // populated by `connect`
         agent_name,
         uuid,
+        log_paths: log_candidates.clone(),
         log_path,
         threshold,
         window_secs,

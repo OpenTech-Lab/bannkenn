@@ -22,6 +22,19 @@ pub struct DecisionRow {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TelemetryRow {
+    pub id: i64,
+    pub ip: String,
+    pub reason: String,
+    pub level: String,
+    pub source: String,
+    pub log_path: Option<String>,
+    pub country: Option<String>,
+    pub asn_org: Option<String>,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentRow {
     pub id: i64,
     pub name: String,
@@ -99,6 +112,24 @@ impl Db {
 
         sqlx::query(
             r#"
+            CREATE TABLE IF NOT EXISTS telemetry_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ip TEXT NOT NULL,
+                reason TEXT NOT NULL,
+                level TEXT NOT NULL,
+                source TEXT NOT NULL,
+                log_path TEXT,
+                country TEXT,
+                asn_org TEXT,
+                created_at TEXT NOT NULL
+            )
+            "#,
+        )
+        .execute(&self.0)
+        .await?;
+
+        sqlx::query(
+            r#"
             CREATE TABLE IF NOT EXISTS agents (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 name TEXT NOT NULL UNIQUE,
@@ -113,6 +144,14 @@ impl Db {
         sqlx::query(
             r#"
             CREATE INDEX IF NOT EXISTS idx_decisions_ip ON decisions(ip)
+            "#,
+        )
+        .execute(&self.0)
+        .await?;
+
+        sqlx::query(
+            r#"
+            CREATE INDEX IF NOT EXISTS idx_telemetry_source_created_at ON telemetry_events(source, created_at DESC)
             "#,
         )
         .execute(&self.0)
@@ -171,6 +210,36 @@ impl Db {
         .bind(reason)
         .bind(action)
         .bind(source)
+        .bind(&geo.country)
+        .bind(&geo.asn_org)
+        .bind(&created_at)
+        .execute(&self.0)
+        .await?;
+
+        Ok(result.last_insert_rowid())
+    }
+
+    pub async fn insert_telemetry_event(
+        &self,
+        ip: &str,
+        reason: &str,
+        level: &str,
+        source: &str,
+        log_path: Option<&str>,
+    ) -> anyhow::Result<i64> {
+        let created_at = Utc::now().to_rfc3339();
+        let geo = geoip::lookup(ip);
+        let result = sqlx::query(
+            r#"
+            INSERT INTO telemetry_events (ip, reason, level, source, log_path, country, asn_org, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            "#,
+        )
+        .bind(ip)
+        .bind(reason)
+        .bind(level)
+        .bind(source)
+        .bind(log_path)
         .bind(&geo.country)
         .bind(&geo.asn_org)
         .bind(&created_at)
@@ -265,6 +334,89 @@ impl Db {
                     asn_org,
                     created_at,
                     expires_at,
+                },
+            )
+            .collect())
+    }
+
+    pub async fn list_telemetry_by_source(
+        &self,
+        source: &str,
+        limit: i64,
+    ) -> anyhow::Result<Vec<TelemetryRow>> {
+        let rows = sqlx::query_as::<
+            _,
+            (
+                i64,
+                String,
+                String,
+                String,
+                String,
+                Option<String>,
+                Option<String>,
+                Option<String>,
+                String,
+            ),
+        >(
+            "SELECT id, ip, reason, level, source, log_path, country, asn_org, created_at FROM telemetry_events WHERE source = ? ORDER BY id DESC LIMIT ?",
+        )
+        .bind(source)
+        .bind(limit)
+        .fetch_all(&self.0)
+        .await?;
+
+        Ok(rows
+            .into_iter()
+            .map(
+                |(id, ip, reason, level, source, log_path, country, asn_org, created_at)| TelemetryRow {
+                    id,
+                    ip,
+                    reason,
+                    level,
+                    source,
+                    log_path,
+                    country,
+                    asn_org,
+                    created_at,
+                },
+            )
+            .collect())
+    }
+
+    pub async fn list_telemetry(&self, limit: i64) -> anyhow::Result<Vec<TelemetryRow>> {
+        let rows = sqlx::query_as::<
+            _,
+            (
+                i64,
+                String,
+                String,
+                String,
+                String,
+                Option<String>,
+                Option<String>,
+                Option<String>,
+                String,
+            ),
+        >(
+            "SELECT id, ip, reason, level, source, log_path, country, asn_org, created_at FROM telemetry_events ORDER BY id DESC LIMIT ?",
+        )
+        .bind(limit)
+        .fetch_all(&self.0)
+        .await?;
+
+        Ok(rows
+            .into_iter()
+            .map(
+                |(id, ip, reason, level, source, log_path, country, asn_org, created_at)| TelemetryRow {
+                    id,
+                    ip,
+                    reason,
+                    level,
+                    source,
+                    log_path,
+                    country,
+                    asn_org,
+                    created_at,
                 },
             )
             .collect())

@@ -17,6 +17,8 @@ pub struct AgentConfig {
     pub uuid: String,
     #[serde(default = "default_log_path")]
     pub log_path: String,
+    #[serde(default)]
+    pub log_paths: Vec<String>,
     #[serde(default = "default_threshold")]
     pub threshold: u32,
     #[serde(default = "default_window_secs")]
@@ -47,6 +49,7 @@ impl Default for AgentConfig {
             agent_name: String::new(),
             uuid: String::new(),
             log_path: default_log_path(),
+            log_paths: Vec::new(),
             threshold: default_threshold(),
             window_secs: default_window_secs(),
             butterfly_shield: None,
@@ -86,6 +89,15 @@ impl AgentConfig {
     fn config_path() -> Result<PathBuf> {
         let home = dirs::home_dir().ok_or_else(|| anyhow!("Could not determine home directory"))?;
         Ok(home.join(".config/bannkenn/agent.toml"))
+    }
+
+    /// Backward-compatible view of monitored log paths.
+    pub fn effective_log_paths(&self) -> Vec<String> {
+        if self.log_paths.is_empty() {
+            vec![self.log_path.clone()]
+        } else {
+            self.log_paths.clone()
+        }
     }
 }
 
@@ -140,6 +152,7 @@ mod tests {
             agent_name: "test-agent".to_string(),
             uuid: "test-uuid".to_string(),
             log_path: "/var/log/auth.log".to_string(),
+            log_paths: vec!["/var/log/auth.log".to_string()],
             threshold: 3,
             window_secs: 120,
             butterfly_shield: None,

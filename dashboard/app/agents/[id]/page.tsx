@@ -23,12 +23,13 @@ type AgentStatus = {
   butterfly_shield_enabled?: boolean | null;
 };
 
-type Decision = {
+type TelemetryEvent = {
   id: number;
   ip: string;
   reason: string;
-  action: string;
+  level: 'alert' | 'block';
   source: string;
+  log_path?: string | null;
   country?: string | null;
   asn_org?: string | null;
   created_at: string;
@@ -40,7 +41,7 @@ export default function AgentDetailPage() {
   const params = useParams<{ id: string }>();
   const id = params?.id;
   const [agent, setAgent] = useState<AgentStatus | null>(null);
-  const [decisions, setDecisions] = useState<Decision[]>([]);
+  const [telemetry, setTelemetry] = useState<TelemetryEvent[]>([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -53,7 +54,7 @@ export default function AgentDetailPage() {
       try {
         const [agentRes, decisionsRes] = await Promise.all([
           fetch(`/api/agents/${id}`),
-          fetch(`/api/agents/${id}/decisions?limit=1500`),
+          fetch(`/api/agents/${id}/telemetry?limit=5000`),
         ]);
 
         if (!cancelled && agentRes.ok) {
@@ -61,8 +62,8 @@ export default function AgentDetailPage() {
         }
 
         if (!cancelled && decisionsRes.ok) {
-          const data = (await decisionsRes.json()) as Decision[];
-          setDecisions(data);
+          const data = (await decisionsRes.json()) as TelemetryEvent[];
+          setTelemetry(data);
         }
       } finally {
         if (!cancelled) setLoading(false);
@@ -75,11 +76,12 @@ export default function AgentDetailPage() {
     };
   }, [id]);
 
-  const scannedCount = decisions.length;
-  const riskyCount = decisions.filter((d) => d.action === 'block').length;
+  const scannedCount = telemetry.length;
+  const riskyCount = telemetry.filter((d) => d.level === 'block').length;
+  const alertCount = telemetry.filter((d) => d.level === 'alert').length;
 
-  const reasonStats = useMemo(() => topBy(decisions, (d) => normalizeReason(d.reason), 8), [decisions]);
-  const ipStats = useMemo(() => topBy(decisions, (d) => d.ip, 8), [decisions]);
+  const reasonStats = useMemo(() => topBy(telemetry, (d) => normalizeReason(d.reason), 8), [telemetry]);
+  const ipStats = useMemo(() => topBy(telemetry, (d) => d.ip, 8), [telemetry]);
 
   const hourlySeries = useMemo(() => {
     const now = new Date();
@@ -90,7 +92,7 @@ export default function AgentDetailPage() {
       return { start, count: 0 };
     });
 
-    for (const d of decisions) {
+    for (const d of telemetry) {
       const t = new Date(d.created_at);
       const hour = new Date(t);
       hour.setMinutes(0, 0, 0);
@@ -99,7 +101,7 @@ export default function AgentDetailPage() {
     }
 
     return buckets;
-  }, [decisions]);
+  }, [telemetry]);
 
   const forecastNextHour = useMemo(() => {
     const values = hourlySeries.map((x) => x.count);
@@ -149,8 +151,9 @@ export default function AgentDetailPage() {
         </div>
       </div>
 
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+      <div className="grid grid-cols-2 sm:grid-cols-5 gap-4">
         <StatCard label="Detected / Scanned" value={scannedCount} />
+        <StatCard label="Risky Alerts" value={alertCount} accent="yellow" />
         <StatCard label="Real Risky (Blocked)" value={riskyCount} accent="red" />
         <StatCard
           label="Risk Rate"
@@ -182,27 +185,31 @@ export default function AgentDetailPage() {
               <TableRow>
                 <TableHead>IP</TableHead>
                 <TableHead>Reason</TableHead>
-                <TableHead>Action</TableHead>
+                <TableHead>Level</TableHead>
+                <TableHead>Log Path</TableHead>
                 <TableHead>Country</TableHead>
                 <TableHead>Organization</TableHead>
                 <TableHead>Timestamp</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
-              {decisions.length === 0 ? (
+              {telemetry.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={6} className="text-center py-12 text-muted-foreground">
+                  <TableCell colSpan={7} className="text-center py-12 text-muted-foreground">
                     No events from this agent yet
                   </TableCell>
                 </TableRow>
               ) : (
-                decisions.slice(0, 120).map((d) => {
+                telemetry.slice(0, 200).map((d) => {
                   return (
                     <TableRow key={d.id}>
                       <TableCell className="font-mono text-xs">{d.ip}</TableCell>
                       <TableCell className="text-muted-foreground max-w-sm truncate">{d.reason}</TableCell>
                       <TableCell>
-                        <Badge variant={d.action === 'block' ? 'destructive' : 'secondary'}>{d.action}</Badge>
+                        <Badge variant={d.level === 'block' ? 'destructive' : 'secondary'}>{d.level}</Badge>
+                      </TableCell>
+                      <TableCell className="text-xs text-muted-foreground max-w-sm truncate">
+                        {d.log_path ?? '—'}
                       </TableCell>
                       <TableCell className="text-xs text-muted-foreground">{d.country ?? 'Unknown'}</TableCell>
                       <TableCell className="text-xs text-muted-foreground max-w-xs truncate">
@@ -281,13 +288,27 @@ function TrendChart({ series, forecast }: { series: number[]; forecast: number }
   );
 }
 
-function StatCard({ label, value, accent }: { label: string; value: string | number; accent?: 'red' | 'green' }) {
+function StatCard({
+  label,
+  value,
+  accent,
+}: {
+  label: string;
+  value: string | number;
+  accent?: 'red' | 'green' | 'yellow';
+}) {
   return (
     <div className="bg-card border border-border rounded-xl px-5 py-4">
       <p className="text-xs text-muted-foreground uppercase tracking-widest mb-1">{label}</p>
       <p
         className={`text-3xl font-bold tabular-nums ${
-          accent === 'red' ? 'text-red-400' : accent === 'green' ? 'text-green-400' : 'text-foreground'
+          accent === 'red'
+            ? 'text-red-400'
+            : accent === 'green'
+            ? 'text-green-400'
+            : accent === 'yellow'
+            ? 'text-yellow-300'
+            : 'text-foreground'
         }`}
       >
         {value}

@@ -85,6 +85,7 @@ async fn main() -> anyhow::Result<()> {
 
     let agents_admin_router = Router::new()
         .route("/:id/backfill-geoip", post(routes::agents::backfill_geoip))
+        .route("/:id/telemetry", get(routes::agents::list_telemetry))
         .route("/:id/decisions", get(routes::agents::list_decisions))
         .route(
             "/:id",
@@ -93,6 +94,7 @@ async fn main() -> anyhow::Result<()> {
         .with_state(agents_state);
 
     let decisions_state = Arc::new(routes::decisions::AppState { db: db.clone() });
+    let telemetry_state = Arc::new(routes::telemetry::AppState { db: db.clone() });
     let community_state = Arc::new(routes::community::AppState { db: db.clone() });
 
     // Public: GET /api/v1/decisions
@@ -104,7 +106,18 @@ async fn main() -> anyhow::Result<()> {
     let decisions_write = Router::new()
         .route("/", post(routes::decisions::create))
         .with_state(decisions_state)
-        .layer(auth_middleware_layer);
+        .layer(auth_middleware_layer.clone());
+
+    // Public: GET /api/v1/telemetry
+    let telemetry_read = Router::new()
+        .route("/", get(routes::telemetry::list))
+        .with_state(telemetry_state.clone());
+
+    // Protected: POST /api/v1/telemetry
+    let telemetry_write = Router::new()
+        .route("/", post(routes::telemetry::create))
+        .with_state(telemetry_state)
+        .layer(auth_middleware_layer.clone());
 
     // Combine all routes
     let router = Router::new()
@@ -116,6 +129,7 @@ async fn main() -> anyhow::Result<()> {
                 .merge(agents_admin_router),
         )
         .nest("/api/v1/decisions", decisions_read.merge(decisions_write))
+        .nest("/api/v1/telemetry", telemetry_read.merge(telemetry_write))
         .route(
             "/api/v1/community/ips",
             get(routes::community::list_ips).with_state(community_state.clone()),

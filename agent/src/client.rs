@@ -85,6 +85,45 @@ impl ApiClient {
         Ok(())
     }
 
+    /// Report a telemetry event (alert/block) to the server.
+    pub async fn report_telemetry(
+        &self,
+        ip: &str,
+        reason: &str,
+        level: &str,
+        log_path: Option<&str>,
+    ) -> Result<()> {
+        let url = format!("{}/api/v1/telemetry", self.base_url);
+
+        let body = json!({
+            "ip": ip,
+            "reason": reason,
+            "level": level,
+            "log_path": log_path
+        });
+
+        let response = self
+            .http
+            .post(&url)
+            .header("Authorization", format!("Bearer {}", self.token))
+            .header("Content-Type", "application/json")
+            .json(&body)
+            .send()
+            .await?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let text = response.text().await.unwrap_or_default();
+            return Err(anyhow::anyhow!(
+                "Server returned telemetry error {}: {}",
+                status,
+                text
+            ));
+        }
+
+        Ok(())
+    }
+
     /// Send heartbeat so server can mark this agent as online.
     /// Optionally reports ButterflyShield status.
     pub async fn send_heartbeat(&self, butterfly_shield_enabled: Option<bool>) -> Result<()> {
