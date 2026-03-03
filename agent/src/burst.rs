@@ -171,9 +171,21 @@ mod tests {
 
     #[test]
     fn test_categorize_reason_strips_annotation() {
-        assert_eq!(categorize_reason("SSH invalid user (2/5)"), "SSH invalid user");
-        assert_eq!(categorize_reason("SSH invalid user (3/5)"), "SSH invalid user");
-        assert_eq!(categorize_reason("SSH failed password"), "SSH failed password");
-        assert_eq!(categorize_reason("SSH failed password (threshold: 5)"), "SSH failed password");
+        assert_eq!(
+            categorize_reason("SSH invalid user (2/5)"),
+            "SSH invalid user"
+        );
+        assert_eq!(
+            categorize_reason("SSH invalid user (3/5)"),
+            "SSH invalid user"
+        );
+        assert_eq!(
+            categorize_reason("SSH failed password"),
+            "SSH failed password"
+        );
+        assert_eq!(
+            categorize_reason("SSH failed password (threshold: 5)"),
+            "SSH failed password"
+        );
     }
 }
