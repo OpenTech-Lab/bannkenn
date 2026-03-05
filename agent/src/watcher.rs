@@ -191,7 +191,7 @@ fn is_immediate_block_signal(reason: &str) -> bool {
 /// For every other log format (plain text on bare-metal, VM, or bind-mounted
 /// files) the function returns the line unchanged, so it is safe to call on
 /// every line regardless of where the log comes from.
-fn extract_log_line(line: &str) -> std::borrow::Cow<str> {
+fn extract_log_line(line: &str) -> std::borrow::Cow<'_, str> {
     // Fast path: Docker JSON log lines always start with {"log":
     if line.starts_with(r#"{"log":"#) {
         if let Ok(val) = serde_json::from_str::<serde_json::Value>(line) {

