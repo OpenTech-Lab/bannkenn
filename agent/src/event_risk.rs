@@ -82,19 +82,19 @@ pub fn classify_reason(reason: &str) -> RiskRank {
     const HIGH_KEYWORDS: &[&str] = &[
         "Failed SSH password",
         "Invalid SSH user",
-        "SQL",         // SQL injection
-        "shell",       // webshell probe / shell upload
-        "eval-stdin",  // PHPUnit eval-stdin exploit
-        "log4j",       // Log4Shell (JNDI)
+        "SQL",        // SQL injection
+        "shell",      // webshell probe / shell upload
+        "eval-stdin", // PHPUnit eval-stdin exploit
+        "log4j",      // Log4Shell (JNDI)
         "JNDI",
         "jndi",
         "code inject",
-        "wp-login",   // WordPress brute force
-        "xmlrpc",     // XML-RPC amplification attack
-        "scanner",    // known scanner bots
+        "wp-login", // WordPress brute force
+        "xmlrpc",   // XML-RPC amplification attack
+        "scanner",  // known scanner bots
         "path traversal",
         "XSS",
-        "metadata",   // cloud metadata SSRF (AWS, GCP, Azure)
+        "metadata", // cloud metadata SSRF (AWS, GCP, Azure)
     ];
     for kw in HIGH_KEYWORDS {
         if reason.contains(kw) {
@@ -300,9 +300,18 @@ mod tests {
 
     #[test]
     fn ssh_max_auth_is_critical() {
-        assert_eq!(classify_reason("SSH max auth attempts exceeded"), RiskRank::Critical);
-        assert_eq!(classify_reason("SSH disconnected: too many auth failures"), RiskRank::Critical);
-        assert_eq!(classify_reason("SSH repeated connection close"), RiskRank::Critical);
+        assert_eq!(
+            classify_reason("SSH max auth attempts exceeded"),
+            RiskRank::Critical
+        );
+        assert_eq!(
+            classify_reason("SSH disconnected: too many auth failures"),
+            RiskRank::Critical
+        );
+        assert_eq!(
+            classify_reason("SSH repeated connection close"),
+            RiskRank::Critical
+        );
     }
 
     #[test]
@@ -314,8 +323,14 @@ mod tests {
 
     #[test]
     fn port_scan_is_medium() {
-        assert_eq!(classify_reason("SSH port scan (no identification string)"), RiskRank::Medium);
-        assert_eq!(classify_reason("PAM authentication failure"), RiskRank::Medium);
+        assert_eq!(
+            classify_reason("SSH port scan (no identification string)"),
+            RiskRank::Medium
+        );
+        assert_eq!(
+            classify_reason("PAM authentication failure"),
+            RiskRank::Medium
+        );
     }
 
     #[test]
@@ -332,10 +347,14 @@ mod tests {
 
     #[test]
     fn adjust_disabled_returns_base() {
-        let cfg = EventRiskConfig { enabled: false, ..Default::default() };
+        let cfg = EventRiskConfig {
+            enabled: false,
+            ..Default::default()
+        };
         let mut det = EventSurgeDetector::new();
         // Even a Critical event should not adjust threshold when disabled.
-        let (eff, rank, surge) = adjust_threshold(5, "SSH max auth attempts exceeded", &mut det, &cfg);
+        let (eff, rank, surge) =
+            adjust_threshold(5, "SSH max auth attempts exceeded", &mut det, &cfg);
         assert_eq!(eff, 5);
         assert_eq!(rank, RiskRank::Critical);
         assert!(!surge);
@@ -343,7 +362,10 @@ mod tests {
 
     #[test]
     fn critical_rank_reduces_threshold_to_quarter() {
-        let cfg = EventRiskConfig { enabled: true, ..Default::default() };
+        let cfg = EventRiskConfig {
+            enabled: true,
+            ..Default::default()
+        };
         let mut det = EventSurgeDetector::new();
         let (eff, rank, _surge) =
             adjust_threshold(8, "SSH max auth attempts exceeded", &mut det, &cfg);
@@ -354,7 +376,10 @@ mod tests {
 
     #[test]
     fn high_rank_reduces_threshold_to_half() {
-        let cfg = EventRiskConfig { enabled: true, ..Default::default() };
+        let cfg = EventRiskConfig {
+            enabled: true,
+            ..Default::default()
+        };
         let mut det = EventSurgeDetector::new();
         let (eff, rank, _) = adjust_threshold(10, "Failed SSH password", &mut det, &cfg);
         assert_eq!(rank, RiskRank::High);
@@ -363,7 +388,10 @@ mod tests {
 
     #[test]
     fn effective_is_always_at_least_one() {
-        let cfg = EventRiskConfig { enabled: true, ..Default::default() };
+        let cfg = EventRiskConfig {
+            enabled: true,
+            ..Default::default()
+        };
         let mut det = EventSurgeDetector::new();
         let (eff, _, _) = adjust_threshold(1, "SSH max auth attempts exceeded", &mut det, &cfg);
         assert!(eff >= 1);

@@ -15,15 +15,11 @@ pub fn login_patterns() -> Result<Vec<SshLoginPattern>> {
     Ok(vec![
         // password auth: "Accepted password for root from 1.2.3.4 port 22 ssh2"
         SshLoginPattern {
-            regex: Regex::new(
-                r"Accepted password for (\S+) from (\d+\.\d+\.\d+\.\d+)",
-            )?,
+            regex: Regex::new(r"Accepted password for (\S+) from (\d+\.\d+\.\d+\.\d+)")?,
         },
         // pubkey auth: "Accepted publickey for ubuntu from 1.2.3.4 port 22 ssh2: ..."
         SshLoginPattern {
-            regex: Regex::new(
-                r"Accepted publickey for (\S+) from (\d+\.\d+\.\d+\.\d+)",
-            )?,
+            regex: Regex::new(r"Accepted publickey for (\S+) from (\d+\.\d+\.\d+\.\d+)")?,
         },
         // keyboard-interactive / PAM auth
         SshLoginPattern {

@@ -1,11 +1,6 @@
 use crate::auth::AuthenticatedAgent;
 use crate::db::{Db, SshLoginRow};
-use axum::{
-    extract::State,
-    http::StatusCode,
-    response::IntoResponse,
-    Json,
-};
+use axum::{extract::State, http::StatusCode, response::IntoResponse, Json};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
@@ -40,9 +35,7 @@ pub async fn create(
 }
 
 /// GET /api/v1/ssh-logins — public, returns the 50 most recent SSH login events
-pub async fn list(
-    State(state): State<Arc<AppState>>,
-) -> Result<impl IntoResponse, StatusCode> {
+pub async fn list(State(state): State<Arc<AppState>>) -> Result<impl IntoResponse, StatusCode> {
     let rows: Vec<SshLoginRow> = state
         .db
         .list_ssh_logins(50)

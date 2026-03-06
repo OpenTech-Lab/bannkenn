@@ -87,10 +87,7 @@ pub enum CampaignLevel {
     ByVolume,
     /// Many IPs from the same country + ISP using the same attack pattern
     /// (coordinated botnet within the same infrastructure).
-    ByGeo {
-        country: String,
-        asn_org: String,
-    },
+    ByGeo { country: String, asn_org: String },
 }
 
 impl CampaignLevel {
@@ -256,7 +253,11 @@ impl LocalCampaignTracker {
         let window = Duration::from_secs(window_secs.max(60));
         self.by_category
             .get_mut(&category)
-            .map(|w| w.push_and_count("__probe__", now, window).len().saturating_sub(1))
+            .map(|w| {
+                w.push_and_count("__probe__", now, window)
+                    .len()
+                    .saturating_sub(1)
+            })
             .unwrap_or(0)
     }
 }
@@ -290,7 +291,10 @@ mod tests {
     #[test]
     fn disabled_never_returns_campaign() {
         let mut tracker = LocalCampaignTracker::new();
-        let c = CampaignConfig { enabled: false, ..Default::default() };
+        let c = CampaignConfig {
+            enabled: false,
+            ..Default::default()
+        };
         for i in 0..100 {
             let ip = format!("1.2.3.{}", i);
             assert!(tracker.record(&ip, "Invalid SSH user", None, &c).is_none());
@@ -302,8 +306,12 @@ mod tests {
         let mut tracker = LocalCampaignTracker::new();
         let c = cfg(3);
         // First two IPs should not trigger.
-        assert!(tracker.record("1.1.1.1", "Invalid SSH user", None, &c).is_none());
-        assert!(tracker.record("2.2.2.2", "Invalid SSH user", None, &c).is_none());
+        assert!(tracker
+            .record("1.1.1.1", "Invalid SSH user", None, &c)
+            .is_none());
+        assert!(tracker
+            .record("2.2.2.2", "Invalid SSH user", None, &c)
+            .is_none());
         // Third distinct IP crosses the threshold.
         let result = tracker.record("3.3.3.3", "Invalid SSH user", None, &c);
         assert_eq!(result, Some(CampaignLevel::ByVolume));
@@ -369,8 +377,14 @@ mod tests {
         let mut tracker = LocalCampaignTracker::new();
         let c = geo_cfg(100, 2);
 
-        let china_a = GeoTag { country: "China".to_string(), asn_org: "ChinaTelecom".to_string() };
-        let china_b = GeoTag { country: "China".to_string(), asn_org: "Alibaba".to_string() };
+        let china_a = GeoTag {
+            country: "China".to_string(),
+            asn_org: "ChinaTelecom".to_string(),
+        };
+        let china_b = GeoTag {
+            country: "China".to_string(),
+            asn_org: "Alibaba".to_string(),
+        };
         tracker.record("1.1.1.1", "Invalid SSH user", Some(&china_a), &c);
         let r = tracker.record("2.2.2.2", "Invalid SSH user", Some(&china_b), &c);
         assert!(r.is_none(), "Different ASN should not trigger geo campaign");

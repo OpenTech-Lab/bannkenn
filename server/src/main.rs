@@ -71,10 +71,7 @@ async fn main() -> anyhow::Result<()> {
 
             // Configuration: campaign declared when ≥5 distinct IPs from ≥2 agents
             // use the same attack category within the last 10 minutes.
-            match db_for_campaign
-                .detect_campaign_ips(600, 5, 2)
-                .await
-            {
+            match db_for_campaign.detect_campaign_ips(600, 5, 2).await {
                 Ok(campaign_ips) if !campaign_ips.is_empty() => {
                     info!(
                         "Campaign detection: {} IP(s) identified across agents",
@@ -90,10 +87,9 @@ async fn main() -> anyhow::Result<()> {
                                 "Campaign auto-block: IP={} category='{}' decision_id={}",
                                 ip, category, id
                             ),
-                            Err(e) => error!(
-                                "Failed to insert campaign decision for {}: {}",
-                                ip, e
-                            ),
+                            Err(e) => {
+                                error!("Failed to insert campaign decision for {}: {}", ip, e)
+                            }
                         }
                     }
                 }
@@ -104,7 +100,6 @@ async fn main() -> anyhow::Result<()> {
             }
         }
     });
-
 
     let auth_config = auth::AuthConfig {
         jwt_secret: config.jwt_secret.clone(),

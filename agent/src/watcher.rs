@@ -72,9 +72,7 @@ pub async fn watch(
         let tx_clone = raw_tx.clone();
         let ssh_tx_clone = ssh_login_tx.clone();
         tokio::spawn(async move {
-            if let Err(err) =
-                tail_log_path(log_path.clone(), tx_clone, ssh_tx_clone).await
-            {
+            if let Err(err) = tail_log_path(log_path.clone(), tx_clone, ssh_tx_clone).await {
                 tracing::error!("Tailer stopped for {}: {}", log_path, err);
             }
         });
@@ -340,7 +338,9 @@ async fn process_failed_attempt(
             log_path: raw.log_path.clone(),
             attempts: 1,
             effective_threshold: 0,
-            risk_rank: event_risk::classify_reason(&raw.reason).as_str().to_string(),
+            risk_rank: event_risk::classify_reason(&raw.reason)
+                .as_str()
+                .to_string(),
             campaign: None,
             username: None,
             timestamp: Utc::now(),
@@ -483,7 +483,10 @@ async fn process_failed_attempt(
         window_secs,
         rank,
         surge_active,
-        campaign_level.as_ref().map(|c| c.as_str()).unwrap_or("none")
+        campaign_level
+            .as_ref()
+            .map(|c| c.as_str())
+            .unwrap_or("none")
     );
 
     if is_immediate_block_signal(&raw.reason) {
@@ -505,8 +508,10 @@ async fn process_failed_attempt(
 
         tracing::info!(
             "Immediate block signal for IP {}{}  country={} asn='{}' reason='{}'",
-            raw.ip, tag_str,
-            geo_tag.country, geo_tag.asn_org,
+            raw.ip,
+            tag_str,
+            geo_tag.country,
+            geo_tag.asn_org,
             raw.reason
         );
 
@@ -528,7 +533,13 @@ async fn process_failed_attempt(
     let reason = if level == "block" {
         format!("{}{} (threshold: {})", raw.reason, tag_str, effective)
     } else {
-        format!("{}{} ({}/{})", raw.reason, tag_str, attempts.len(), effective)
+        format!(
+            "{}{} ({}/{})",
+            raw.reason,
+            tag_str,
+            attempts.len(),
+            effective
+        )
     };
 
     let security_event = SecurityEvent {
@@ -549,9 +560,12 @@ async fn process_failed_attempt(
     if level == "block" {
         tracing::info!(
             "Threshold exceeded for IP {}{}  country={} asn='{}' attempts={}/{} reason='{}'",
-            raw.ip, tag_str,
-            geo_tag.country, geo_tag.asn_org,
-            attempts.len(), effective,
+            raw.ip,
+            tag_str,
+            geo_tag.country,
+            geo_tag.asn_org,
+            attempts.len(),
+            effective,
             raw.reason
         );
 

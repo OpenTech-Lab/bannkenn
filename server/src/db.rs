@@ -897,7 +897,10 @@ impl Db {
         for (ip, reason, source) in &rows {
             let cat = categorize(reason).to_string();
             cat_ips.entry(cat.clone()).or_default().insert(ip.clone());
-            cat_agents.entry(cat.clone()).or_default().insert(source.clone());
+            cat_agents
+                .entry(cat.clone())
+                .or_default()
+                .insert(source.clone());
             ip_categories.insert(ip.clone(), cat);
         }
 
@@ -924,14 +927,13 @@ impl Db {
         }
 
         // Exclude IPs already in the decisions table.
-        let already_blocked: HashSet<String> = sqlx::query_as::<_, (String,)>(
-            "SELECT DISTINCT ip FROM decisions",
-        )
-        .fetch_all(&self.0)
-        .await?
-        .into_iter()
-        .map(|(ip,)| ip)
-        .collect();
+        let already_blocked: HashSet<String> =
+            sqlx::query_as::<_, (String,)>("SELECT DISTINCT ip FROM decisions")
+                .fetch_all(&self.0)
+                .await?
+                .into_iter()
+                .map(|(ip,)| ip)
+                .collect();
 
         Ok(candidates
             .into_iter()

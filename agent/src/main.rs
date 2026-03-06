@@ -100,7 +100,9 @@ async fn run() -> Result<()> {
     if let Some(ref dir) = config.mmdb_dir {
         geoip::init(dir);
     } else {
-        tracing::info!("mmdb_dir not configured — GeoIP features disabled (country/ASN will show Unknown)");
+        tracing::info!(
+            "mmdb_dir not configured — GeoIP features disabled (country/ASN will show Unknown)"
+        );
     }
 
     let backend = detect_backend();
@@ -219,11 +221,9 @@ async fn run() -> Result<()> {
                         ev.log_path
                     );
                     match client.report_ssh_login(&ev.ip, username).await {
-                        Ok(_) => tracing::info!(
-                            "SSH login reported: user={} from={}",
-                            username,
-                            ev.ip
-                        ),
+                        Ok(_) => {
+                            tracing::info!("SSH login reported: user={} from={}", username, ev.ip)
+                        }
                         Err(e) => tracing::warn!(
                             "Failed to report SSH login user={} from={}: {}",
                             username,

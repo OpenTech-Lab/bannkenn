@@ -123,8 +123,5 @@ pub fn init(mmdb_dir: &str) {
 /// Returns `GeoTag { country: "Unknown", asn_org: "Unknown" }` when the
 /// resolver has not been initialised or the IP is not in the database.
 pub fn lookup(ip: &str) -> GeoTag {
-    RESOLVER
-        .get()
-        .map(|r| r.lookup(ip))
-        .unwrap_or_default()
+    RESOLVER.get().map(|r| r.lookup(ip)).unwrap_or_default()
 }
