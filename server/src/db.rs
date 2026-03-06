@@ -751,6 +751,97 @@ impl Db {
             .collect())
     }
 
+    /// Detect coordinated campaigns by analysing recent telemetry from all agents.
+    ///
+    /// Returns a list of `(ip, reason_category)` pairs that are part of a campaign:
+    /// the same attack category was seen from `min_distinct_ips` or more distinct
+    /// source IPs across at least `min_distinct_agents` different agents within the
+    /// last `window_secs` seconds.
+    ///
+    /// Only IPs that do **not** already have a decision in the database are returned,
+    /// so callers can immediately create auto-block decisions for them.
+    pub async fn detect_campaign_ips(
+        &self,
+        window_secs: i64,
+        min_distinct_ips: usize,
+        min_distinct_agents: usize,
+    ) -> anyhow::Result<Vec<(String, String)>> {
+        // Fetch recent telemetry for all agents.
+        let rows = sqlx::query_as::<_, (String, String, String)>(
+            r#"
+            SELECT ip, reason, source
+            FROM telemetry_events
+            WHERE created_at > datetime('now', '-' || ? || ' seconds')
+              AND level IN ('alert', 'block')
+            "#,
+        )
+        .bind(window_secs)
+        .fetch_all(&self.0)
+        .await?;
+
+        // Normalise reason → category (strip count annotations like "(2/5)" or "(threshold: 5)").
+        fn categorize(reason: &str) -> &str {
+            if let Some(idx) = reason.rfind(" (") {
+                let suffix = &reason[idx + 2..];
+                if suffix.ends_with(')') {
+                    return &reason[..idx];
+                }
+            }
+            reason
+        }
+
+        // Build: category → (set of IPs, set of agent sources).
+        use std::collections::{HashMap, HashSet};
+        let mut cat_ips: HashMap<String, HashSet<String>> = HashMap::new();
+        let mut cat_agents: HashMap<String, HashSet<String>> = HashMap::new();
+        // Also track IP → category for result building.
+        let mut ip_categories: HashMap<String, String> = HashMap::new();
+
+        for (ip, reason, source) in &rows {
+            let cat = categorize(reason).to_string();
+            cat_ips.entry(cat.clone()).or_default().insert(ip.clone());
+            cat_agents.entry(cat.clone()).or_default().insert(source.clone());
+            ip_categories.insert(ip.clone(), cat);
+        }
+
+        // Find campaign categories.
+        let campaign_cats: HashSet<String> = cat_ips
+            .iter()
+            .filter(|(cat, ips)| {
+                ips.len() >= min_distinct_ips
+                    && cat_agents.get(*cat).map(|a| a.len()).unwrap_or(0) >= min_distinct_agents
+            })
+            .map(|(cat, _)| cat.clone())
+            .collect();
+
+        if campaign_cats.is_empty() {
+            return Ok(vec![]);
+        }
+
+        // Gather all IPs from campaign categories.
+        let mut candidates: Vec<(String, String)> = Vec::new();
+        for (ip, cat) in &ip_categories {
+            if campaign_cats.contains(cat) {
+                candidates.push((ip.clone(), cat.clone()));
+            }
+        }
+
+        // Exclude IPs already in the decisions table.
+        let already_blocked: HashSet<String> = sqlx::query_as::<_, (String,)>(
+            "SELECT DISTINCT ip FROM decisions",
+        )
+        .fetch_all(&self.0)
+        .await?
+        .into_iter()
+        .map(|(ip,)| ip)
+        .collect();
+
+        Ok(candidates
+            .into_iter()
+            .filter(|(ip, _)| !already_blocked.contains(ip))
+            .collect())
+    }
+
     pub async fn upsert_agent_heartbeat(
         &self,
         agent_name: &str,

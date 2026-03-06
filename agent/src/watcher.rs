@@ -1,6 +1,9 @@
 use crate::burst::BurstDetector;
 use crate::butterfly;
+use crate::campaign::LocalCampaignTracker;
 use crate::config::AgentConfig;
+use crate::event_risk::{self, EventSurgeDetector};
+use crate::geoip;
 use crate::patterns::all_patterns;
 use crate::risk_level::HostRiskLevel;
 use anyhow::Result;
@@ -31,6 +34,10 @@ pub struct SecurityEvent {
     pub log_path: String,
     pub attempts: u32,
     pub effective_threshold: u32,
+    /// Risk rank of the event type: "Low", "Medium", "High", "Critical".
+    pub risk_rank: String,
+    /// Set when a cross-IP campaign was detected: "volume" or "geo".
+    pub campaign: Option<String>,
     pub timestamp: DateTime<Utc>,
 }
 
@@ -66,6 +73,8 @@ pub async fn watch(
 
     let mut burst_detector = BurstDetector::new();
     let mut host_risk = HostRiskLevel::new();
+    let mut surge_detector = EventSurgeDetector::new();
+    let mut campaign_tracker = LocalCampaignTracker::new();
 
     while let Some(raw) = raw_rx.recv().await {
         process_failed_attempt(
@@ -74,6 +83,8 @@ pub async fn watch(
             &mut already_blocked,
             &mut burst_detector,
             &mut host_risk,
+            &mut surge_detector,
+            &mut campaign_tracker,
             &config,
             &tx,
             &known_blocked_ips,
@@ -222,8 +233,12 @@ async fn open_log_from_start(path: &str) -> Result<File> {
 /// 1. Skip IPs already blocked this session.
 /// 2. IPs in the known block-list DB → emit `level=listed` immediately.
 /// 3. Burst detection (if enabled) → block immediately on rapid-fire hits.
-/// 4. Sliding window threshold (butterfly or static), optionally adjusted by
-///    the host risk level multiplier.
+/// 4. Sliding-window attempt counter (enforces minimum 10 s window).
+/// 5. Butterfly or static base threshold, reduced by host risk level.
+/// 6. Event-type risk rank + surge → further reduce threshold.
+/// 7. Campaign correlation (cross-IP) → if campaign, set threshold = 1.
+/// 8. Immediate-block signal check (certain SSH events hard-block regardless).
+/// 9. Emit alert or block event based on attempts vs effective threshold.
 #[allow(clippy::too_many_arguments)]
 async fn process_failed_attempt(
     raw: &RawDetection,
@@ -231,6 +246,8 @@ async fn process_failed_attempt(
     already_blocked: &mut HashMap<String, ()>,
     burst_detector: &mut BurstDetector,
     host_risk: &mut HostRiskLevel,
+    surge_detector: &mut EventSurgeDetector,
+    campaign_tracker: &mut LocalCampaignTracker,
     config: &AgentConfig,
     tx: &mpsc::Sender<SecurityEvent>,
     known_blocked_ips: &Arc<RwLock<HashMap<String, String>>>,
@@ -250,6 +267,8 @@ async fn process_failed_attempt(
             log_path: raw.log_path.clone(),
             attempts: 1,
             effective_threshold: 0,
+            risk_rank: event_risk::classify_reason(&raw.reason).as_str().to_string(),
+            campaign: None,
             timestamp: Utc::now(),
         };
         let _ = tx.send(event).await;
@@ -260,6 +279,7 @@ async fn process_failed_attempt(
     // Step 3: Burst detection — block immediately if rapid-fire threshold is hit.
     if let Some(burst_cfg) = config.burst.as_ref().filter(|c| c.enabled) {
         if let Some(burst_count) = burst_detector.record(&raw.ip, &raw.reason, burst_cfg) {
+            let rank = event_risk::classify_reason(&raw.reason);
             let reason = format!(
                 "{} [burst: {} hits in {}s]",
                 raw.reason, burst_count, burst_cfg.window_secs
@@ -271,6 +291,8 @@ async fn process_failed_attempt(
                 log_path: raw.log_path.clone(),
                 attempts: burst_count as u32,
                 effective_threshold: burst_cfg.threshold,
+                risk_rank: rank.as_str().to_string(),
+                campaign: None,
                 timestamp: Utc::now(),
             };
             let _ = tx.send(event).await;
@@ -321,14 +343,6 @@ async fn process_failed_attempt(
 
     attempts.push_back(now);
 
-    tracing::debug!(
-        "Sliding-window count for {}: {}/{} (window={}s)",
-        raw.ip,
-        attempts.len(),
-        config.threshold,
-        window_secs
-    );
-
     // Step 5: Compute base effective threshold (butterfly or static).
     let mut effective = match &config.butterfly_shield {
         Some(cfg) if cfg.enabled => {
@@ -342,8 +356,63 @@ async fn process_failed_attempt(
         effective = host_risk.apply(effective, risk_cfg);
     }
 
+    // Step 7: Event-type risk rank + surge detection.
+    // The rank multiplier scales the threshold by event severity (Critical → 0.25×,
+    // High → 0.5×, Medium → 0.75×, Low → 1.0×).  If the event type is currently
+    // surging (frequency >> historical baseline), an additional reduction applies.
+    let (effective_after_rank, rank, surge_active) =
+        if let Some(er_cfg) = config.event_risk.as_ref() {
+            event_risk::adjust_threshold(effective, &raw.reason, surge_detector, er_cfg)
+        } else {
+            // Rank is still computed for logging even when adjustment is disabled.
+            (effective, event_risk::classify_reason(&raw.reason), false)
+        };
+    effective = effective_after_rank;
+
+    // Step 8: GeoIP + campaign correlation.
+    // Track distinct IPs per attack category (and per country+ISP when geo_grouping
+    // is enabled).  When a campaign is detected, enforce threshold = 1 so the
+    // very next new attacker IP is blocked immediately.
+    let geo_tag = geoip::lookup(&raw.ip);
+    let campaign_level = if let Some(campaign_cfg) = config.campaign.as_ref() {
+        campaign_tracker.record(&raw.ip, &raw.reason, Some(&geo_tag), campaign_cfg)
+    } else {
+        None
+    };
+    if campaign_level.is_some() {
+        effective = 1;
+    }
+
+    // Build tag string for reason annotation (e.g. "[High, surge, campaign:volume]").
+    let mut tags: Vec<String> = Vec::new();
+    if rank != event_risk::RiskRank::Low {
+        tags.push(rank.as_str().to_string());
+    }
+    if surge_active {
+        tags.push("surge".to_string());
+    }
+    if let Some(ref cl) = campaign_level {
+        tags.push(cl.label());
+    }
+    let tag_str = if tags.is_empty() {
+        String::new()
+    } else {
+        format!(" [{}]", tags.join(", "))
+    };
+
+    tracing::debug!(
+        "Sliding-window count for {}: {}/{} (window={}s, rank={:?}, surge={}, campaign={})",
+        raw.ip,
+        attempts.len(),
+        effective,
+        window_secs,
+        rank,
+        surge_active,
+        campaign_level.as_ref().map(|c| c.as_str()).unwrap_or("none")
+    );
+
     if is_immediate_block_signal(&raw.reason) {
-        let reason = format!("{} (immediate block signal)", raw.reason);
+        let reason = format!("{}{} (immediate block signal)", raw.reason, tag_str);
         let security_event = SecurityEvent {
             ip: raw.ip.clone(),
             reason,
@@ -351,14 +420,17 @@ async fn process_failed_attempt(
             log_path: raw.log_path.clone(),
             attempts: attempts.len() as u32,
             effective_threshold: effective,
+            risk_rank: rank.as_str().to_string(),
+            campaign: campaign_level.as_ref().map(|c| c.as_str().to_string()),
             timestamp: Utc::now(),
         };
 
         let _ = tx.send(security_event).await;
 
         tracing::info!(
-            "Immediate block signal for IP {}: reason='{}'",
-            raw.ip,
+            "Immediate block signal for IP {}{}  country={} asn='{}' reason='{}'",
+            raw.ip, tag_str,
+            geo_tag.country, geo_tag.asn_org,
             raw.reason
         );
 
@@ -374,11 +446,13 @@ async fn process_failed_attempt(
         "alert"
     };
 
-    // Block events show the final threshold; alert events show progress (e.g. "2/3").
+    // Build the reason string:
+    // Block: "Invalid SSH user [High, surge] (threshold: 2)"
+    // Alert: "Invalid SSH user [High] (2/3)"
     let reason = if level == "block" {
-        format!("{} (threshold: {})", raw.reason, effective)
+        format!("{}{} (threshold: {})", raw.reason, tag_str, effective)
     } else {
-        format!("{} ({}/{})", raw.reason, attempts.len(), effective)
+        format!("{}{} ({}/{})", raw.reason, tag_str, attempts.len(), effective)
     };
 
     let security_event = SecurityEvent {
@@ -388,6 +462,8 @@ async fn process_failed_attempt(
         log_path: raw.log_path.clone(),
         attempts: attempts.len() as u32,
         effective_threshold: effective,
+        risk_rank: rank.as_str().to_string(),
+        campaign: campaign_level.as_ref().map(|c| c.as_str().to_string()),
         timestamp: Utc::now(),
     };
 
@@ -395,10 +471,11 @@ async fn process_failed_attempt(
 
     if level == "block" {
         tracing::info!(
-            "Threshold exceeded for IP {}: {} attempts in window (effective threshold: {})",
-            raw.ip,
-            attempts.len(),
-            effective
+            "Threshold exceeded for IP {}{}  country={} asn='{}' attempts={}/{} reason='{}'",
+            raw.ip, tag_str,
+            geo_tag.country, geo_tag.asn_org,
+            attempts.len(), effective,
+            raw.reason
         );
 
         host_risk.record_block();

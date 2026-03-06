@@ -57,6 +57,55 @@ async fn main() -> anyhow::Result<()> {
     feeds::start_feed_task(db.clone()).await;
     info!("Feed task started");
 
+    // Start cross-agent campaign detection task.
+    // Every 60 seconds: scan recent telemetry from all agents, find attack
+    // categories that appear from many distinct IPs across multiple agents,
+    // and auto-create block decisions for every involved IP.
+    let db_for_campaign = db.clone();
+    tokio::spawn(async move {
+        let interval = tokio::time::Duration::from_secs(60);
+        info!("Campaign detection task started (interval=60s)");
+
+        loop {
+            tokio::time::sleep(interval).await;
+
+            // Configuration: campaign declared when ≥5 distinct IPs from ≥2 agents
+            // use the same attack category within the last 10 minutes.
+            match db_for_campaign
+                .detect_campaign_ips(600, 5, 2)
+                .await
+            {
+                Ok(campaign_ips) if !campaign_ips.is_empty() => {
+                    info!(
+                        "Campaign detection: {} IP(s) identified across agents",
+                        campaign_ips.len()
+                    );
+                    for (ip, category) in campaign_ips {
+                        let reason = format!("Campaign auto-block: {}", category);
+                        match db_for_campaign
+                            .insert_decision(&ip, &reason, "block", "campaign")
+                            .await
+                        {
+                            Ok(id) => info!(
+                                "Campaign auto-block: IP={} category='{}' decision_id={}",
+                                ip, category, id
+                            ),
+                            Err(e) => error!(
+                                "Failed to insert campaign decision for {}: {}",
+                                ip, e
+                            ),
+                        }
+                    }
+                }
+                Ok(_) => {
+                    // No campaigns detected this cycle.
+                }
+                Err(e) => error!("Campaign detection failed: {}", e),
+            }
+        }
+    });
+
+
     let auth_config = auth::AuthConfig {
         jwt_secret: config.jwt_secret.clone(),
     };

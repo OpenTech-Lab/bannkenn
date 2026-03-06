@@ -1,8 +1,11 @@
 mod burst;
 mod butterfly;
+mod campaign;
 mod client;
 mod config;
+mod event_risk;
 mod firewall;
+mod geoip;
 mod patterns;
 mod risk_level;
 mod sync;
@@ -91,6 +94,14 @@ async fn run() -> Result<()> {
         config.threshold,
         config.window_secs
     );
+
+    // Initialise GeoIP resolver if an mmdb directory is configured.
+    // This is optional — if absent, country/ASN features degrade to "Unknown".
+    if let Some(ref dir) = config.mmdb_dir {
+        geoip::init(dir);
+    } else {
+        tracing::info!("mmdb_dir not configured — GeoIP features disabled (country/ASN will show Unknown)");
+    }
 
     let backend = detect_backend();
     tracing::info!("Detected firewall backend: {:?}", backend);
@@ -183,9 +194,11 @@ async fn run() -> Result<()> {
 
     while let Some(event) = rx.recv().await {
         tracing::info!(
-            "Security event received: IP={}, level={}, attempts={}/{}, at={}",
+            "Security event: IP={} level={} rank={} campaign={} attempts={}/{} at={}",
             event.ip,
             event.level,
+            event.risk_rank,
+            event.campaign.as_deref().unwrap_or("none"),
             event.attempts,
             event.effective_threshold,
             event.timestamp
@@ -337,6 +350,9 @@ async fn init() -> Result<()> {
         butterfly_shield: None,
         burst: None,
         risk_level: None,
+        event_risk: None,
+        campaign: None,
+        mmdb_dir: None,
     };
 
     config.save()?;

@@ -1,5 +1,7 @@
 use crate::burst::BurstConfig;
 use crate::butterfly::ButterflyShieldConfig;
+use crate::campaign::CampaignConfig;
+use crate::event_risk::EventRiskConfig;
 use crate::risk_level::RiskLevelConfig;
 use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
@@ -37,6 +39,22 @@ pub struct AgentConfig {
     /// When absent or `enabled = false`, the threshold is not adjusted by history.
     #[serde(default)]
     pub risk_level: Option<RiskLevelConfig>,
+
+    /// Optional event-type risk ranking and surge detection.
+    /// When absent or `enabled = false`, all event types are treated equally.
+    #[serde(default)]
+    pub event_risk: Option<EventRiskConfig>,
+
+    /// Optional local cross-IP campaign correlation.
+    /// When absent or `enabled = false`, campaign detection is disabled.
+    #[serde(default)]
+    pub campaign: Option<CampaignConfig>,
+
+    /// Directory containing GeoLite2 `.mmdb` files used by the agent for
+    /// GeoIP lookup (country, ASN).  Required for `campaign.geo_grouping`.
+    /// If absent, GeoIP features silently degrade to \"Unknown\".
+    #[serde(default)]
+    pub mmdb_dir: Option<String>,
 }
 
 fn default_log_path() -> String {
@@ -65,6 +83,9 @@ impl Default for AgentConfig {
             butterfly_shield: None,
             burst: None,
             risk_level: None,
+            event_risk: None,
+            campaign: None,
+            mmdb_dir: None,
         }
     }
 }
@@ -170,6 +191,9 @@ mod tests {
             butterfly_shield: None,
             burst: None,
             risk_level: None,
+            event_risk: None,
+            campaign: None,
+            mmdb_dir: None,
         };
 
         let toml_str = toml::to_string(&config).unwrap();
