@@ -4,7 +4,7 @@ use crate::campaign::LocalCampaignTracker;
 use crate::config::AgentConfig;
 use crate::event_risk::{self, EventSurgeDetector};
 use crate::geoip;
-use crate::patterns::all_patterns;
+use crate::patterns::{all_patterns, all_ssh_login_patterns};
 use crate::risk_level::HostRiskLevel;
 use anyhow::Result;
 use chrono::{DateTime, Utc};
@@ -23,9 +23,18 @@ struct RawDetection {
     log_path: String,
 }
 
+/// A successful SSH login detected from sshd logs.
+#[derive(Debug, Clone)]
+struct RawSshLogin {
+    ip: String,
+    username: String,
+    log_path: String,
+}
+
 /// A risk event generated for every matched log line.
 /// `level=alert` means risky but not blocked yet.
 /// `level=block` means threshold reached and block should be enforced.
+/// `level=ssh_access` is an informational event: a successful SSH login was detected.
 #[derive(Debug, Clone)]
 pub struct SecurityEvent {
     pub ip: String,
@@ -38,6 +47,8 @@ pub struct SecurityEvent {
     pub risk_rank: String,
     /// Set when a cross-IP campaign was detected: "volume" or "geo".
     pub campaign: Option<String>,
+    /// Set for ssh_access events: the username that authenticated.
+    pub username: Option<String>,
     pub timestamp: DateTime<Utc>,
 }
 
@@ -55,16 +66,21 @@ pub async fn watch(
     }
 
     let (raw_tx, mut raw_rx) = mpsc::channel::<RawDetection>(1000);
+    let (ssh_login_tx, mut ssh_login_rx) = mpsc::channel::<RawSshLogin>(200);
 
     for log_path in log_paths {
         let tx_clone = raw_tx.clone();
+        let ssh_tx_clone = ssh_login_tx.clone();
         tokio::spawn(async move {
-            if let Err(err) = tail_log_path(log_path.clone(), tx_clone).await {
+            if let Err(err) =
+                tail_log_path(log_path.clone(), tx_clone, ssh_tx_clone).await
+            {
                 tracing::error!("Tailer stopped for {}: {}", log_path, err);
             }
         });
     }
     drop(raw_tx);
+    drop(ssh_login_tx); // all senders now owned by tailer tasks
 
     // Sliding window counters: IP -> deque of attempt timestamps
     let mut ip_attempts: HashMap<String, VecDeque<Instant>> = HashMap::new();
@@ -75,6 +91,33 @@ pub async fn watch(
     let mut host_risk = HostRiskLevel::new();
     let mut surge_detector = EventSurgeDetector::new();
     let mut campaign_tracker = LocalCampaignTracker::new();
+
+    // Spawn separate task to forward SSH login events to the main SecurityEvent channel.
+    // SSH logins bypass ALL attack/threat pipeline logic and use level="ssh_access".
+    let ssh_event_tx = tx.clone();
+    tokio::spawn(async move {
+        while let Some(login) = ssh_login_rx.recv().await {
+            tracing::info!(
+                "SSH access event: user={} from={} log={}",
+                login.username,
+                login.ip,
+                login.log_path
+            );
+            let event = SecurityEvent {
+                ip: login.ip,
+                reason: "SSH successful login".to_string(),
+                level: "ssh_access".to_string(),
+                log_path: login.log_path,
+                attempts: 1,
+                effective_threshold: 1,
+                risk_rank: "Low".to_string(),
+                campaign: None,
+                username: Some(login.username),
+                timestamp: Utc::now(),
+            };
+            let _ = ssh_event_tx.send(event).await;
+        }
+    });
 
     while let Some(raw) = raw_rx.recv().await {
         process_failed_attempt(
@@ -95,8 +138,13 @@ pub async fn watch(
     Ok(())
 }
 
-async fn tail_log_path(log_path: String, tx: mpsc::Sender<RawDetection>) -> Result<()> {
+async fn tail_log_path(
+    log_path: String,
+    tx: mpsc::Sender<RawDetection>,
+    ssh_login_tx: mpsc::Sender<RawSshLogin>,
+) -> Result<()> {
     let patterns = all_patterns()?;
+    let ssh_login_patterns = all_ssh_login_patterns()?;
     let poll_interval = Duration::from_millis(200);
 
     loop {
@@ -142,6 +190,31 @@ async fn tail_log_path(log_path: String, tx: mpsc::Sender<RawDetection>) -> Resu
                         // Unwrap Docker json-file log envelope if present so
                         // patterns match the actual log content inside it.
                         let effective_line = extract_log_line(line);
+
+                        // Check SSH successful-login patterns first.
+                        // A successful login is informational — it must NOT
+                        // enter the attack pipeline.  If matched, send via the
+                        // dedicated ssh_login channel and skip attack patterns.
+                        let mut matched_login = false;
+                        for lp in &ssh_login_patterns {
+                            if let Some(caps) = lp.regex.captures(effective_line.as_ref()) {
+                                if let (Some(user), Some(ip)) = (caps.get(1), caps.get(2)) {
+                                    let _ = ssh_login_tx
+                                        .send(RawSshLogin {
+                                            ip: ip.as_str().to_string(),
+                                            username: user.as_str().to_string(),
+                                            log_path: log_path.clone(),
+                                        })
+                                        .await;
+                                    matched_login = true;
+                                    break;
+                                }
+                            }
+                        }
+                        if matched_login {
+                            continue;
+                        }
+
                         for pattern in &patterns {
                             if let Some(caps) = pattern.regex.captures(effective_line.as_ref()) {
                                 if let Some(m) = caps.get(1) {
@@ -269,6 +342,7 @@ async fn process_failed_attempt(
             effective_threshold: 0,
             risk_rank: event_risk::classify_reason(&raw.reason).as_str().to_string(),
             campaign: None,
+            username: None,
             timestamp: Utc::now(),
         };
         let _ = tx.send(event).await;
@@ -293,6 +367,7 @@ async fn process_failed_attempt(
                 effective_threshold: burst_cfg.threshold,
                 risk_rank: rank.as_str().to_string(),
                 campaign: None,
+                username: None,
                 timestamp: Utc::now(),
             };
             let _ = tx.send(event).await;
@@ -422,6 +497,7 @@ async fn process_failed_attempt(
             effective_threshold: effective,
             risk_rank: rank.as_str().to_string(),
             campaign: campaign_level.as_ref().map(|c| c.as_str().to_string()),
+            username: None,
             timestamp: Utc::now(),
         };
 
@@ -464,6 +540,7 @@ async fn process_failed_attempt(
         effective_threshold: effective,
         risk_rank: rank.as_str().to_string(),
         campaign: campaign_level.as_ref().map(|c| c.as_str().to_string()),
+        username: None,
         timestamp: Utc::now(),
     };
 

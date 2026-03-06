@@ -205,6 +205,34 @@ async fn run() -> Result<()> {
         );
 
         match event.level.as_str() {
+            "ssh_access" => {
+                // Successful SSH login — report to server for dashboard notification.
+                // No firewall action.
+                let client = api_client.clone();
+                let ev = event.clone();
+                tokio::spawn(async move {
+                    let username = ev.username.as_deref().unwrap_or("unknown");
+                    tracing::info!(
+                        "SSH access: user={} from={} log={}",
+                        username,
+                        ev.ip,
+                        ev.log_path
+                    );
+                    match client.report_ssh_login(&ev.ip, username).await {
+                        Ok(_) => tracing::info!(
+                            "SSH login reported: user={} from={}",
+                            username,
+                            ev.ip
+                        ),
+                        Err(e) => tracing::warn!(
+                            "Failed to report SSH login user={} from={}: {}",
+                            username,
+                            ev.ip,
+                            e
+                        ),
+                    }
+                });
+            }
             "block" => {
                 // Apply firewall IMMEDIATELY — before any network I/O.
                 match block_ip(&event.ip, &backend).await {

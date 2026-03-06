@@ -2,6 +2,44 @@ use super::DetectionPattern;
 use anyhow::Result;
 use regex::Regex;
 
+/// A pattern that matches a successful SSH login.
+/// capture group 1 = username, capture group 2 = attacker/source IP.
+pub struct SshLoginPattern {
+    pub regex: Regex,
+}
+
+/// Return all patterns that detect a *successful* SSH authentication.
+/// These events are informational (not blocks) and carry the authenticated
+/// username so the dashboard can display who logged in and from where.
+pub fn login_patterns() -> Result<Vec<SshLoginPattern>> {
+    Ok(vec![
+        // password auth: "Accepted password for root from 1.2.3.4 port 22 ssh2"
+        SshLoginPattern {
+            regex: Regex::new(
+                r"Accepted password for (\S+) from (\d+\.\d+\.\d+\.\d+)",
+            )?,
+        },
+        // pubkey auth: "Accepted publickey for ubuntu from 1.2.3.4 port 22 ssh2: ..."
+        SshLoginPattern {
+            regex: Regex::new(
+                r"Accepted publickey for (\S+) from (\d+\.\d+\.\d+\.\d+)",
+            )?,
+        },
+        // keyboard-interactive / PAM auth
+        SshLoginPattern {
+            regex: Regex::new(
+                r"Accepted keyboard-interactive(?:/pam)? for (\S+) from (\d+\.\d+\.\d+\.\d+)",
+            )?,
+        },
+        // GSSAPI auth (Kerberos)
+        SshLoginPattern {
+            regex: Regex::new(
+                r"Accepted gssapi(?:-with-mic|-keyex)? for (\S+) from (\d+\.\d+\.\d+\.\d+)",
+            )?,
+        },
+    ])
+}
+
 pub fn patterns() -> Result<Vec<DetectionPattern>> {
     Ok(vec![
         // Classic SSH brute-force
@@ -145,5 +183,43 @@ mod tests {
             re.captures(line).unwrap().get(1).unwrap().as_str(),
             "203.0.113.77"
         );
+    }
+
+    #[test]
+    fn test_ssh_login_password() {
+        let patterns = super::login_patterns().unwrap();
+        let line = "Accepted password for root from 203.0.113.5 port 41022 ssh2";
+        let matched = patterns.iter().find_map(|p| p.regex.captures(line));
+        let caps = matched.expect("should match password accepted");
+        assert_eq!(caps.get(1).unwrap().as_str(), "root");
+        assert_eq!(caps.get(2).unwrap().as_str(), "203.0.113.5");
+    }
+
+    #[test]
+    fn test_ssh_login_pubkey() {
+        let patterns = super::login_patterns().unwrap();
+        let line = "Accepted publickey for deploy from 10.0.0.99 port 55000 ssh2: RSA SHA256:abc";
+        let matched = patterns.iter().find_map(|p| p.regex.captures(line));
+        let caps = matched.expect("should match pubkey accepted");
+        assert_eq!(caps.get(1).unwrap().as_str(), "deploy");
+        assert_eq!(caps.get(2).unwrap().as_str(), "10.0.0.99");
+    }
+
+    #[test]
+    fn test_ssh_login_keyboard_interactive() {
+        let patterns = super::login_patterns().unwrap();
+        let line = "Accepted keyboard-interactive/pam for ubuntu from 192.168.1.50 port 22 ssh2";
+        let matched = patterns.iter().find_map(|p| p.regex.captures(line));
+        let caps = matched.expect("should match keyboard-interactive accepted");
+        assert_eq!(caps.get(1).unwrap().as_str(), "ubuntu");
+        assert_eq!(caps.get(2).unwrap().as_str(), "192.168.1.50");
+    }
+
+    #[test]
+    fn test_ssh_login_does_not_match_failed() {
+        let patterns = super::login_patterns().unwrap();
+        let line = "Failed password for root from 203.0.113.5 port 41022 ssh2";
+        let matched = patterns.iter().any(|p| p.regex.is_match(line));
+        assert!(!matched, "login patterns must NOT match failed attempts");
     }
 }

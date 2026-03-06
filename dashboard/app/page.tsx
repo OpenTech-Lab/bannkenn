@@ -56,11 +56,22 @@ interface AgentStatus {
   butterfly_shield_enabled?: boolean | null;
 }
 
+interface SshLoginEvent {
+  id: number;
+  ip: string;
+  username: string;
+  agent_name: string;
+  country: string | null;
+  asn_org: string | null;
+  created_at: string;
+}
+
 const POLL_INTERVAL = 10_000;
 
 export default function Dashboard() {
   const [decisions, setDecisions] = useState<Decision[]>([]);
   const [agents, setAgents] = useState<AgentStatus[]>([]);
+  const [sshLogins, setSshLogins] = useState<SshLoginEvent[]>([]);
   const [health, setHealth] = useState<'ok' | 'error' | 'loading'>('loading');
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
 
@@ -71,10 +82,11 @@ export default function Dashboard() {
 
   const fetchData = useCallback(async () => {
     try {
-      const [healthRes, decisionsRes, agentsRes] = await Promise.all([
+      const [healthRes, decisionsRes, agentsRes, sshLoginsRes] = await Promise.all([
         fetch('/api/health'),
         fetch('/api/decisions'),
         fetch('/api/agents'),
+        fetch('/api/ssh-logins'),
       ]);
 
       if (healthRes.ok) {
@@ -90,6 +102,10 @@ export default function Dashboard() {
 
       if (agentsRes.ok) {
         setAgents(await agentsRes.json());
+      }
+
+      if (sshLoginsRes.ok) {
+        setSshLogins(await sshLoginsRes.json());
       }
 
       setLastUpdated(new Date());
@@ -198,6 +214,49 @@ export default function Dashboard() {
         <StatCard label="Registered agents" value={agents.length} />
         <StatCard label="Agents online" value={onlineAgents} accent="green" />
       </div>
+
+      {/* SSH Access Notification — shown to all viewers */}
+      {sshLogins.length > 0 && (
+        <div>
+          <h2 className="text-xs font-semibold text-muted-foreground uppercase tracking-widest mb-3 flex items-center gap-2">
+            <span className="inline-block w-2 h-2 rounded-full bg-amber-400 animate-pulse" />
+            SSH Access Events
+          </h2>
+          <div className="rounded-xl border border-amber-800/50 bg-amber-950/20 overflow-hidden">
+            <Table>
+              <TableHeader>
+                <TableRow className="border-amber-800/30">
+                  <TableHead>User</TableHead>
+                  <TableHead>Source IP</TableHead>
+                  <TableHead>Agent</TableHead>
+                  <TableHead>Country / ISP</TableHead>
+                  <TableHead>Time</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {sshLogins.map((ev) => (
+                  <TableRow key={ev.id} className="border-amber-800/20">
+                    <TableCell>
+                      <Badge className="bg-amber-900/50 text-amber-300 border-amber-700 hover:bg-amber-900/50 font-mono">
+                        SSH ACCESS
+                      </Badge>
+                      <span className="ml-2 font-mono text-amber-200">{ev.username}</span>
+                    </TableCell>
+                    <TableCell className="font-mono text-sm">{ev.ip}</TableCell>
+                    <TableCell className="text-muted-foreground text-sm">{ev.agent_name}</TableCell>
+                    <TableCell className="text-muted-foreground text-xs">
+                      {[ev.country, ev.asn_org].filter(Boolean).join(' · ') || '—'}
+                    </TableCell>
+                    <TableCell className="text-muted-foreground text-xs whitespace-nowrap">
+                      {new Date(ev.created_at).toLocaleString()}
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </div>
+        </div>
+      )}
 
       {/* Agent Status table */}
       <div>

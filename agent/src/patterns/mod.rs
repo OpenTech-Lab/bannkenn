@@ -10,12 +10,16 @@ pub mod smb;
 pub mod ssh;
 pub mod web;
 
-/// A single detection rule. The regex MUST capture the attacker's IPv4
-/// address in capture group 1.
+/// A single detection rule for attack/failure events.
+/// The regex MUST capture the attacker's IPv4 address in capture group 1.
 pub struct DetectionPattern {
     pub regex: Regex,
     pub reason: &'static str,
 }
+
+/// A successful SSH login pattern.
+/// capture group 1 = username, capture group 2 = source IP.
+pub use ssh::SshLoginPattern;
 
 /// Return all active detection patterns from every protocol module.
 /// To add a new protocol: create `agent/src/patterns/<proto>.rs`,
@@ -32,4 +36,9 @@ pub fn all_patterns() -> Result<Vec<DetectionPattern>> {
     patterns.extend(smb::patterns()?);
     patterns.extend(database::patterns()?);
     Ok(patterns)
+}
+
+/// Return all SSH successful-login patterns.
+pub fn all_ssh_login_patterns() -> Result<Vec<SshLoginPattern>> {
+    ssh::login_patterns()
 }

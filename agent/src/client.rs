@@ -125,6 +125,38 @@ impl ApiClient {
         Ok(())
     }
 
+    /// Report a successful SSH login event to the server.
+    pub async fn report_ssh_login(&self, ip: &str, username: &str) -> Result<()> {
+        let url = format!("{}/api/v1/ssh-logins", self.base_url);
+
+        let body = json!({
+            "ip": ip,
+            "username": username
+        });
+
+        let response = self
+            .http
+            .post(&url)
+            .header("Authorization", format!("Bearer {}", self.token))
+            .header("Content-Type", "application/json")
+            .json(&body)
+            .send()
+            .await?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let text = response.text().await.unwrap_or_default();
+            return Err(anyhow::anyhow!(
+                "Server returned ssh-login error {}: {}",
+                status,
+                text
+            ));
+        }
+
+        tracing::debug!("SSH login reported: user={} ip={}", username, ip);
+        Ok(())
+    }
+
     /// Send heartbeat so server can mark this agent as online.
     /// Optionally reports ButterflyShield status.
     pub async fn send_heartbeat(&self, butterfly_shield_enabled: Option<bool>) -> Result<()> {

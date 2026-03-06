@@ -54,6 +54,17 @@ pub struct AgentStatusRow {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SshLoginRow {
+    pub id: i64,
+    pub ip: String,
+    pub username: String,
+    pub agent_name: String,
+    pub country: Option<String>,
+    pub asn_org: Option<String>,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CommunityIpRow {
     pub ip: String,
     pub source: String,
@@ -187,6 +198,29 @@ impl Db {
                 .execute(&self.0)
                 .await;
 
+        // SSH successful login events table
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS ssh_logins (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ip TEXT NOT NULL,
+                username TEXT NOT NULL,
+                agent_name TEXT NOT NULL,
+                country TEXT,
+                asn_org TEXT,
+                created_at TEXT NOT NULL
+            )
+            "#,
+        )
+        .execute(&self.0)
+        .await?;
+
+        sqlx::query(
+            "CREATE INDEX IF NOT EXISTS idx_ssh_logins_created_at ON ssh_logins(created_at DESC)",
+        )
+        .execute(&self.0)
+        .await?;
+
         Ok(())
     }
 
@@ -246,6 +280,69 @@ impl Db {
         .await?;
 
         Ok(result.last_insert_rowid())
+    }
+
+    /// Record a successful SSH login event from an agent.
+    pub async fn insert_ssh_login(
+        &self,
+        ip: &str,
+        username: &str,
+        agent_name: &str,
+    ) -> anyhow::Result<i64> {
+        let created_at = Utc::now().to_rfc3339();
+        let geo = geoip::lookup(ip);
+        let result = sqlx::query(
+            r#"
+            INSERT INTO ssh_logins (ip, username, agent_name, country, asn_org, created_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            "#,
+        )
+        .bind(ip)
+        .bind(username)
+        .bind(agent_name)
+        .bind(&geo.country)
+        .bind(&geo.asn_org)
+        .bind(&created_at)
+        .execute(&self.0)
+        .await?;
+        Ok(result.last_insert_rowid())
+    }
+
+    /// Return the most recent SSH login events (newest first).
+    pub async fn list_ssh_logins(&self, limit: i64) -> anyhow::Result<Vec<SshLoginRow>> {
+        let rows = sqlx::query_as::<
+            _,
+            (
+                i64,
+                String,
+                String,
+                String,
+                Option<String>,
+                Option<String>,
+                String,
+            ),
+        >(
+            "SELECT id, ip, username, agent_name, country, asn_org, created_at \
+             FROM ssh_logins ORDER BY created_at DESC LIMIT ?",
+        )
+        .bind(limit)
+        .fetch_all(&self.0)
+        .await?;
+
+        Ok(rows
+            .into_iter()
+            .map(
+                |(id, ip, username, agent_name, country, asn_org, created_at)| SshLoginRow {
+                    id,
+                    ip,
+                    username,
+                    agent_name,
+                    country,
+                    asn_org,
+                    created_at,
+                },
+            )
+            .collect())
     }
 
     pub async fn list_decisions_since(

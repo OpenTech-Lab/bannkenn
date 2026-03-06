@@ -145,6 +145,7 @@ async fn main() -> anyhow::Result<()> {
     let decisions_state = Arc::new(routes::decisions::AppState { db: db.clone() });
     let telemetry_state = Arc::new(routes::telemetry::AppState { db: db.clone() });
     let community_state = Arc::new(routes::community::AppState { db: db.clone() });
+    let ssh_logins_state = Arc::new(routes::ssh_logins::AppState { db: db.clone() });
 
     // Public: GET /api/v1/decisions
     let decisions_read = Router::new()
@@ -168,6 +169,17 @@ async fn main() -> anyhow::Result<()> {
         .with_state(telemetry_state)
         .layer(auth_middleware_layer.clone());
 
+    // Public: GET /api/v1/ssh-logins
+    let ssh_logins_read = Router::new()
+        .route("/", get(routes::ssh_logins::list))
+        .with_state(ssh_logins_state.clone());
+
+    // Protected: POST /api/v1/ssh-logins
+    let ssh_logins_write = Router::new()
+        .route("/", post(routes::ssh_logins::create))
+        .with_state(ssh_logins_state)
+        .layer(auth_middleware_layer.clone());
+
     // Combine all routes
     let router = Router::new()
         .route("/api/v1/health", health_route)
@@ -179,6 +191,10 @@ async fn main() -> anyhow::Result<()> {
         )
         .nest("/api/v1/decisions", decisions_read.merge(decisions_write))
         .nest("/api/v1/telemetry", telemetry_read.merge(telemetry_write))
+        .nest(
+            "/api/v1/ssh-logins",
+            ssh_logins_read.merge(ssh_logins_write),
+        )
         .route(
             "/api/v1/community/ips",
             get(routes::community::list_ips).with_state(community_state.clone()),
