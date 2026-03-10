@@ -243,8 +243,9 @@ async fn run() -> Result<()> {
     ));
 
     {
-        let pending = outbox.lock().await.len();
-        if pending > 0 {
+        let outbox = outbox.lock().await;
+        if !outbox.is_empty() {
+            let pending = outbox.len();
             tracing::info!("Loaded {} pending outbound report(s) from disk", pending);
         }
     }

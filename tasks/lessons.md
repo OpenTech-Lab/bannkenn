@@ -95,6 +95,10 @@
 - If risky-access reporting must survive server outages, failed uploads cannot just be logged and dropped; queue them durably and replay them when connectivity returns
 - Verify offline behavior across both steady-state disconnects and restart-while-disconnected scenarios, because in-memory-only state hides restart regressions
 
+### Public collection-like APIs must satisfy clippy shape expectations
+- If a public type exposes `len()`, clippy expects a matching `is_empty()` for ergonomic and conventional API shape
+- Run strict clippy on newly introduced public utility types before considering the task done, especially after adding small infrastructure modules like queues, caches, or wrappers
+
 ### GeoIP backfill validation must be agent-scoped
 - After schema/backfill changes, verify specific affected agent rows (e.g., `/api/v1/agents/:id/decisions`) instead of only sampling global endpoints.
 - If a user reports stale/null values, add a targeted backfill path and return post-update sample values from DB to confirm write success.

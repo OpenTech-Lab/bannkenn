@@ -414,3 +414,13 @@
 - Verification:
   - `bash -n scripts/release.sh`
   - `bash scripts/release.sh` in the current dirty worktree, confirming `1.3.16 → 1.3.17` before the existing clean-tree pre-flight guard stopped execution
+
+## Phase 24 – Clippy regression fix for Outbox API (Codex)
+- [x] Fix `len_without_is_empty` on the public `Outbox` API
+- [x] Re-run strict workspace clippy
+
+## Review (Phase 24)
+- Implemented:
+  - Added `Outbox::is_empty()` to match the existing public `Outbox::len()` API and satisfy strict clippy settings.
+- Verification:
+  - `cargo clippy --workspace -- -D warnings`

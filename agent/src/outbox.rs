@@ -68,6 +68,10 @@ impl Outbox {
         self.state.items.len()
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.state.items.is_empty()
+    }
+
     pub fn enqueue(&mut self, payload: OutboxPayload) -> Result<u64> {
         let id = self.state.next_id.max(1);
         self.state.next_id = id + 1;
