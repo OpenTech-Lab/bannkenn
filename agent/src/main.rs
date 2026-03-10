@@ -127,7 +127,8 @@ async fn run() -> Result<()> {
     let backend = detect_backend();
     tracing::info!("Detected firewall backend: {:?}", backend);
 
-    // Ensure required firewall infrastructure exists (nftables: creates set + drop rule).
+    // Ensure required firewall infrastructure exists
+    // (nftables: creates the dedicated BannKenn table, set, and drop rules).
     if let Err(e) = init_firewall(&backend).await {
         tracing::error!(
             "Failed to initialize firewall infrastructure: {}. IP blocking will not work.",

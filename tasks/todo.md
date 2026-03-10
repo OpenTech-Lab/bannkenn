@@ -622,3 +622,23 @@
   - `bash -n scripts/release.sh`
   - `cargo check --workspace`
   - Ran `scripts/release.sh 1.3.22` in an isolated temporary git repo with a local bare remote and confirmed the resulting release commit updated both `Cargo.toml` and `Cargo.lock`
+
+## Phase 35 – Move nftables state into dedicated BannKenn table (Codex)
+- [x] Inspect the current nftables implementation and identify legacy `inet filter` assumptions
+- [x] Switch BannKenn-managed nftables state to a dedicated table with upgrade cleanup
+- [x] Update related docs/comments/tests as needed
+- [x] Verify with cargo checks/tests
+
+## Review (Phase 35)
+- Findings:
+  - BannKenn was using the shared `inet filter` table, which kept the rule count low via a set but still mixed BannKenn state into the host’s main firewall namespace.
+  - Existing installs could already have BannKenn-managed rules and the `bannkenn_blocklist` set in `inet filter`, so the new layout needed an upgrade cleanup path.
+- Implemented:
+  - Switched the active nftables backend to a dedicated `inet bannkenn` table in `agent/src/firewall.rs`.
+  - BannKenn now creates its set and base chains inside that dedicated table, keeping its nft state isolated from the main `filter` table.
+  - Cleanup now deletes the dedicated BannKenn table and also removes any legacy BannKenn rules/set previously installed into `inet filter`.
+  - Updated comments and README wording to reflect the dedicated-table layout.
+- Verification:
+  - `cargo fmt --all`
+  - `cargo check -p bannkenn-agent`
+  - `cargo test -p bannkenn-agent`

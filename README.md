@@ -122,7 +122,7 @@ sudo systemctl status bannkenn-agent
 sudo systemctl restart bannkenn-agent
 ```
 
-Stopping the service removes BannKenn-managed nftables rules and its temporary blocklist set.
+Stopping the service removes BannKenn-managed nftables rules, including its dedicated nftables table and blocklist set.
 
 ### 7. Verify agent status
 

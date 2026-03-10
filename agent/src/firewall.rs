@@ -2,7 +2,8 @@ use anyhow::{anyhow, Result};
 use tokio::process::Command;
 
 const NFT_FAMILY: &str = "inet";
-const NFT_TABLE: &str = "filter";
+const NFT_TABLE: &str = "bannkenn";
+const NFT_LEGACY_TABLE: &str = "filter";
 const NFT_BLOCKLIST_SET: &str = "bannkenn_blocklist";
 const NFT_BANNKENN_CHAINS: [&str; 2] = ["input", "forward"];
 
@@ -16,8 +17,9 @@ pub enum FirewallBackend {
 
 /// Initialize firewall infrastructure required by the agent.
 /// For nftables: creates the `bannkenn_blocklist` named set and drop rules in the
-/// `inet filter input` and `inet filter forward` chains if they do not already exist.
-/// Safe to call on every startup.
+/// dedicated `inet bannkenn` table so BannKenn state stays isolated from the main
+/// `filter` table. Safe to call on every startup.
+/// On upgrade, any legacy BannKenn rules previously stored in `inet filter` are removed.
 /// For iptables and None backends, no setup is needed.
 pub async fn init_firewall(backend: &FirewallBackend) -> Result<()> {
     match backend {
@@ -27,7 +29,8 @@ pub async fn init_firewall(backend: &FirewallBackend) -> Result<()> {
 }
 
 /// Remove BannKenn-managed firewall state for the active backend.
-/// For nftables, this removes the BannKenn drop rules and shared blocklist set.
+/// For nftables, this removes the dedicated BannKenn table and any legacy
+/// BannKenn rules previously installed into `inet filter`.
 /// The operation is idempotent so it can safely run both on process shutdown and
 /// via a systemd ExecStopPost hook.
 pub async fn cleanup_firewall(backend: &FirewallBackend) -> Result<()> {
@@ -38,17 +41,48 @@ pub async fn cleanup_firewall(backend: &FirewallBackend) -> Result<()> {
 }
 
 /// Set up the nftables infrastructure needed by bannkenn:
-///   inet filter table → bannkenn_blocklist set → drop rules in input + forward chains.
+///   inet bannkenn table → bannkenn_blocklist set → drop rules in input + forward chains.
 /// Every step is guarded by a check so re-running on restart is idempotent.
 async fn init_nftables() -> Result<()> {
-    tracing::info!("nftables: initializing bannkenn firewall infrastructure");
+    tracing::info!(
+        "nftables: initializing BannKenn firewall infrastructure in inet {}",
+        NFT_TABLE
+    );
 
-    // Create inet filter table — nft add is idempotent for tables.
+    cleanup_legacy_nftables().await?;
+
+    // Create dedicated BannKenn table — nft add is idempotent for tables.
     let _ = nft_run(&["add", "table", NFT_FAMILY, NFT_TABLE]).await;
 
     // Ensure the shared blocklist set exists.
+    ensure_nft_set(NFT_TABLE).await?;
+
+    ensure_nft_chain(NFT_TABLE, "input", "input").await?;
+    ensure_nft_chain(NFT_TABLE, "forward", "forward").await?;
+    ensure_nft_drop_rule(NFT_TABLE, "input").await?;
+    ensure_nft_drop_rule(NFT_TABLE, "forward").await?;
+
+    tracing::info!(
+        "nftables: {} table, {} set, and drop rules configured",
+        NFT_TABLE,
+        NFT_BLOCKLIST_SET
+    );
+    Ok(())
+}
+
+async fn cleanup_nftables() -> Result<()> {
+    tracing::info!("nftables: removing BannKenn-managed firewall rules");
+
+    nft_run_allow_missing(&["delete", "table", NFT_FAMILY, NFT_TABLE]).await?;
+    cleanup_legacy_nftables().await?;
+
+    tracing::info!("nftables: BannKenn-managed firewall rules removed");
+    Ok(())
+}
+
+async fn ensure_nft_set(table: &str) -> Result<()> {
     let set_check = Command::new("nft")
-        .args(["list", "set", NFT_FAMILY, NFT_TABLE, NFT_BLOCKLIST_SET])
+        .args(["list", "set", NFT_FAMILY, table, NFT_BLOCKLIST_SET])
         .output()
         .await?;
     if !set_check.status.success() {
@@ -56,39 +90,26 @@ async fn init_nftables() -> Result<()> {
             "add",
             "set",
             NFT_FAMILY,
-            NFT_TABLE,
+            table,
             NFT_BLOCKLIST_SET,
             "{ type ipv4_addr ; flags interval ; }",
         ])
         .await
-        .map_err(|e| anyhow!("Failed to create {} set: {}", NFT_BLOCKLIST_SET, e))?;
+        .map_err(|e| {
+            anyhow!(
+                "Failed to create {} set in {}: {}",
+                NFT_BLOCKLIST_SET,
+                table,
+                e
+            )
+        })?;
     }
-
-    ensure_nft_chain("input", "input").await?;
-    ensure_nft_chain("forward", "forward").await?;
-    ensure_nft_drop_rule("input").await?;
-    ensure_nft_drop_rule("forward").await?;
-
-    tracing::info!("nftables: bannkenn_blocklist set and drop rules configured");
     Ok(())
 }
 
-async fn cleanup_nftables() -> Result<()> {
-    tracing::info!("nftables: removing BannKenn-managed firewall rules");
-
-    for chain in NFT_BANNKENN_CHAINS {
-        remove_nft_drop_rules(chain).await?;
-    }
-
-    nft_run_allow_missing(&["delete", "set", NFT_FAMILY, NFT_TABLE, NFT_BLOCKLIST_SET]).await?;
-
-    tracing::info!("nftables: BannKenn-managed firewall rules removed");
-    Ok(())
-}
-
-async fn ensure_nft_chain(chain: &str, hook: &str) -> Result<()> {
+async fn ensure_nft_chain(table: &str, chain: &str, hook: &str) -> Result<()> {
     let chain_check = Command::new("nft")
-        .args(["list", "chain", NFT_FAMILY, NFT_TABLE, chain])
+        .args(["list", "chain", NFT_FAMILY, table, chain])
         .output()
         .await?;
     if !chain_check.status.success() {
@@ -96,7 +117,7 @@ async fn ensure_nft_chain(chain: &str, hook: &str) -> Result<()> {
             "add",
             "chain",
             NFT_FAMILY,
-            NFT_TABLE,
+            table,
             chain,
             &format!(
                 "{{ type filter hook {} priority 0 ; policy accept ; }}",
@@ -104,14 +125,14 @@ async fn ensure_nft_chain(chain: &str, hook: &str) -> Result<()> {
             ),
         ])
         .await
-        .map_err(|e| anyhow!("Failed to create inet filter {} chain: {}", chain, e))?;
+        .map_err(|e| anyhow!("Failed to create inet {} {} chain: {}", table, chain, e))?;
     }
     Ok(())
 }
 
-async fn ensure_nft_drop_rule(chain: &str) -> Result<()> {
+async fn ensure_nft_drop_rule(table: &str, chain: &str) -> Result<()> {
     let chain_out = Command::new("nft")
-        .args(["list", "chain", NFT_FAMILY, NFT_TABLE, chain])
+        .args(["list", "chain", NFT_FAMILY, table, chain])
         .output()
         .await?;
     if !String::from_utf8_lossy(&chain_out.stdout).contains(NFT_BLOCKLIST_SET) {
@@ -119,7 +140,7 @@ async fn ensure_nft_drop_rule(chain: &str) -> Result<()> {
             "add",
             "rule",
             NFT_FAMILY,
-            NFT_TABLE,
+            table,
             chain,
             "ip",
             "saddr",
@@ -129,7 +150,14 @@ async fn ensure_nft_drop_rule(chain: &str) -> Result<()> {
             "bannkenn-managed",
         ])
         .await
-        .map_err(|e| anyhow!("Failed to add blocklist drop rule to {}: {}", chain, e))?;
+        .map_err(|e| {
+            anyhow!(
+                "Failed to add blocklist drop rule to {} {}: {}",
+                table,
+                chain,
+                e
+            )
+        })?;
     }
     Ok(())
 }
@@ -158,9 +186,9 @@ async fn nft_run_allow_missing(args: &[&str]) -> Result<()> {
     Err(anyhow!("{}", stderr.trim()))
 }
 
-async fn remove_nft_drop_rules(chain: &str) -> Result<()> {
+async fn remove_nft_drop_rules(table: &str, chain: &str) -> Result<()> {
     let output = Command::new("nft")
-        .args(["-a", "list", "chain", NFT_FAMILY, NFT_TABLE, chain])
+        .args(["-a", "list", "chain", NFT_FAMILY, table, chain])
         .output()
         .await?;
 
@@ -170,7 +198,8 @@ async fn remove_nft_drop_rules(chain: &str) -> Result<()> {
             return Ok(());
         }
         return Err(anyhow!(
-            "Failed to inspect nftables chain {}: {}",
+            "Failed to inspect nftables chain {} {}: {}",
+            table,
             chain,
             stderr.trim()
         ));
@@ -182,13 +211,30 @@ async fn remove_nft_drop_rules(chain: &str) -> Result<()> {
             "delete",
             "rule",
             NFT_FAMILY,
-            NFT_TABLE,
+            table,
             chain,
             "handle",
             &handle_str,
         ])
         .await?;
     }
+
+    Ok(())
+}
+
+async fn cleanup_legacy_nftables() -> Result<()> {
+    for chain in NFT_BANNKENN_CHAINS {
+        remove_nft_drop_rules(NFT_LEGACY_TABLE, chain).await?;
+    }
+
+    nft_run_allow_missing(&[
+        "delete",
+        "set",
+        NFT_FAMILY,
+        NFT_LEGACY_TABLE,
+        NFT_BLOCKLIST_SET,
+    ])
+    .await?;
 
     Ok(())
 }
@@ -346,7 +392,7 @@ mod tests {
     #[test]
     fn bannkenn_rule_handle_parser_ignores_unrelated_rules() {
         let chain = r#"
-table inet filter {
+table inet bannkenn {
 	chain input {
 		type filter hook input priority filter; policy accept;
 		ct state established,related accept # handle 1
