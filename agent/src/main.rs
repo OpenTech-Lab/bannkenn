@@ -31,7 +31,10 @@ use uuid::Uuid;
 
 use crate::client::ApiClient;
 use crate::config::{default_runtime_campaign_config, AgentConfig, OfflineAgentState};
-use crate::firewall::{block_ip, cleanup_firewall, detect_backend, init_firewall};
+use crate::firewall::{
+    block_ip, cleanup_firewall, detect_backend, init_firewall,
+    should_skip_local_firewall_enforcement,
+};
 use crate::outbox::{flush_pending, Outbox, OutboxPayload};
 use crate::service::{install_systemd_unit, uninstall_systemd_unit, SERVICE_UNIT_PATH};
 use crate::shared_risk::SharedRiskSnapshot;
@@ -153,7 +156,16 @@ async fn run() -> Result<()> {
     if !offline_state.known_blocked_ips.is_empty() {
         let mut restored = 0u32;
         let mut failed = 0u32;
+        let mut skipped = 0u32;
         for ip in offline_state.known_blocked_ips.keys() {
+            if should_skip_local_firewall_enforcement(ip) {
+                tracing::warn!(
+                    "cache: skipping firewall restore for local/reserved address {}",
+                    ip
+                );
+                skipped += 1;
+                continue;
+            }
             match block_ip(ip, &backend).await {
                 Ok(_) => {
                     restored += 1;
@@ -166,11 +178,12 @@ async fn run() -> Result<()> {
             }
         }
         tracing::info!(
-            "Loaded cached offline state: {} blocked IP(s), shared-risk categories={}, restored {} firewall rule(s) ({} failed)",
+            "Loaded cached offline state: {} blocked IP(s), shared-risk categories={}, restored {} firewall rule(s) ({} failed, {} skipped local/reserved)",
             offline_state.known_blocked_ips.len(),
             offline_state.shared_risk_snapshot.categories.len(),
             restored,
-            failed
+            failed,
+            skipped
         );
     }
 
@@ -182,6 +195,7 @@ async fn run() -> Result<()> {
         Ok(decisions) => {
             let mut restored = 0u32;
             let mut failed = 0u32;
+            let mut skipped = 0u32;
             {
                 let mut set = known_blocked_ips.write().await;
                 for d in &decisions {
@@ -189,6 +203,14 @@ async fn run() -> Result<()> {
                 }
             }
             for d in &decisions {
+                if should_skip_local_firewall_enforcement(&d.ip) {
+                    tracing::warn!(
+                        "startup: skipping firewall restore for local/reserved address {}",
+                        d.ip
+                    );
+                    skipped += 1;
+                    continue;
+                }
                 match block_ip(&d.ip, &backend).await {
                     Ok(_) => {
                         restored += 1;
@@ -205,10 +227,11 @@ async fn run() -> Result<()> {
                 }
             }
             tracing::info!(
-                "Loaded {} known blocked IP(s) from server; restored {} firewall rule(s) ({} failed)",
+                "Loaded {} known blocked IP(s) from server; restored {} firewall rule(s) ({} failed, {} skipped local/reserved)",
                 decisions.len(),
                 restored,
-                failed
+                failed,
+                skipped
             );
             sync::persist_offline_state(&known_blocked_ips, &shared_risk_snapshot).await;
         }
@@ -354,6 +377,17 @@ async fn run() -> Result<()> {
             }
             "block" => {
                 // Apply firewall IMMEDIATELY — before any network I/O.
+                if should_skip_local_firewall_enforcement(&event.ip) {
+                    tracing::warn!(
+                        "Skipping local/reserved block event for {} and leaving firewall unchanged",
+                        event.ip
+                    );
+                    let _ = block_outcome_tx
+                        .send(BlockOutcome::Failed(event.ip.clone()))
+                        .await;
+                    continue;
+                }
+
                 match block_ip(&event.ip, &backend).await {
                     Ok(_) => {
                         tracing::info!("Blocked IP: {}", event.ip);
@@ -398,6 +432,17 @@ async fn run() -> Result<()> {
             }
             "listed" => {
                 // IP already in block list DB: apply firewall IMMEDIATELY.
+                if should_skip_local_firewall_enforcement(&event.ip) {
+                    tracing::warn!(
+                        "Skipping local/reserved listed IP {} and leaving firewall unchanged",
+                        event.ip
+                    );
+                    let _ = block_outcome_tx
+                        .send(BlockOutcome::Failed(event.ip.clone()))
+                        .await;
+                    continue;
+                }
+
                 match block_ip(&event.ip, &backend).await {
                     Ok(_) => {
                         tracing::info!("Listed IP blocked by firewall: {}", event.ip);

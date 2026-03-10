@@ -1,4 +1,5 @@
 use anyhow::{anyhow, Result};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use tokio::process::Command;
 
 const NFT_FAMILY: &str = "inet";
@@ -13,6 +14,16 @@ pub enum FirewallBackend {
     Nftables,
     Iptables,
     None,
+}
+
+/// Local/self-originated ranges should never be enforced into the firewall
+/// blocklist because that can cut the host off from its own services.
+pub fn should_skip_local_firewall_enforcement(ip: &str) -> bool {
+    match ip.parse::<IpAddr>() {
+        Ok(IpAddr::V4(ip)) => should_skip_ipv4_firewall_enforcement(ip),
+        Ok(IpAddr::V6(ip)) => should_skip_ipv6_firewall_enforcement(ip),
+        Err(_) => false,
+    }
 }
 
 /// Initialize firewall infrastructure required by the agent.
@@ -290,6 +301,14 @@ fn command_exists(cmd: &str) -> bool {
 
 /// Block an IP address using the detected firewall backend
 pub async fn block_ip(ip: &str, backend: &FirewallBackend) -> Result<()> {
+    if should_skip_local_firewall_enforcement(ip) {
+        tracing::warn!(
+            "Skipping firewall enforcement for local/reserved address {}",
+            ip
+        );
+        return Ok(());
+    }
+
     match backend {
         FirewallBackend::Nftables => block_ip_nftables(ip).await,
         FirewallBackend::Iptables => block_ip_iptables(ip).await,
@@ -301,6 +320,34 @@ pub async fn block_ip(ip: &str, backend: &FirewallBackend) -> Result<()> {
             Ok(())
         }
     }
+}
+
+fn should_skip_ipv4_firewall_enforcement(ip: Ipv4Addr) -> bool {
+    let [first, second, _, _] = ip.octets();
+
+    first == 0
+        || first == 10
+        || first == 127
+        || (first == 100 && (64..=127).contains(&second))
+        || (first == 169 && second == 254)
+        || (first == 172 && (16..=31).contains(&second))
+        || (first == 192 && second == 168)
+        || (first == 198 && (second == 18 || second == 19))
+        || first >= 224
+}
+
+fn should_skip_ipv6_firewall_enforcement(ip: Ipv6Addr) -> bool {
+    if ip.is_unspecified() || ip.is_loopback() {
+        return true;
+    }
+
+    if let Some(mapped) = ip.to_ipv4_mapped() {
+        return should_skip_ipv4_firewall_enforcement(mapped);
+    }
+
+    let first = ip.segments()[0];
+
+    (first & 0xfe00) == 0xfc00 || (first & 0xffc0) == 0xfe80 || (first & 0xff00) == 0xff00
 }
 
 /// Block IP using nftables
@@ -387,6 +434,39 @@ mod tests {
         // Ensure IPs are properly formatted when passed to commands
         let valid_ip = "192.168.1.1";
         assert!(valid_ip.contains('.'));
+    }
+
+    #[test]
+    fn local_and_reserved_ips_are_skipped_for_firewall_enforcement() {
+        for ip in [
+            "127.0.0.1",
+            "10.0.0.8",
+            "172.17.0.1",
+            "192.168.1.20",
+            "169.254.10.2",
+            "100.64.1.5",
+            "::1",
+            "fc00::1",
+            "fe80::1",
+            "::ffff:127.0.0.1",
+        ] {
+            assert!(
+                should_skip_local_firewall_enforcement(ip),
+                "{} should be skipped",
+                ip
+            );
+        }
+    }
+
+    #[test]
+    fn public_ips_remain_eligible_for_firewall_enforcement() {
+        for ip in ["8.8.8.8", "1.1.1.1", "2001:4860:4860::8888"] {
+            assert!(
+                !should_skip_local_firewall_enforcement(ip),
+                "{} should remain blockable",
+                ip
+            );
+        }
     }
 
     #[test]

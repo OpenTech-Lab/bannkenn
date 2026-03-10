@@ -3,6 +3,7 @@ use crate::butterfly;
 use crate::campaign::LocalCampaignTracker;
 use crate::config::AgentConfig;
 use crate::event_risk::{self, EventSurgeDetector};
+use crate::firewall::should_skip_local_firewall_enforcement;
 use crate::geoip;
 use crate::patterns::{all_patterns, all_ssh_login_patterns};
 use crate::risk_level::HostRiskLevel;
@@ -359,6 +360,7 @@ async fn open_log_from_start(path: &str) -> Result<File> {
 /// Record a failed attempt and emit alert/block telemetry.
 ///
 /// Processing order:
+/// 0. Skip local/self-originated addresses that should never hit the firewall.
 /// 1. Skip IPs already locally enforced or currently pending enforcement.
 /// 2. IPs in the known block-list DB → emit `level=listed` immediately.
 /// 3. Burst detection (if enabled) → block immediately on rapid-fire hits.
@@ -385,6 +387,14 @@ async fn process_failed_attempt(
     enforced_blocked_ips: &Arc<RwLock<HashSet<String>>>,
     shared_risk_snapshot: &Arc<RwLock<SharedRiskSnapshot>>,
 ) {
+    if should_skip_local_firewall_enforcement(&raw.ip) {
+        tracing::debug!(
+            "Ignoring local/reserved source address {}; skipping detection pipeline",
+            raw.ip
+        );
+        return;
+    }
+
     // Step 1: local firewall already enforced this IP, or an enforcement attempt
     // is still in-flight — skip silently.
     if pending_local_blocks.contains(&raw.ip) || enforced_blocked_ips.read().await.contains(&raw.ip)
@@ -996,6 +1006,58 @@ mod tests {
         assert!(
             event.reason.contains("shared:campaign"),
             "event reason should include shared server tag"
+        );
+    }
+
+    #[tokio::test]
+    async fn loopback_addresses_never_enter_the_block_pipeline() {
+        let config = AgentConfig {
+            threshold: 1,
+            ..AgentConfig::default()
+        };
+        let raw = RawDetection {
+            ip: "127.0.0.1".to_string(),
+            reason: "Failed SSH password".to_string(),
+            log_path: "/var/log/auth.log".to_string(),
+        };
+        let mut ip_attempts: HashMap<String, VecDeque<Instant>> = HashMap::new();
+        let mut pending_local_blocks = HashSet::new();
+        let mut burst_detector = BurstDetector::new();
+        let mut host_risk = HostRiskLevel::new();
+        let mut surge_detector = EventSurgeDetector::new();
+        let mut campaign_tracker = LocalCampaignTracker::new();
+        let (tx, mut rx) = mpsc::channel(8);
+        let known_blocked_ips = Arc::new(RwLock::new(HashMap::new()));
+        let enforced_blocked_ips = Arc::new(RwLock::new(HashSet::new()));
+        let shared_risk_snapshot = Arc::new(RwLock::new(SharedRiskSnapshot::default()));
+
+        process_failed_attempt(
+            &raw,
+            &mut ip_attempts,
+            &mut pending_local_blocks,
+            &mut burst_detector,
+            &mut host_risk,
+            &mut surge_detector,
+            &mut campaign_tracker,
+            &config,
+            &tx,
+            &known_blocked_ips,
+            &enforced_blocked_ips,
+            &shared_risk_snapshot,
+        )
+        .await;
+
+        assert!(
+            rx.try_recv().is_err(),
+            "loopback detections should not emit alert/block events"
+        );
+        assert!(
+            !pending_local_blocks.contains(&raw.ip),
+            "loopback detections should never enter pending enforcement"
+        );
+        assert!(
+            !ip_attempts.contains_key(&raw.ip),
+            "loopback detections should not create sliding-window state"
         );
     }
 }

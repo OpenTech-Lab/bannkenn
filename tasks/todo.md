@@ -642,3 +642,23 @@
   - `cargo fmt --all`
   - `cargo check -p bannkenn-agent`
   - `cargo test -p bannkenn-agent`
+
+## Phase 36 – Preserve localhost/local access when nftables updates (Codex)
+- [x] Inspect the watcher + firewall path to confirm how local addresses can enter BannKenn enforcement
+- [x] Add a shared firewall-level guard that refuses to enforce loopback/private/reserved addresses
+- [x] Add regression tests covering loopback/local suppression and normal public-IP enforcement
+- [x] Verify with targeted Rust tests/checks and document the results
+
+## Review (Phase 36)
+- Findings:
+  - BannKenn could treat self-originated addresses as normal attackers because neither the detection pipeline nor the firewall layer filtered loopback/private/local ranges before adding them to the nftables set.
+  - Once a local address such as `127.0.0.1` or a Docker bridge/private source entered the blocklist, host access to `http://localhost:3021`, `https://localhost`, and similar local services could be cut off by BannKenn’s own firewall rules.
+- Implemented:
+  - Added `should_skip_local_firewall_enforcement()` in `agent/src/firewall.rs` and used it as a hard guard before any firewall block operation.
+  - Updated the watcher to ignore local/self-originated addresses before they can emit alert/block events or create sliding-window state.
+  - Updated startup restore, sync, and runtime enforcement paths to skip local/reserved addresses and log that decision instead of touching nftables.
+  - Added regression tests covering local/private suppression and loopback bypass of the block pipeline.
+- Verification:
+  - `cargo fmt --all`
+  - `cargo check -p bannkenn-agent`
+  - `cargo test -p bannkenn-agent`

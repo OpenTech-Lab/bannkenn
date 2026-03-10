@@ -5,7 +5,7 @@ use tokio::sync::RwLock;
 
 use crate::client::ApiClient;
 use crate::config::{OfflineAgentState, SyncState};
-use crate::firewall::{block_ip, detect_backend};
+use crate::firewall::{block_ip, detect_backend, should_skip_local_firewall_enforcement};
 use crate::shared_risk::SharedRiskSnapshot;
 use crate::watcher::BlockOutcome;
 
@@ -71,6 +71,19 @@ pub async fn sync_loop(
                 }
 
                 for row in &rows {
+                    if should_skip_local_firewall_enforcement(&row.ip) {
+                        tracing::warn!(
+                            "sync: skipping firewall enforcement for local/reserved address {}",
+                            row.ip
+                        );
+                        known_blocked_ips
+                            .write()
+                            .await
+                            .insert(row.ip.clone(), row.source.clone());
+                        state.last_synced_id = row.id;
+                        continue;
+                    }
+
                     match block_ip(&row.ip, &backend).await {
                         Ok(_) => {
                             tracing::info!("sync: blocked IP {}", row.ip);
