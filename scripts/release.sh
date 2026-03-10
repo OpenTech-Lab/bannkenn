@@ -96,6 +96,19 @@ else
     git add "$CARGO_TOML"
 fi
 
+# ── Refresh Cargo.lock ───────────────────────────────────────────────────────
+
+step "Refreshing Cargo.lock"
+
+cargo check --workspace >/dev/null
+
+if ! git diff --quiet -- Cargo.lock; then
+    info "Cargo.lock updated for version ${VERSION}"
+    git add Cargo.lock
+else
+    info "Cargo.lock already up to date"
+fi
+
 # ── Create changelog file ─────────────────────────────────────────────────────
 
 step "Creating changelog: ${TAG}.md"

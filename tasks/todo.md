@@ -605,3 +605,20 @@
   - `cargo check --workspace`
   - `cargo check --workspace --all-targets`
   - Confirmed `docker/Dockerfile.server` now sources vendored Cargo config from `docker/cargo-vendor-config.toml`
+
+## Phase 34 – Update release script to refresh Cargo.lock (Codex)
+- [x] Inspect `scripts/release.sh` and confirm it only updates `Cargo.toml`
+- [x] Patch the script to refresh/stage `Cargo.lock` during version bumps
+- [x] Verify the lockfile update path in an isolated repo copy
+
+## Review (Phase 34)
+- Findings:
+  - `scripts/release.sh` bumped the workspace version in `Cargo.toml` and created the changelog, but it never refreshed or staged `Cargo.lock`.
+  - That left the lockfile package versions stale until a later manual Cargo command happened to rewrite them.
+- Implemented:
+  - Added a `Refreshing Cargo.lock` step to `scripts/release.sh`.
+  - The script now runs `cargo check --workspace` immediately after the version bump and stages `Cargo.lock` if it changed.
+- Verification:
+  - `bash -n scripts/release.sh`
+  - `cargo check --workspace`
+  - Ran `scripts/release.sh 1.3.22` in an isolated temporary git repo with a local bare remote and confirmed the resulting release commit updated both `Cargo.toml` and `Cargo.lock`
