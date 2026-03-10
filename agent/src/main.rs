@@ -54,11 +54,11 @@ enum Commands {
     Run,
     /// Remove BannKenn-managed firewall state and exit
     CleanupFirewall,
-    /// Initialize local configuration (does not connect to the dashboard server)
+    /// Initialize local configuration and register with the dashboard if reachable
     Init,
     /// Stop, disable, and remove the systemd service plus local agent state
     Uninstall,
-    /// Register this agent with the dashboard server (run after `init`)
+    /// Register or refresh this agent with the dashboard server
     Connect,
     /// Download and install the latest released agent binary, or a specific version
     Update {
@@ -98,10 +98,10 @@ async fn run() -> Result<()> {
 
     if config.server_url.is_empty() || config.jwt_token.is_empty() {
         tracing::error!(
-            "Configuration incomplete. Run 'bannkenn-agent init' then 'bannkenn-agent connect'"
+            "Configuration incomplete. Run 'bannkenn-agent init' to configure/register, or 'bannkenn-agent connect' to retry registration"
         );
         return Err(anyhow::anyhow!(
-            "Configuration incomplete. Run 'bannkenn-agent init' then 'bannkenn-agent connect'"
+            "Configuration incomplete. Run 'bannkenn-agent init' to configure/register, or 'bannkenn-agent connect' to retry registration"
         ));
     }
 
@@ -548,7 +548,7 @@ async fn shutdown_signal() -> &'static str {
     }
 }
 
-/// Set up local configuration. Does NOT connect to the server.
+/// Set up local configuration and attempt server registration immediately.
 async fn init() -> Result<()> {
     println!("\n=== BannKenn Agent — Local Setup ===\n");
 
@@ -612,7 +612,7 @@ async fn init() -> Result<()> {
     // Generate a stable UUID for this agent
     let uuid = Uuid::new_v4().to_string();
 
-    let config = AgentConfig {
+    let mut config = AgentConfig {
         server_url,
         jwt_token: String::new(), // populated by `connect`
         agent_name,
@@ -634,7 +634,7 @@ async fn init() -> Result<()> {
     match install_systemd_unit(&std::env::current_exe()?) {
         Ok(true) => {
             println!("Installed systemd unit at {}.", SERVICE_UNIT_PATH);
-            println!("Use 'sudo systemctl enable --now bannkenn-agent' after connect.");
+            println!("Use 'sudo systemctl enable --now bannkenn-agent' after registration.");
         }
         Ok(false) => {
             println!("Systemd not detected; skipping service unit installation.");
@@ -654,8 +654,21 @@ async fn init() -> Result<()> {
     }
 
     println!("\nConfiguration saved.");
-    println!("Run 'bannkenn-agent connect' to register with the dashboard server.");
-    println!("Then run 'sudo systemctl enable --now bannkenn-agent' to start monitoring.\n");
+
+    match register_and_persist_agent(&mut config).await {
+        Ok(name) => {
+            println!("Agent '{}' is ready.", name);
+            println!("Run 'sudo systemctl enable --now bannkenn-agent' to start monitoring.");
+            println!("The running service keeps the dashboard connection alive; stopping or disabling it stops heartbeats and uploads.\n");
+        }
+        Err(err) => {
+            eprintln!("Registration skipped/failed during init: {}", err);
+            println!("Run 'sudo bannkenn-agent connect' to retry registration.");
+            println!(
+                "Then run 'sudo systemctl enable --now bannkenn-agent' to start monitoring.\n"
+            );
+        }
+    }
 
     Ok(())
 }
@@ -696,41 +709,12 @@ async fn uninstall() -> Result<()> {
 async fn connect() -> Result<()> {
     let mut config = AgentConfig::load()?;
 
-    if config.server_url.is_empty() {
-        return Err(anyhow::anyhow!(
-            "No server URL configured. Run 'bannkenn-agent init' first."
-        ));
-    }
-
-    // Ensure there is a UUID (generate if missing, e.g. old config)
-    if config.uuid.is_empty() {
-        config.uuid = Uuid::new_v4().to_string();
-    }
-
-    // Use stored agent_name or fall back to hostname
-    let name = if config.agent_name.is_empty() {
-        get_hostname()
-    } else {
-        config.agent_name.clone()
-    };
-
-    println!("\nConnecting to {} as '{}'…", config.server_url, name);
-
-    match register_agent_and_get_token(&config.server_url, &name, &config.uuid).await {
-        Ok(token) => {
-            config.jwt_token = token;
-            config.agent_name = name.clone();
-            config.save()?;
-            println!("Agent '{}' registered successfully.", name);
-            println!("Starting agent…\n");
-        }
-        Err(e) => {
-            eprintln!("Connection failed: {}", e);
-            return Err(e);
-        }
-    }
-
-    run().await
+    let name = register_and_persist_agent(&mut config).await?;
+    println!(
+        "Saved dashboard token for '{}'. Start or restart the service to use it.\n",
+        name
+    );
+    Ok(())
 }
 
 /// Return the machine hostname, trying several sources.
@@ -984,4 +968,32 @@ async fn register_agent_and_get_token(
     }
 
     Ok(payload.token)
+}
+
+async fn register_and_persist_agent(config: &mut AgentConfig) -> Result<String> {
+    if config.server_url.is_empty() {
+        return Err(anyhow::anyhow!(
+            "No server URL configured. Run 'bannkenn-agent init' first."
+        ));
+    }
+
+    if config.uuid.is_empty() {
+        config.uuid = Uuid::new_v4().to_string();
+    }
+
+    let name = if config.agent_name.is_empty() {
+        get_hostname()
+    } else {
+        config.agent_name.clone()
+    };
+
+    println!("\nConnecting to {} as '{}'…", config.server_url, name);
+
+    let token = register_agent_and_get_token(&config.server_url, &name, &config.uuid).await?;
+    config.jwt_token = token;
+    config.agent_name = name.clone();
+    config.save()?;
+
+    println!("Agent '{}' registered successfully.", name);
+    Ok(name)
 }

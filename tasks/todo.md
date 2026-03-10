@@ -662,3 +662,24 @@
   - `cargo fmt --all`
   - `cargo check -p bannkenn-agent`
   - `cargo test -p bannkenn-agent`
+
+## Phase 37 – Merge agent registration into init flow (Codex)
+- [x] Inspect the current `init` / `connect` / `run` flow and confirm where registration and long-running runtime are coupled
+- [x] Refactor agent registration into a shared helper that persists the JWT without starting the runtime loop
+- [x] Make `bannkenn-agent init` attempt registration automatically and fall back cleanly if the server is unavailable
+- [x] Make `bannkenn-agent connect` register-and-exit instead of starting the foreground agent loop
+- [x] Update docs/tests and verify with Rust checks/tests
+
+## Review (Phase 37)
+- Findings:
+  - The old workflow forced `init` and `connect` as separate commands, and `connect` immediately called `run()`, which made a one-time registration command behave like a foreground service.
+  - That coupling was unnecessary because long-lived server communication already belongs to the running agent/service via heartbeat and sync loops; registration only needs to persist the JWT token.
+- Implemented:
+  - Extracted shared registration/token persistence into a reusable helper in `agent/src/main.rs`.
+  - Changed `bannkenn-agent init` to attempt dashboard registration automatically after saving config and installing the systemd unit, while still leaving config usable if the server is temporarily unreachable.
+  - Changed `bannkenn-agent connect` to register-and-exit instead of starting the foreground agent loop.
+  - Updated README and installer messaging to reflect the new one-command setup path and the need to restart the service after token refreshes.
+- Verification:
+  - `cargo fmt --all`
+  - `cargo check -p bannkenn-agent`
+  - `cargo test -p bannkenn-agent`

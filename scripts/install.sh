@@ -84,9 +84,9 @@ main() {
     info ""
     info "Installation complete!"
     info "Next steps:"
-    info "  1. sudo bannkenn-agent init     — configure the agent and install the systemd unit"
-    info "  2. sudo bannkenn-agent connect  — register with the dashboard and obtain a JWT token"
-    info "  3. sudo systemctl enable --now bannkenn-agent"
+    info "  1. sudo bannkenn-agent init     — configure the agent, install the systemd unit, and register if the dashboard is reachable"
+    info "  2. sudo systemctl enable --now bannkenn-agent"
+    info "  3. if registration failed during init: sudo bannkenn-agent connect && sudo systemctl restart bannkenn-agent"
 }
 
 main "$@"

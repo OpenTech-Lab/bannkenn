@@ -100,18 +100,17 @@ Invoke-WebRequest -Uri "https://github.com/OpenTech-Lab/bannkenn/releases/downlo
 sudo bannkenn-agent init
 ```
 
-`init` now auto-detects available log sources, auto-selects a log file path, and writes `/etc/systemd/system/bannkenn-agent.service` automatically on Linux/systemd when run with `sudo`.
+`init` now auto-detects available log sources, auto-selects a log file path, writes `/etc/systemd/system/bannkenn-agent.service` automatically on Linux/systemd when run with `sudo`, and attempts dashboard registration immediately.
 
-### 5. Register the agent to get JWT token
+If the dashboard server was unreachable during `init`, retry registration later with:
 
 ```bash
 sudo bannkenn-agent connect
 ```
 
-Note: current `connect` command also starts the agent foreground loop after registration.  
-After registration succeeds, press `Ctrl+C` to return to shell.
+`connect` now only refreshes/saves the JWT token. It does not start the foreground agent loop.
 
-### 6. Start the systemd service
+### 5. Start the systemd service
 
 ```bash
 sudo systemctl enable --now bannkenn-agent
@@ -124,7 +123,7 @@ sudo systemctl restart bannkenn-agent
 
 Stopping the service removes BannKenn-managed nftables rules, including its dedicated nftables table and blocklist set.
 
-### 7. Verify agent status
+### 6. Verify agent status
 
 ```bash
 sudo systemctl status bannkenn-agent --no-pager
@@ -151,8 +150,14 @@ Agent from source:
 cd bannkenn
 sudo bash scripts/install.sh
 sudo bannkenn-agent init
-sudo bannkenn-agent connect
 sudo systemctl enable --now bannkenn-agent
+```
+
+If `init` could not reach the server yet:
+
+```bash
+sudo bannkenn-agent connect
+sudo systemctl restart bannkenn-agent
 ```
 
 ### Stop
@@ -222,7 +227,7 @@ If you also want to remove the checked-out source tree, delete the `bannkenn/` d
 
 - Agent shows `offline`:
   - run `sudo bannkenn-agent connect` again to refresh token
-  - restart service: `sudo systemctl restart bannkenn-agent`
+  - restart service so it picks up the new token: `sudo systemctl restart bannkenn-agent`
   - inspect logs for `heartbeat error 401`
 - Service fails to start:
   - confirm `/root/.config/bannkenn/agent.toml` exists
