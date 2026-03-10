@@ -574,3 +574,34 @@
 - Verification:
   - `cargo fmt --all`
   - `npm run build` in `dashboard/`
+
+## Phase 32 – Reproduce reported cargo check failure (Codex)
+- [x] Run the relevant cargo check commands against the current workspace
+- [x] Verify broader target coverage to catch target-specific compile failures
+
+## Review (Phase 32)
+- Findings:
+  - I could not reproduce a cargo compile failure in the current workspace state.
+- Verification:
+  - `cargo check -p bannkenn-agent`
+  - `cargo check --workspace`
+  - `cargo check --workspace --all-targets`
+  - `cargo test -p bannkenn-agent`
+
+## Phase 33 – Fix CI cargo resolution with missing vendor directory (Codex)
+- [x] Inspect Cargo source replacement config and workflow behavior around `vendor/`
+- [x] Stop forcing vendored dependencies for normal workspace/CI cargo commands
+- [x] Preserve vendored source replacement for offline Docker server builds
+- [x] Verify workspace cargo commands still pass after the config change
+
+## Review (Phase 33)
+- Findings:
+  - CI failed because the repo-level `.cargo/config.toml` forced all Cargo invocations to use `vendor/`, but `vendor/` is not tracked in git and is therefore absent in clean GitHub Actions checkouts.
+  - The vendored source replacement is only actually required for the offline server Docker build path, not for normal `cargo check`/`cargo test` in CI.
+- Implemented:
+  - Removed the repo-root `.cargo/config.toml` so normal workspace and CI Cargo commands resolve dependencies from crates.io again.
+  - Added `docker/cargo-vendor-config.toml` and updated `docker/Dockerfile.server` to copy that file into `.cargo/config.toml` inside the build image, preserving vendored/offline Docker behavior where it is needed.
+- Verification:
+  - `cargo check --workspace`
+  - `cargo check --workspace --all-targets`
+  - Confirmed `docker/Dockerfile.server` now sources vendored Cargo config from `docker/cargo-vendor-config.toml`

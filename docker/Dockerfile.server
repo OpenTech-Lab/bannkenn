@@ -4,7 +4,7 @@ WORKDIR /app
 
 # Copy workspace manifests first for layer caching
 COPY Cargo.toml Cargo.lock ./
-COPY .cargo/config.toml .cargo/config.toml
+COPY docker/cargo-vendor-config.toml .cargo/config.toml
 COPY vendor/ vendor/
 COPY agent/Cargo.toml agent/
 COPY server/Cargo.toml server/
