@@ -3,7 +3,7 @@ members = ["agent", "server"]
 resolver = "2"
 
 [workspace.package]
-version = "1.3.20"
+version = "1.3.21"
 edition = "2021"
 authors = ["BannKenn Contributors"]
 license = "MIT"
