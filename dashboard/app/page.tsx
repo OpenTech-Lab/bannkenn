@@ -72,6 +72,7 @@ export default function Dashboard() {
   const [decisions, setDecisions] = useState<Decision[]>([]);
   const [agents, setAgents] = useState<AgentStatus[]>([]);
   const [sshLogins, setSshLogins] = useState<SshLoginEvent[]>([]);
+  const [activityTab, setActivityTab] = useState<'decisions' | 'ssh'>('decisions');
   const [health, setHealth] = useState<'ok' | 'error' | 'loading'>('loading');
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
 
@@ -215,49 +216,6 @@ export default function Dashboard() {
         <StatCard label="Agents online" value={onlineAgents} accent="green" />
       </div>
 
-      {/* SSH Access Notification — shown to all viewers */}
-      {sshLogins.length > 0 && (
-        <div>
-          <h2 className="text-xs font-semibold text-muted-foreground uppercase tracking-widest mb-3 flex items-center gap-2">
-            <span className="inline-block w-2 h-2 rounded-full bg-amber-400 animate-pulse" />
-            SSH Access Events
-          </h2>
-          <div className="rounded-xl border border-amber-800/50 bg-amber-950/20 overflow-hidden">
-            <Table>
-              <TableHeader>
-                <TableRow className="border-amber-800/30">
-                  <TableHead>User</TableHead>
-                  <TableHead>Source IP</TableHead>
-                  <TableHead>Agent</TableHead>
-                  <TableHead>Country / ISP</TableHead>
-                  <TableHead>Time</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {sshLogins.map((ev) => (
-                  <TableRow key={ev.id} className="border-amber-800/20">
-                    <TableCell>
-                      <Badge className="bg-amber-900/50 text-amber-300 border-amber-700 hover:bg-amber-900/50 font-mono">
-                        SSH ACCESS
-                      </Badge>
-                      <span className="ml-2 font-mono text-amber-200">{ev.username}</span>
-                    </TableCell>
-                    <TableCell className="font-mono text-sm">{ev.ip}</TableCell>
-                    <TableCell className="text-muted-foreground text-sm">{ev.agent_name}</TableCell>
-                    <TableCell className="text-muted-foreground text-xs">
-                      {[ev.country, ev.asn_org].filter(Boolean).join(' · ') || '—'}
-                    </TableCell>
-                    <TableCell className="text-muted-foreground text-xs whitespace-nowrap">
-                      {new Date(ev.created_at).toLocaleString()}
-                    </TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          </div>
-        </div>
-      )}
-
       {/* Agent Status table */}
       <div>
         <h2 className="text-xs font-semibold text-muted-foreground uppercase tracking-widest mb-3">
@@ -387,52 +345,122 @@ export default function Dashboard() {
         </div>
       </div>
 
-      {/* Recent Decisions table */}
+      {/* Recent Activity table */}
       <div>
-        <h2 className="text-xs font-semibold text-muted-foreground uppercase tracking-widest mb-3">
-          Recent Decisions
-        </h2>
+        <div className="flex flex-col gap-3 mb-3 sm:flex-row sm:items-center sm:justify-between">
+          <h2 className="text-xs font-semibold text-muted-foreground uppercase tracking-widest">
+            Recent Activity
+          </h2>
+          <div className="inline-flex w-full rounded-lg border border-border bg-card/60 p-1 sm:w-auto">
+            <button
+              type="button"
+              onClick={() => setActivityTab('decisions')}
+              aria-pressed={activityTab === 'decisions'}
+              className={`flex-1 rounded-md px-3 py-1.5 text-xs font-medium transition sm:flex-none ${
+                activityTab === 'decisions'
+                  ? 'bg-red-950/60 text-red-200 shadow-sm'
+                  : 'text-muted-foreground hover:text-foreground'
+              }`}
+            >
+              Recent Decisions
+              <span className="ml-2 text-[11px] text-muted-foreground">{recentBlockedByIp.length}</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setActivityTab('ssh')}
+              aria-pressed={activityTab === 'ssh'}
+              className={`flex-1 rounded-md px-3 py-1.5 text-xs font-medium transition sm:flex-none ${
+                activityTab === 'ssh'
+                  ? 'bg-amber-950/60 text-amber-200 shadow-sm'
+                  : 'text-muted-foreground hover:text-foreground'
+              }`}
+            >
+              SSH Access Events
+              <span className="ml-2 text-[11px] text-muted-foreground">{sshLogins.length}</span>
+            </button>
+          </div>
+        </div>
         <div className="rounded-xl border border-border overflow-hidden">
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>IP</TableHead>
-                <TableHead>Action</TableHead>
-                <TableHead>Reason</TableHead>
-                <TableHead>Source</TableHead>
-                <TableHead>Time</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {recentBlockedByIp.length === 0 ? (
+          {activityTab === 'decisions' ? (
+            <Table>
+              <TableHeader>
                 <TableRow>
-                  <TableCell colSpan={5} className="text-center py-12 text-muted-foreground">
-                    No blocked IPs yet
-                  </TableCell>
+                  <TableHead>IP</TableHead>
+                  <TableHead>Action</TableHead>
+                  <TableHead>Reason</TableHead>
+                  <TableHead>Source</TableHead>
+                  <TableHead>Time</TableHead>
                 </TableRow>
-              ) : (
-                recentBlockedByIp.map((d) => (
-                  <TableRow key={d.id}>
-                    <TableCell className="font-mono">{d.ip}</TableCell>
-                    <TableCell>
-                      <Badge
-                        variant={d.action === 'block' ? 'destructive' : 'secondary'}
-                      >
-                        {d.action}
-                      </Badge>
-                    </TableCell>
-                    <TableCell className="text-muted-foreground max-w-xs truncate">
-                      {d.reason}
-                    </TableCell>
-                    <TableCell className="text-muted-foreground">{d.source}</TableCell>
-                    <TableCell className="text-muted-foreground text-xs whitespace-nowrap">
-                      {new Date(d.created_at).toLocaleString()}
+              </TableHeader>
+              <TableBody>
+                {recentBlockedByIp.length === 0 ? (
+                  <TableRow>
+                    <TableCell colSpan={5} className="text-center py-12 text-muted-foreground">
+                      No blocked IPs yet
                     </TableCell>
                   </TableRow>
-                ))
-              )}
-            </TableBody>
-          </Table>
+                ) : (
+                  recentBlockedByIp.map((d) => (
+                    <TableRow key={d.id}>
+                      <TableCell className="font-mono">{d.ip}</TableCell>
+                      <TableCell>
+                        <Badge variant={d.action === 'block' ? 'destructive' : 'secondary'}>
+                          {d.action}
+                        </Badge>
+                      </TableCell>
+                      <TableCell className="text-muted-foreground max-w-xs truncate">
+                        {d.reason}
+                      </TableCell>
+                      <TableCell className="text-muted-foreground">{d.source}</TableCell>
+                      <TableCell className="text-muted-foreground text-xs whitespace-nowrap">
+                        {new Date(d.created_at).toLocaleString()}
+                      </TableCell>
+                    </TableRow>
+                  ))
+                )}
+              </TableBody>
+            </Table>
+          ) : (
+            <Table>
+              <TableHeader>
+                <TableRow className="border-amber-800/30">
+                  <TableHead>User</TableHead>
+                  <TableHead>Source IP</TableHead>
+                  <TableHead>Agent</TableHead>
+                  <TableHead>Country / ISP</TableHead>
+                  <TableHead>Time</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {sshLogins.length === 0 ? (
+                  <TableRow>
+                    <TableCell colSpan={5} className="text-center py-12 text-muted-foreground">
+                      No SSH access events yet
+                    </TableCell>
+                  </TableRow>
+                ) : (
+                  sshLogins.map((ev) => (
+                    <TableRow key={ev.id} className="border-amber-800/20">
+                      <TableCell>
+                        <Badge className="bg-amber-900/50 text-amber-300 border-amber-700 hover:bg-amber-900/50 font-mono">
+                          SSH ACCESS
+                        </Badge>
+                        <span className="ml-2 font-mono text-amber-200">{ev.username}</span>
+                      </TableCell>
+                      <TableCell className="font-mono text-sm">{ev.ip}</TableCell>
+                      <TableCell className="text-muted-foreground text-sm">{ev.agent_name}</TableCell>
+                      <TableCell className="text-muted-foreground text-xs">
+                        {[ev.country, ev.asn_org].filter(Boolean).join(' · ') || '—'}
+                      </TableCell>
+                      <TableCell className="text-muted-foreground text-xs whitespace-nowrap">
+                        {new Date(ev.created_at).toLocaleString()}
+                      </TableCell>
+                    </TableRow>
+                  ))
+                )}
+              </TableBody>
+            </Table>
+          )}
         </div>
       </div>
 

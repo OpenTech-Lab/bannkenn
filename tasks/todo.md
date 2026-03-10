@@ -555,3 +555,22 @@
   - `cargo check -p bannkenn-agent`
   - `cargo test -p bannkenn-agent`
   - `rg -n "bannkenn-agent.service|sudo bannkenn-agent uninstall|enable --now bannkenn-agent|install the systemd unit" README.md scripts/install.sh agent/src -S`
+
+## Phase 31 – Dashboard tabs for Recent Decisions and SSH Access Events (Codex)
+- [x] Inspect the current home page layout for Recent Decisions and SSH Access Events
+- [x] Merge the two sections into one shared tabbed panel
+- [x] Verify the dashboard still builds after the UI change
+
+## Review (Phase 31)
+- Findings:
+  - The home page rendered `SSH Access Events` and `Recent Decisions` as two separate blocks, which split related recent activity across the page.
+- Implemented:
+  - Added a local tab state on the dashboard home page.
+  - Removed the standalone `SSH Access Events` block.
+  - Replaced the old `Recent Decisions` block with a shared `Recent Activity` panel containing two tabs:
+    - `Recent Decisions`
+    - `SSH Access Events`
+  - Preserved the existing table content and empty states, but now switches views in-place inside the same panel.
+- Verification:
+  - `cargo fmt --all`
+  - `npm run build` in `dashboard/`
