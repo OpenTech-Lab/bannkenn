@@ -6,6 +6,7 @@ use crate::event_risk::{self, EventSurgeDetector};
 use crate::geoip;
 use crate::patterns::{all_patterns, all_ssh_login_patterns};
 use crate::risk_level::HostRiskLevel;
+use crate::shared_risk::SharedRiskSnapshot;
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -67,6 +68,7 @@ pub async fn watch(
     tx: mpsc::Sender<SecurityEvent>,
     known_blocked_ips: Arc<RwLock<HashMap<String, String>>>,
     enforced_blocked_ips: Arc<RwLock<HashSet<String>>>,
+    shared_risk_snapshot: Arc<RwLock<SharedRiskSnapshot>>,
     mut block_outcomes_rx: mpsc::Receiver<BlockOutcome>,
 ) -> Result<()> {
     let log_paths = config.effective_log_paths();
@@ -159,6 +161,7 @@ pub async fn watch(
                             &tx,
                             &known_blocked_ips,
                             &enforced_blocked_ips,
+                            &shared_risk_snapshot,
                         )
                         .await;
                     }
@@ -364,8 +367,9 @@ async fn open_log_from_start(path: &str) -> Result<File> {
 /// 6. Host risk level adjustment.
 /// 7. Event-type risk rank + surge → further reduce threshold.
 /// 8. Campaign correlation (cross-IP) → if campaign, set threshold = 1.
-/// 9. Immediate-block signal check (certain SSH events hard-block regardless).
-/// 10. Emit alert or block event based on attempts vs effective threshold.
+/// 9. Merge server-shared risk profile and choose the more aggressive threshold.
+/// 10. Immediate-block signal check (certain SSH events hard-block regardless).
+/// 11. Emit alert or block event based on attempts vs effective threshold.
 #[allow(clippy::too_many_arguments)]
 async fn process_failed_attempt(
     raw: &RawDetection,
@@ -379,6 +383,7 @@ async fn process_failed_attempt(
     tx: &mpsc::Sender<SecurityEvent>,
     known_blocked_ips: &Arc<RwLock<HashMap<String, String>>>,
     enforced_blocked_ips: &Arc<RwLock<HashSet<String>>>,
+    shared_risk_snapshot: &Arc<RwLock<SharedRiskSnapshot>>,
 ) {
     // Step 1: local firewall already enforced this IP, or an enforcement attempt
     // is still in-flight — skip silently.
@@ -477,12 +482,13 @@ async fn process_failed_attempt(
     attempts.push_back(now);
 
     // Step 5: Compute base effective threshold (butterfly or static).
-    let mut effective = match &config.butterfly_shield {
+    let base_effective = match &config.butterfly_shield {
         Some(cfg) if cfg.enabled => {
             butterfly::effective_threshold(config.threshold, &raw.ip, window_secs, cfg)
         }
         _ => config.threshold,
     };
+    let mut effective = base_effective;
 
     // Step 6: Apply host risk level multiplier (if enabled).
     if let Some(risk_cfg) = config.risk_level.as_ref() {
@@ -516,6 +522,21 @@ async fn process_failed_attempt(
         effective = 1;
     }
 
+    let shared_decision = shared_risk_snapshot
+        .read()
+        .await
+        .apply(base_effective, &raw.reason);
+    let shared_tags = if let Some(shared_effective) = shared_decision.effective_threshold {
+        if shared_effective <= effective {
+            effective = shared_effective;
+            shared_decision.tags
+        } else {
+            Vec::new()
+        }
+    } else {
+        Vec::new()
+    };
+
     // Build tag string for reason annotation (e.g. "[High, surge, campaign:volume]").
     let mut tags: Vec<String> = Vec::new();
     if rank != event_risk::RiskRank::Low {
@@ -527,9 +548,12 @@ async fn process_failed_attempt(
     if let Some(ref cl) = campaign_level {
         tags.push(cl.label());
     }
+    tags.extend(shared_tags);
     let tag_str = if tags.is_empty() {
         String::new()
     } else {
+        tags.sort();
+        tags.dedup();
         format!(" [{}]", tags.join(", "))
     };
 
@@ -645,6 +669,7 @@ mod tests {
     use crate::config::AgentConfig;
     use crate::event_risk::EventSurgeDetector;
     use crate::risk_level::HostRiskLevel;
+    use crate::shared_risk::{SharedRiskCategory, SharedRiskSnapshot};
     use std::collections::{HashMap, HashSet, VecDeque};
     use std::sync::Arc;
     use std::time::Instant;
@@ -730,6 +755,7 @@ mod tests {
             "ipsum_feed".to_string(),
         )])));
         let enforced_blocked_ips = Arc::new(RwLock::new(HashSet::new()));
+        let shared_risk_snapshot = Arc::new(RwLock::new(SharedRiskSnapshot::default()));
 
         process_failed_attempt(
             &raw,
@@ -743,6 +769,7 @@ mod tests {
             &tx,
             &known_blocked_ips,
             &enforced_blocked_ips,
+            &shared_risk_snapshot,
         )
         .await;
 
@@ -762,6 +789,7 @@ mod tests {
             &tx,
             &known_blocked_ips,
             &enforced_blocked_ips,
+            &shared_risk_snapshot,
         )
         .await;
         assert!(
@@ -789,6 +817,7 @@ mod tests {
             &tx,
             &known_blocked_ips,
             &enforced_blocked_ips,
+            &shared_risk_snapshot,
         )
         .await;
 
@@ -819,6 +848,7 @@ mod tests {
         let (tx, mut rx) = mpsc::channel(8);
         let known_blocked_ips = Arc::new(RwLock::new(HashMap::new()));
         let enforced_blocked_ips = Arc::new(RwLock::new(HashSet::new()));
+        let shared_risk_snapshot = Arc::new(RwLock::new(SharedRiskSnapshot::default()));
 
         process_failed_attempt(
             &raw,
@@ -832,6 +862,7 @@ mod tests {
             &tx,
             &known_blocked_ips,
             &enforced_blocked_ips,
+            &shared_risk_snapshot,
         )
         .await;
         let first = rx.recv().await.expect("first alert event");
@@ -849,6 +880,7 @@ mod tests {
             &tx,
             &known_blocked_ips,
             &enforced_blocked_ips,
+            &shared_risk_snapshot,
         )
         .await;
         let second = rx.recv().await.expect("threshold block event");
@@ -867,6 +899,7 @@ mod tests {
             &tx,
             &known_blocked_ips,
             &enforced_blocked_ips,
+            &shared_risk_snapshot,
         )
         .await;
         assert!(
@@ -894,6 +927,7 @@ mod tests {
             &tx,
             &known_blocked_ips,
             &enforced_blocked_ips,
+            &shared_risk_snapshot,
         )
         .await;
         let third = rx
@@ -904,6 +938,64 @@ mod tests {
         assert!(
             third.attempts >= 3,
             "attempt history should survive failed enforcement"
+        );
+    }
+
+    #[tokio::test]
+    async fn shared_server_risk_can_force_more_aggressive_block() {
+        let config = AgentConfig {
+            threshold: 5,
+            ..AgentConfig::default()
+        };
+        let raw = RawDetection {
+            ip: "198.51.100.77".to_string(),
+            reason: "Invalid SSH user".to_string(),
+            log_path: "/var/log/auth.log".to_string(),
+        };
+        let mut ip_attempts: HashMap<String, VecDeque<Instant>> = HashMap::new();
+        let mut pending_local_blocks = HashSet::new();
+        let mut burst_detector = BurstDetector::new();
+        let mut host_risk = HostRiskLevel::new();
+        let mut surge_detector = EventSurgeDetector::new();
+        let mut campaign_tracker = LocalCampaignTracker::new();
+        let (tx, mut rx) = mpsc::channel(8);
+        let known_blocked_ips = Arc::new(RwLock::new(HashMap::new()));
+        let enforced_blocked_ips = Arc::new(RwLock::new(HashSet::new()));
+        let shared_risk_snapshot = Arc::new(RwLock::new(SharedRiskSnapshot {
+            categories: vec![SharedRiskCategory {
+                category: "Invalid SSH user".to_string(),
+                distinct_ips: 3,
+                distinct_agents: 2,
+                event_count: 3,
+                threshold_multiplier: 0.25,
+                force_threshold: Some(1),
+                label: "shared:campaign".to_string(),
+            }],
+            ..Default::default()
+        }));
+
+        process_failed_attempt(
+            &raw,
+            &mut ip_attempts,
+            &mut pending_local_blocks,
+            &mut burst_detector,
+            &mut host_risk,
+            &mut surge_detector,
+            &mut campaign_tracker,
+            &config,
+            &tx,
+            &known_blocked_ips,
+            &enforced_blocked_ips,
+            &shared_risk_snapshot,
+        )
+        .await;
+
+        let event = rx.recv().await.expect("shared risk should emit a block");
+        assert_eq!(event.level, "block");
+        assert_eq!(event.effective_threshold, 1);
+        assert!(
+            event.reason.contains("shared:campaign"),
+            "event reason should include shared server tag"
         );
     }
 }

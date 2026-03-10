@@ -124,6 +124,7 @@ async fn main() -> anyhow::Result<()> {
 
     let agents_protected_router = Router::new()
         .route("/heartbeat", post(routes::agents::heartbeat))
+        .route("/shared-risk", get(routes::agents::shared_risk_profile))
         .with_state(agents_state.clone())
         .layer(auth_middleware_layer.clone());
 

@@ -4,9 +4,32 @@ use std::time::Duration;
 use tokio::sync::RwLock;
 
 use crate::client::ApiClient;
-use crate::config::SyncState;
+use crate::config::{OfflineAgentState, SyncState};
 use crate::firewall::{block_ip, detect_backend};
+use crate::shared_risk::SharedRiskSnapshot;
 use crate::watcher::BlockOutcome;
+
+pub async fn persist_offline_state(
+    known_blocked_ips: &Arc<RwLock<HashMap<String, String>>>,
+    shared_risk_snapshot: &Arc<RwLock<SharedRiskSnapshot>>,
+) {
+    let path = match OfflineAgentState::state_path() {
+        Ok(path) => path,
+        Err(err) => {
+            tracing::warn!("offline-state: cannot determine state path: {}", err);
+            return;
+        }
+    };
+
+    let state = OfflineAgentState {
+        known_blocked_ips: known_blocked_ips.read().await.clone(),
+        shared_risk_snapshot: shared_risk_snapshot.read().await.clone(),
+    };
+
+    if let Err(err) = state.save(&path) {
+        tracing::warn!("offline-state: failed to save cache: {}", err);
+    }
+}
 
 /// Polling loop that incrementally pulls block decisions from the server
 /// and applies them to the local firewall. Runs every 30 seconds.
@@ -15,6 +38,7 @@ pub async fn sync_loop(
     client: ApiClient,
     known_blocked_ips: Arc<RwLock<HashMap<String, String>>>,
     enforced_blocked_ips: Arc<RwLock<HashSet<String>>>,
+    shared_risk_snapshot: Arc<RwLock<SharedRiskSnapshot>>,
     block_outcome_tx: tokio::sync::mpsc::Sender<BlockOutcome>,
 ) {
     let state_path = match SyncState::state_path() {
@@ -68,9 +92,18 @@ pub async fn sync_loop(
                     if let Err(e) = state.save(&state_path) {
                         tracing::warn!("sync: failed to save state: {}", e);
                     }
+                    persist_offline_state(&known_blocked_ips, &shared_risk_snapshot).await;
                 }
             }
             Err(e) => tracing::warn!("sync fetch failed: {}", e),
+        }
+
+        match client.fetch_shared_risk_profile().await {
+            Ok(profile) => {
+                *shared_risk_snapshot.write().await = profile;
+                persist_offline_state(&known_blocked_ips, &shared_risk_snapshot).await;
+            }
+            Err(e) => tracing::warn!("shared-risk fetch failed: {}", e),
         }
 
         tokio::time::sleep(interval).await;

@@ -8,4 +8,5 @@ pub mod firewall;
 pub mod geoip;
 pub mod patterns;
 pub mod risk_level;
+pub mod shared_risk;
 pub mod watcher;

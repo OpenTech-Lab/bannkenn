@@ -344,3 +344,40 @@
   - `cargo test -p bannkenn-agent`
   - `cargo check --workspace`
   - `cargo fmt --all -- --check`
+
+## Phase 21 – Shared server risk propagation to agents (Codex)
+- [x] Verify current implementation against the end-to-end risk-sharing spec
+- [x] Add server-side shared risk profile calculation from fleet telemetry
+- [x] Add protected agent API to fetch shared risk profile periodically
+- [x] Merge shared server risk with local agent risk and choose the more aggressive block threshold
+- [x] Add regression tests and verify server/agent/workspace behavior
+
+## Review (Phase 21)
+- Findings against the requested behavior:
+  - Agent block sync already existed and remained correct.
+  - Risk telemetry upload already existed, but the server did not share any computed global risk profile back to agents.
+  - Agent-side blocking only used local environment signals plus delayed server block decisions; it did not merge local risk with server-computed fleet risk before blocking.
+- Implemented:
+  - Server-side shared fleet risk profile computation from recent telemetry, including:
+    - global risk pressure multiplier
+    - per-category shared surge/campaign overrides
+  - Protected agent endpoint `GET /api/v1/agents/shared-risk`
+  - Periodic agent fetch of shared risk alongside normal sync
+  - Agent-side merge that computes local and shared thresholds independently and uses the more aggressive one
+  - Shared reason tags (`shared:global`, `shared:surge`, `shared:campaign`) so the chosen server-side contribution is visible in telemetry/decisions
+- Behavior after this phase:
+  - Agent still blocks immediately on strong local signals
+  - Agent still syncs server block decisions periodically
+  - Server now shares fleet-wide risk to agents, so agents can preemptively tighten thresholds before a final central block decision arrives
+  - Final block threshold is now the minimum of local effective threshold and shared server effective threshold
+- Verification:
+  - `cargo fmt --all`
+  - `cargo fmt --all -- --check`
+  - `cargo test --workspace`
+  - `cargo check --workspace`
+
+## Phase 22 – Offline agent continuity with cached server state (Codex)
+- [ ] Verify current disconnect behavior for server-derived state and outbound reporting
+- [ ] Persist last-known shared risk and block knowledge locally for offline startup/use
+- [ ] Add a durable local outbox for telemetry/decision/login reports and periodic retry
+- [ ] Verify agent behavior with focused tests and workspace checks

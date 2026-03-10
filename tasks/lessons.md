@@ -85,6 +85,11 @@
 - For backward compatibility, apply sane runtime defaults when optional config sections are missing, and make new configs persist those defaults explicitly
 - If default thresholds are too conservative for real attacks, tune them based on user-observed behavior and add tests so the response profile stays intentional
 
+### Central intelligence must be propagated, not just computed
+- It is not enough for the server to collect telemetry and compute fleet-wide risk internally; agents must receive a consumable shared-risk snapshot if they are expected to tighten thresholds before final central block decisions are synced
+- "Agent syncs block decisions" and "agent merges server-computed risk with local risk" are different capabilities and need separate end-to-end verification
+- When both local and shared algorithms exist, compute them independently from the same base threshold and choose the more aggressive result explicitly instead of mixing intermediate state implicitly
+
 ### GeoIP backfill validation must be agent-scoped
 - After schema/backfill changes, verify specific affected agent rows (e.g., `/api/v1/agents/:id/decisions`) instead of only sampling global endpoints.
 - If a user reports stale/null values, add a targeted backfill path and return post-update sample values from DB to confirm write success.

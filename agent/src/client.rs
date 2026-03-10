@@ -1,3 +1,4 @@
+use crate::shared_risk::SharedRiskSnapshot;
 use anyhow::Result;
 use reqwest::Client as HttpClient;
 use serde::{Deserialize, Serialize};
@@ -51,6 +52,30 @@ impl ApiClient {
 
         let rows: Vec<DecisionRow> = response.json().await?;
         Ok(rows)
+    }
+
+    /// Fetch the server-computed shared risk profile for all agents.
+    pub async fn fetch_shared_risk_profile(&self) -> Result<SharedRiskSnapshot> {
+        let url = format!("{}/api/v1/agents/shared-risk", self.base_url);
+
+        let response = self
+            .http
+            .get(&url)
+            .header("Authorization", format!("Bearer {}", self.token))
+            .send()
+            .await?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let text = response.text().await.unwrap_or_default();
+            return Err(anyhow::anyhow!(
+                "Server returned shared-risk error {}: {}",
+                status,
+                text
+            ));
+        }
+
+        Ok(response.json().await?)
     }
 
     /// Report a block decision to the server

@@ -8,6 +8,7 @@ mod firewall;
 mod geoip;
 mod patterns;
 mod risk_level;
+mod shared_risk;
 mod sync;
 mod watcher;
 
@@ -28,6 +29,7 @@ use uuid::Uuid;
 use crate::client::ApiClient;
 use crate::config::{default_runtime_campaign_config, AgentConfig};
 use crate::firewall::{block_ip, detect_backend, init_firewall};
+use crate::shared_risk::SharedRiskSnapshot;
 use crate::watcher::{watch, BlockOutcome, SecurityEvent};
 
 #[derive(Parser)]
@@ -125,6 +127,8 @@ async fn run() -> Result<()> {
     let known_blocked_ips: Arc<RwLock<HashMap<String, String>>> =
         Arc::new(RwLock::new(HashMap::new()));
     let enforced_blocked_ips: Arc<RwLock<HashSet<String>>> = Arc::new(RwLock::new(HashSet::new()));
+    let shared_risk_snapshot: Arc<RwLock<SharedRiskSnapshot>> =
+        Arc::new(RwLock::new(SharedRiskSnapshot::default()));
 
     // Initial fetch: load all existing block-list IPs before starting the watcher
     // so detections are classified "listed" from the very first event.
@@ -174,12 +178,14 @@ async fn run() -> Result<()> {
     let config_for_watcher = Arc::clone(&config_arc);
     let known_ips_for_watcher = Arc::clone(&known_blocked_ips);
     let enforced_ips_for_watcher = Arc::clone(&enforced_blocked_ips);
+    let shared_risk_for_watcher = Arc::clone(&shared_risk_snapshot);
     let watcher_handle = tokio::spawn(async move {
         if let Err(e) = watch(
             config_for_watcher,
             tx,
             known_ips_for_watcher,
             enforced_ips_for_watcher,
+            shared_risk_for_watcher,
             block_outcome_rx,
         )
         .await
@@ -193,6 +199,7 @@ async fn run() -> Result<()> {
         sync_client,
         Arc::clone(&known_blocked_ips),
         Arc::clone(&enforced_blocked_ips),
+        Arc::clone(&shared_risk_snapshot),
         block_outcome_tx.clone(),
     ));
 

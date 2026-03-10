@@ -5,6 +5,24 @@ use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePool};
 use std::str::FromStr;
 use std::time::Duration;
 
+fn normalize_reason_category(reason: &str) -> &str {
+    if let Some(idx) = reason.rfind(" (") {
+        let suffix = &reason[idx + 2..];
+        if suffix.ends_with(')') {
+            return &reason[..idx];
+        }
+    }
+    reason
+}
+
+fn telemetry_level_weight(level: &str) -> f64 {
+    match level {
+        "block" => 3.0,
+        "listed" => 2.0,
+        _ => 1.0,
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Db(SqlitePool);
 
@@ -87,6 +105,26 @@ pub struct CommunityFeedIpRow {
     pub sightings: i64,
     pub first_seen_at: String,
     pub last_seen_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SharedRiskCategoryRow {
+    pub category: String,
+    pub distinct_ips: u32,
+    pub distinct_agents: u32,
+    pub event_count: u32,
+    pub threshold_multiplier: f64,
+    pub force_threshold: Option<u32>,
+    pub label: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SharedRiskProfileRow {
+    pub generated_at: String,
+    pub window_secs: i64,
+    pub global_risk_score: f64,
+    pub global_threshold_multiplier: f64,
+    pub categories: Vec<SharedRiskCategoryRow>,
 }
 
 impl Db {
@@ -868,24 +906,13 @@ impl Db {
             r#"
             SELECT ip, reason, source
             FROM telemetry_events
-            WHERE created_at > datetime('now', '-' || ? || ' seconds')
+            WHERE datetime(created_at) > datetime('now', '-' || ? || ' seconds')
               AND level IN ('alert', 'block')
             "#,
         )
         .bind(window_secs)
         .fetch_all(&self.0)
         .await?;
-
-        // Normalise reason → category (strip count annotations like "(2/5)" or "(threshold: 5)").
-        fn categorize(reason: &str) -> &str {
-            if let Some(idx) = reason.rfind(" (") {
-                let suffix = &reason[idx + 2..];
-                if suffix.ends_with(')') {
-                    return &reason[..idx];
-                }
-            }
-            reason
-        }
 
         // Build: category → (set of IPs, set of agent sources).
         use std::collections::{HashMap, HashSet};
@@ -895,7 +922,7 @@ impl Db {
         let mut ip_categories: HashMap<String, String> = HashMap::new();
 
         for (ip, reason, source) in &rows {
-            let cat = categorize(reason).to_string();
+            let cat = normalize_reason_category(reason).to_string();
             cat_ips.entry(cat.clone()).or_default().insert(ip.clone());
             cat_agents
                 .entry(cat.clone())
@@ -939,6 +966,101 @@ impl Db {
             .into_iter()
             .filter(|(ip, _)| !already_blocked.contains(ip))
             .collect())
+    }
+
+    pub async fn compute_shared_risk_profile(
+        &self,
+        window_secs: i64,
+    ) -> anyhow::Result<SharedRiskProfileRow> {
+        use std::collections::{HashMap, HashSet};
+
+        let window_secs = window_secs.max(60);
+        let rows = sqlx::query_as::<_, (String, String, String, String)>(
+            r#"
+            SELECT ip, reason, level, source
+            FROM telemetry_events
+            WHERE datetime(created_at) > datetime('now', '-' || ? || ' seconds')
+              AND level IN ('alert', 'block', 'listed')
+            "#,
+        )
+        .bind(window_secs)
+        .fetch_all(&self.0)
+        .await?;
+
+        let mut global_weight = 0.0f64;
+        let mut by_category: HashMap<String, (HashSet<String>, HashSet<String>, u32, f64)> =
+            HashMap::new();
+
+        for (ip, reason, level, source) in rows {
+            let category = normalize_reason_category(&reason).to_string();
+            let weight = telemetry_level_weight(&level);
+            global_weight += weight;
+
+            let entry = by_category
+                .entry(category)
+                .or_insert_with(|| (HashSet::new(), HashSet::new(), 0_u32, 0.0_f64));
+            entry.0.insert(ip);
+            entry.1.insert(source);
+            entry.2 += 1;
+            entry.3 += weight;
+        }
+
+        let global_risk_score = (global_weight / 30.0).clamp(0.0, 1.0);
+        let global_threshold_multiplier = 1.0 - global_risk_score * 0.5;
+
+        let mut categories = by_category
+            .into_iter()
+            .filter_map(|(category, (ips, agents, event_count, weighted_events))| {
+                let distinct_ips = ips.len() as u32;
+                let distinct_agents = agents.len() as u32;
+
+                if distinct_agents < 2 {
+                    return None;
+                }
+
+                if distinct_ips >= 3 {
+                    return Some(SharedRiskCategoryRow {
+                        category,
+                        distinct_ips,
+                        distinct_agents,
+                        event_count,
+                        threshold_multiplier: 0.25,
+                        force_threshold: Some(1),
+                        label: "shared:campaign".to_string(),
+                    });
+                }
+
+                if event_count >= 5 || weighted_events >= 6.0 {
+                    return Some(SharedRiskCategoryRow {
+                        category,
+                        distinct_ips,
+                        distinct_agents,
+                        event_count,
+                        threshold_multiplier: 0.5,
+                        force_threshold: None,
+                        label: "shared:surge".to_string(),
+                    });
+                }
+
+                None
+            })
+            .collect::<Vec<_>>();
+
+        categories.sort_by(|a, b| {
+            a.force_threshold
+                .unwrap_or(u32::MAX)
+                .cmp(&b.force_threshold.unwrap_or(u32::MAX))
+                .then(b.event_count.cmp(&a.event_count))
+                .then(a.category.cmp(&b.category))
+        });
+
+        Ok(SharedRiskProfileRow {
+            generated_at: Utc::now().to_rfc3339(),
+            window_secs,
+            global_risk_score,
+            global_threshold_multiplier,
+            categories,
+        })
     }
 
     pub async fn upsert_agent_heartbeat(
@@ -1000,5 +1122,59 @@ mod tests {
         assert_eq!(decisions[1].ip, "192.168.1.1");
         assert_eq!(decisions[0].reason, "Test reason 2");
         assert_eq!(decisions[1].reason, "Test reason 1");
+    }
+
+    #[tokio::test]
+    async fn shared_risk_profile_exposes_campaign_category() {
+        let db = Db::new(":memory:").await.expect("Failed to create test DB");
+
+        db.insert_telemetry_event("10.0.0.1", "Invalid SSH user", "alert", "agent-a", None)
+            .await
+            .unwrap();
+        db.insert_telemetry_event("10.0.0.2", "Invalid SSH user", "alert", "agent-b", None)
+            .await
+            .unwrap();
+        db.insert_telemetry_event("10.0.0.3", "Invalid SSH user", "block", "agent-a", None)
+            .await
+            .unwrap();
+
+        let profile = db.compute_shared_risk_profile(600).await.unwrap();
+        let category = profile
+            .categories
+            .iter()
+            .find(|row| row.category == "Invalid SSH user")
+            .expect("campaign category should exist");
+
+        assert_eq!(category.label, "shared:campaign");
+        assert_eq!(category.force_threshold, Some(1));
+        assert!(profile.global_risk_score > 0.0);
+    }
+
+    #[tokio::test]
+    async fn shared_risk_profile_exposes_cross_agent_surge() {
+        let db = Db::new(":memory:").await.expect("Failed to create test DB");
+
+        for idx in 0..5 {
+            let agent = if idx % 2 == 0 { "agent-a" } else { "agent-b" };
+            let ip = if idx % 2 == 0 {
+                "192.0.2.10"
+            } else {
+                "192.0.2.20"
+            }
+            .to_string();
+            db.insert_telemetry_event(&ip, "Web SQL Injection attempt", "alert", agent, None)
+                .await
+                .unwrap();
+        }
+
+        let profile = db.compute_shared_risk_profile(600).await.unwrap();
+        let category = profile
+            .categories
+            .iter()
+            .find(|row| row.category == "Web SQL Injection attempt")
+            .expect("surge category should exist");
+
+        assert_eq!(category.label, "shared:surge");
+        assert_eq!(category.force_threshold, None);
     }
 }

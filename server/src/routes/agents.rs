@@ -63,6 +63,15 @@ pub struct AgentTelemetryParams {
 }
 
 #[derive(Debug, Serialize)]
+pub struct SharedRiskResponse {
+    pub generated_at: String,
+    pub window_secs: i64,
+    pub global_risk_score: f64,
+    pub global_threshold_multiplier: f64,
+    pub categories: Vec<crate::db::SharedRiskCategoryRow>,
+}
+
+#[derive(Debug, Serialize)]
 pub struct BackfillGeoipResponse {
     pub updated_rows: u64,
     pub latest_ip: Option<String>,
@@ -155,6 +164,25 @@ pub async fn heartbeat(
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     Ok(StatusCode::NO_CONTENT)
+}
+
+pub async fn shared_risk_profile(
+    State(state): State<Arc<AppState>>,
+    _agent: AuthenticatedAgent,
+) -> Result<impl IntoResponse, StatusCode> {
+    let profile = state
+        .db
+        .compute_shared_risk_profile(600)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    Ok(Json(SharedRiskResponse {
+        generated_at: profile.generated_at,
+        window_secs: profile.window_secs,
+        global_risk_score: profile.global_risk_score,
+        global_threshold_multiplier: profile.global_threshold_multiplier,
+        categories: profile.categories,
+    }))
 }
 
 pub async fn update_nickname(

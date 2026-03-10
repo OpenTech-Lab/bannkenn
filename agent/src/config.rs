@@ -1,3 +1,4 @@
+use crate::shared_risk::SharedRiskSnapshot;
 use crate::burst::BurstConfig;
 use crate::butterfly::ButterflyShieldConfig;
 use crate::campaign::CampaignConfig;
@@ -5,6 +6,7 @@ use crate::event_risk::EventRiskConfig;
 use crate::risk_level::RiskLevelConfig;
 use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -128,8 +130,7 @@ impl AgentConfig {
     }
 
     fn config_path() -> Result<PathBuf> {
-        let home = dirs::home_dir().ok_or_else(|| anyhow!("Could not determine home directory"))?;
-        Ok(home.join(".config/bannkenn/agent.toml"))
+        Ok(state_dir()?.join("agent.toml"))
     }
 
     /// Backward-compatible view of monitored log paths.
@@ -140,6 +141,11 @@ impl AgentConfig {
             self.log_paths.clone()
         }
     }
+}
+
+fn state_dir() -> Result<PathBuf> {
+    let home = dirs::home_dir().ok_or_else(|| anyhow!("Could not determine home directory"))?;
+    Ok(home.join(".config/bannkenn"))
 }
 
 pub fn default_runtime_campaign_config() -> CampaignConfig {
@@ -175,8 +181,38 @@ impl SyncState {
     }
 
     pub fn state_path() -> Result<PathBuf> {
-        let home = dirs::home_dir().ok_or_else(|| anyhow!("Could not determine home directory"))?;
-        Ok(home.join(".config/bannkenn/sync_state.toml"))
+        Ok(state_dir()?.join("sync_state.toml"))
+    }
+}
+
+/// Last-known server-derived data used when the agent is offline.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+pub struct OfflineAgentState {
+    #[serde(default)]
+    pub known_blocked_ips: HashMap<String, String>,
+    #[serde(default)]
+    pub shared_risk_snapshot: SharedRiskSnapshot,
+}
+
+impl OfflineAgentState {
+    pub fn load(path: &Path) -> Self {
+        fs::read_to_string(path)
+            .ok()
+            .and_then(|content| toml::from_str(&content).ok())
+            .unwrap_or_default()
+    }
+
+    pub fn save(&self, path: &Path) -> Result<()> {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        let toml_string = toml::to_string_pretty(self)?;
+        fs::write(path, toml_string)?;
+        Ok(())
+    }
+
+    pub fn state_path() -> Result<PathBuf> {
+        Ok(state_dir()?.join("offline_state.toml"))
     }
 }
 
@@ -227,5 +263,27 @@ mod tests {
             .expect("runtime defaults should populate campaign config");
         assert!(campaign.enabled);
         assert_eq!(campaign.distinct_ips_threshold, 3);
+    }
+
+    #[test]
+    fn offline_agent_state_round_trips() {
+        let dir = std::env::temp_dir().join(format!("bannkenn-offline-state-{}", uuid::Uuid::new_v4()));
+        let path = dir.join("offline.toml");
+        let state = OfflineAgentState {
+            known_blocked_ips: HashMap::from([("203.0.113.10".to_string(), "agent".to_string())]),
+            shared_risk_snapshot: SharedRiskSnapshot {
+                generated_at: "2026-03-10T00:00:00Z".to_string(),
+                window_secs: 600,
+                global_risk_score: 0.8,
+                global_threshold_multiplier: 0.6,
+                categories: Vec::new(),
+            },
+        };
+
+        state.save(&path).unwrap();
+        let loaded = OfflineAgentState::load(&path);
+        assert_eq!(loaded, state);
+
+        let _ = fs::remove_dir_all(dir);
     }
 }
