@@ -10,5 +10,6 @@ pub mod outbox;
 pub mod patterns;
 pub mod risk_level;
 pub mod shared_risk;
+pub mod tofu;
 pub mod updater;
 pub mod watcher;

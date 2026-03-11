@@ -23,3 +23,7 @@ regex = "1"
 dirs = "5"
 uuid = { version = "1", features = ["v4"] }
 maxminddb = "0.24"
+base64 = "0.22"
+sha2 = "0.10"
+rustls = { version = "0.21", features = ["dangerous_configuration"] }
+tokio-rustls = "0.24"

@@ -826,3 +826,18 @@
 - Verified with:
   - `cargo check -p bannkenn-agent`
   - `cargo test -p bannkenn-agent`
+
+## Phase 46 – Trust-on-first-use HTTPS pinning for agents (Codex)
+- [x] Add agent-side certificate fetch/pin support for self-signed HTTPS servers
+- [x] Wire TOFU into `connect`/`init` when HTTPS fails with `UnknownIssuer`
+- [x] Document the new TOFU flow and verify the updated agent crate
+
+## Review (Phase 46)
+- Added `agent/src/tofu.rs` to fetch the presented certificate over a rustls handshake, compute its SHA-256 fingerprint, and save it as a pinned PEM under `~/.config/bannkenn/certs/`.
+- Updated `connect` so an `UnknownIssuer` failure on HTTPS with no configured `ca_cert_path` now offers an interactive trust-on-first-use prompt instead of requiring a manual certificate copy first.
+- Kept the explicit `ca_cert_path` path working for operators who prefer manual certificate distribution or a private CA bundle.
+- Updated `README.md` to describe the TOFU flow and the pinned-certificate storage path.
+- Verified with:
+  - `cargo check -p bannkenn-agent`
+  - `cargo test -p bannkenn-agent`
+  - `cargo fmt --all`

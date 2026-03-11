@@ -120,6 +120,14 @@ https://192.0.2.10:3022
 
 If you use self-signed certificates or a private CA, the agent and browser must trust that CA/certificate.
 
+For BannKenn agents, the easiest self-signed path is now trust-on-first-use:
+- leave `ca_cert_path` blank
+- run `sudo bannkenn-agent connect`
+- review the SHA-256 fingerprint shown by the agent
+- answer `y` to pin that certificate locally for future connections
+
+The pinned certificate is stored under `~/.config/bannkenn/certs/`.
+
 If you do not want to modify the whole system trust store on the agent machine, BannKenn agent can now trust a specific PEM file via `ca_cert_path` in `~/.config/bannkenn/agent.toml`.
 
 Example:
@@ -189,7 +197,7 @@ sudo bannkenn-agent init
 
 `init` now auto-detects available log sources, auto-selects a log file path, writes `/etc/systemd/system/bannkenn-agent.service` automatically on Linux/systemd when run with `sudo`, and attempts dashboard registration immediately.
 
-When the server URL uses `https://`, `init` also prompts for an optional custom CA/cert PEM path. Leave it blank to use the normal system trust store.
+When the server URL uses `https://`, `init` also prompts for an optional custom CA/cert PEM path. Leave it blank to use the normal system trust store or the trust-on-first-use flow during `connect`.
 
 If you put nginx/TLS in front of BannKenn, enter the API URL here, not the dashboard URL:
 - correct: `https://192.0.2.10:1234`
@@ -206,6 +214,12 @@ sudo bannkenn-agent connect
 If `connect` fails with `UnknownIssuer`, either:
 - install the server certificate/CA into the system trust store on the agent machine
 - or copy the PEM file locally and set `ca_cert_path` in `~/.config/bannkenn/agent.toml`
+
+If `connect` reaches a self-signed HTTPS server and no `ca_cert_path` is configured, BannKenn now offers to:
+- download the presented certificate
+- show its SHA-256 fingerprint
+- save it locally under `~/.config/bannkenn/certs/`
+- retry registration using that pinned certificate
 
 ### 5. Start the systemd service
 

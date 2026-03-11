@@ -12,6 +12,7 @@ mod risk_level;
 mod service;
 mod shared_risk;
 mod sync;
+mod tofu;
 mod updater;
 mod watcher;
 
@@ -37,6 +38,7 @@ use crate::firewall::{
 use crate::outbox::{flush_pending, Outbox, OutboxPayload};
 use crate::service::{install_systemd_unit, uninstall_systemd_unit, SERVICE_UNIT_PATH};
 use crate::shared_risk::SharedRiskSnapshot;
+use crate::tofu::{fetch_presented_certificate, save_presented_certificate};
 use crate::watcher::{watch, BlockOutcome, SecurityEvent};
 
 #[derive(Parser)]
@@ -872,6 +874,35 @@ fn is_unknown_issuer_error(err: &anyhow::Error) -> bool {
         .any(|cause| cause.to_string().contains("UnknownIssuer"))
 }
 
+fn prompt_yes_no(prompt: &str) -> Result<bool> {
+    print!("{}", prompt);
+    io::stdout().flush()?;
+    let mut answer = String::new();
+    io::stdin().read_line(&mut answer)?;
+    let answer = answer.trim();
+    Ok(matches!(answer, "y" | "Y" | "yes" | "YES" | "Yes"))
+}
+
+async fn trust_on_first_use(config: &mut AgentConfig) -> Result<bool> {
+    let cert = fetch_presented_certificate(&config.server_url).await?;
+    println!(
+        "Server presented an untrusted certificate for {}",
+        config.server_url
+    );
+    println!("SHA-256 fingerprint: {}", cert.sha256_fingerprint);
+
+    if !prompt_yes_no("Trust and pin this certificate for future connections? [y/N]: ")? {
+        return Ok(false);
+    }
+
+    let path = save_presented_certificate(&config.server_url, &cert)?;
+    config.ca_cert_path = Some(path.display().to_string());
+    config.save()?;
+
+    println!("Pinned server certificate at {}.", path.display());
+    Ok(true)
+}
+
 fn is_permission_denied(err: &anyhow::Error) -> bool {
     err.chain().any(|cause| {
         cause
@@ -1137,6 +1168,25 @@ async fn register_and_persist_agent(config: &mut AgentConfig) -> Result<String> 
     .await
     {
         Ok(token) => token,
+        Err(err)
+            if is_unknown_issuer_error(&err)
+                && config.server_url.starts_with("https://")
+                && config.ca_cert_path.is_none() =>
+        {
+            if trust_on_first_use(config).await? {
+                register_agent_and_get_token(
+                    &config.server_url,
+                    &name,
+                    &config.uuid,
+                    config.ca_cert_path.as_deref(),
+                )
+                .await?
+            } else {
+                return Err(anyhow::anyhow!(
+                    "TLS certificate was not trusted. Re-run connect and accept the fingerprint, or set ca_cert_path manually."
+                ));
+            }
+        }
         Err(err) if is_unknown_issuer_error(&err) => {
             return Err(anyhow::anyhow!(
                 "TLS certificate is not trusted. Copy the server certificate/CA PEM to this machine and set ca_cert_path in ~/.config/bannkenn/agent.toml, or install that certificate/CA into the system trust store. Original error: {}",
