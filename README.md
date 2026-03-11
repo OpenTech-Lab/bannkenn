@@ -47,58 +47,91 @@ curl http://localhost:3022/api/v1/health
 Open dashboard:
 - `http://localhost:3021`
 
-### Optional: HTTPS via existing nginx
+This starts only the HTTP services:
+- API: `http://SERVER_IP:3022`
+- dashboard: `http://SERVER_IP:3021`
 
-If this host already has an nginx reverse proxy, reuse that nginx instead of adding another nginx container just for BannKenn.
+### Optional: HTTPS via Docker Compose nginx
 
-The current compose file uses host networking, so nginx can proxy directly to:
+The main compose file now includes an optional `nginx` service behind the `tls` profile. This nginx container uses host networking so it can proxy to:
 - server API: `127.0.0.1:3022`
 - dashboard UI: `127.0.0.1:3021`
 
-Important: with the current compose file, nginx cannot listen on host `3022` or `3021` while BannKenn is already bound to those same host ports. This means the following is **not** valid:
+Important: nginx is not started by the plain `docker compose up -d --build` command above. If you want HTTPS, you must both generate the certificate and start the `tls` profile.
+
+Because the server and dashboard already bind host `3022` and `3021`, nginx cannot also listen on those same ports. This means the following is **not** valid:
 - `https://SERVER_IP:3022` -> nginx -> `127.0.0.1:3022`
 - `https://SERVER_IP:3021` -> nginx -> `127.0.0.1:3021`
 
 Without a domain name, do **not** proxy both services behind one public IP/port with a shared `/api/` split, because the Next.js dashboard already uses its own `/api/*` routes.
 
-Use one of these layouts:
-
-1. Keep the current compose file unchanged.
-
-Recommended for the current repo state. Use separate external TLS ports in nginx:
+Recommended layout for the current repo state:
 - `https://SERVER_IP:1234` -> BannKenn server API on `127.0.0.1:3022`
 - `https://SERVER_IP:1235` -> BannKenn dashboard on `127.0.0.1:3021`
 
-2. Keep the public port numbers `3022` and `3021`.
+1. Generate a certificate whose SAN entries match the exact address clients will use.
 
-Only do this if you first move the backend services to different internal ports so nginx can own the public ports, for example:
-- backend server bind: `127.0.0.1:4022`
-- backend dashboard bind: `127.0.0.1:4021`
-- nginx public API: `https://SERVER_IP:3022` -> `127.0.0.1:4022`
-- nginx public dashboard: `https://SERVER_IP:3021` -> `127.0.0.1:4021`
-
-Example config:
-- `deploy/nginx/bannkenn-tls.example.conf`
-
-Generate an IP-SAN certificate for nginx:
+If clients connect with the LAN IP only:
 
 ```bash
 sudo bash deploy/nginx/generate-ip-cert.sh 192.0.2.10 /etc/nginx/ssl
 ```
 
-If you terminate TLS in nginx, set the agent `server_url` to the API IP+port, for example:
+If some clients connect with the LAN IP and others use the public IP, include both:
+
+```bash
+sudo bash deploy/nginx/generate-ip-cert.sh --out-dir /etc/nginx/ssl 192.0.2.10 198.51.100.24
+```
+
+2. Start BannKenn with the TLS profile:
+
+```bash
+docker compose -f docker/docker-compose.yml --profile tls up -d --build
+```
+
+3. Open the TLS endpoints:
+- dashboard: `https://192.0.2.10:1235`
+- API health: `https://192.0.2.10:1234/api/v1/health`
+
+If you want to store the generated certs somewhere else, set `BANNKENN_NGINX_SSL_DIR` before starting compose:
+
+```bash
+export BANNKENN_NGINX_SSL_DIR=/path/to/your/nginx-ssl
+docker compose -f docker/docker-compose.yml --profile tls up -d --build
+```
+
+If you terminate TLS in nginx, set the agent `server_url` to the API IP+port:
 
 ```bash
 https://192.0.2.10:1234
 ```
 
-If you switch to the second layout where nginx owns public port `3022`, then use:
+If you still want public `3022` and `3021`, you must first move the backend services to different internal ports so nginx can own the public ports, for example:
+- backend server bind: `127.0.0.1:4022`
+- backend dashboard bind: `127.0.0.1:4021`
+- nginx public API: `https://SERVER_IP:3022` -> `127.0.0.1:4022`
+- nginx public dashboard: `https://SERVER_IP:3021` -> `127.0.0.1:4021`
+
+In that alternate layout the agent `server_url` would be:
 
 ```bash
 https://192.0.2.10:3022
 ```
 
-If you use self-signed certificates or a private CA, the agent and browser must trust that CA/certificate. Generate the cert with the server IP in the SAN extension.
+If you use self-signed certificates or a private CA, the agent and browser must trust that CA/certificate.
+
+If you do not want to modify the whole system trust store on the agent machine, BannKenn agent can now trust a specific PEM file via `ca_cert_path` in `~/.config/bannkenn/agent.toml`.
+
+Example:
+
+```toml
+server_url = "https://221.103.201.166:1234"
+ca_cert_path = "/etc/bannkenn/server-ca.pem"
+```
+
+Copy the PEM certificate from the server to that path on the agent machine before running `bannkenn-agent connect`.
+
+Important: the address in `server_url` must be present in the certificate SAN list. For example, if the certificate was generated for `192.168.11.9` but the agent connects to `https://221.103.201.166:1234`, TLS verification will fail because the IPs do not match.
 
 ### 3. Install agent binary (choose one)
 
@@ -156,6 +189,8 @@ sudo bannkenn-agent init
 
 `init` now auto-detects available log sources, auto-selects a log file path, writes `/etc/systemd/system/bannkenn-agent.service` automatically on Linux/systemd when run with `sudo`, and attempts dashboard registration immediately.
 
+When the server URL uses `https://`, `init` also prompts for an optional custom CA/cert PEM path. Leave it blank to use the normal system trust store.
+
 If you put nginx/TLS in front of BannKenn, enter the API URL here, not the dashboard URL:
 - correct: `https://192.0.2.10:1234`
 - wrong: `https://192.0.2.10:1235`
@@ -167,6 +202,10 @@ sudo bannkenn-agent connect
 ```
 
 `connect` now only refreshes/saves the JWT token. It does not start the foreground agent loop.
+
+If `connect` fails with `UnknownIssuer`, either:
+- install the server certificate/CA into the system trust store on the agent machine
+- or copy the PEM file locally and set `ca_cert_path` in `~/.config/bannkenn/agent.toml`
 
 ### 5. Start the systemd service
 

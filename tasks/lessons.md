@@ -123,3 +123,15 @@
 ### Reverse-proxy recommendations must not assume a domain exists
 - If the user is operating on raw IPs or explicitly says they will not use a domain, do not default to hostname-based TLS examples.
 - For single-IP deployments without host-based routing, prefer separate external TLS ports for each service and call out certificate trust requirements for IP/SAN or private CA setups.
+
+### Optional compose services must be called out as opt-in
+- If a feature is added behind a Compose profile, documentation must say plainly that `docker compose up -d` will not start it.
+- When a user is expected to reach a TLS endpoint, include the exact profile-enabled startup command in the primary instructions instead of leaving it implicit.
+
+### TLS examples must match the actual client connection address
+- If a certificate is generated for one IP or hostname but clients connect through a different one, TLS will fail even if the server is otherwise healthy.
+- For IP-based deployments, document that the certificate SAN must include every address clients will use, especially when both LAN and public IPs are involved.
+
+### Self-signed TLS workflows need an explicit trust path for agents
+- Saying "trust the certificate" is not enough operational guidance when the agent uses the OS trust store by default.
+- If self-signed or private-CA TLS is part of the supported deployment path, provide either agent-level CA-file configuration or exact trust-store instructions in the primary docs.

@@ -17,7 +17,6 @@ mod watcher;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use reqwest::Client as HttpClient;
 use serde::Deserialize;
 use serde_json::json;
 use std::collections::{BTreeSet, HashMap, HashSet};
@@ -29,7 +28,7 @@ use tokio::sync::{mpsc, Mutex, Notify, RwLock};
 use tokio::time::{interval, Duration};
 use uuid::Uuid;
 
-use crate::client::ApiClient;
+use crate::client::{build_http_client, ApiClient};
 use crate::config::{default_runtime_campaign_config, AgentConfig, OfflineAgentState};
 use crate::firewall::{
     block_ip, cleanup_firewall, detect_backend, init_firewall,
@@ -139,7 +138,11 @@ async fn run() -> Result<()> {
         );
     }
 
-    let api_client = ApiClient::new(config.server_url.clone(), config.jwt_token.clone());
+    let api_client = ApiClient::new(
+        config.server_url.clone(),
+        config.jwt_token.clone(),
+        config.ca_cert_path.clone(),
+    )?;
     let offline_state_path = OfflineAgentState::state_path()?;
     let offline_state = OfflineAgentState::load(&offline_state_path);
 
@@ -170,7 +173,11 @@ async fn run() -> Result<()> {
         }
     }
 
-    let init_client = ApiClient::new(config.server_url.clone(), config.jwt_token.clone());
+    let init_client = ApiClient::new(
+        config.server_url.clone(),
+        config.jwt_token.clone(),
+        config.ca_cert_path.clone(),
+    )?;
     match init_client.fetch_whitelist().await {
         Ok(entries) => {
             sync::apply_whitelist_snapshot(
@@ -335,7 +342,11 @@ async fn run() -> Result<()> {
         }
     });
 
-    let sync_client = ApiClient::new(config_arc.server_url.clone(), config_arc.jwt_token.clone());
+    let sync_client = ApiClient::new(
+        config_arc.server_url.clone(),
+        config_arc.jwt_token.clone(),
+        config_arc.ca_cert_path.clone(),
+    )?;
     let sync_handle = tokio::spawn(sync::sync_loop(
         sync_client,
         Arc::clone(&known_blocked_ips),
@@ -374,8 +385,11 @@ async fn run() -> Result<()> {
         }
     });
 
-    let heartbeat_client =
-        ApiClient::new(config_arc.server_url.clone(), config_arc.jwt_token.clone());
+    let heartbeat_client = ApiClient::new(
+        config_arc.server_url.clone(),
+        config_arc.jwt_token.clone(),
+        config_arc.ca_cert_path.clone(),
+    )?;
     let butterfly_enabled = config_arc.butterfly_shield.as_ref().map(|c| c.enabled);
     let heartbeat_handle = tokio::spawn(async move {
         let mut ticker = interval(Duration::from_secs(30));
@@ -670,6 +684,21 @@ async fn init() -> Result<()> {
         server_url.to_string()
     };
 
+    let ca_cert_path = if server_url.starts_with("https://") {
+        print!("Custom CA/cert PEM path [blank = system trust]: ");
+        io::stdout().flush()?;
+        let mut input = String::new();
+        reader.read_line(&mut input)?;
+        let input = input.trim();
+        if input.is_empty() {
+            None
+        } else {
+            Some(input.to_string())
+        }
+    } else {
+        None
+    };
+
     // Agent name (for display on dashboard)
     let hostname = get_hostname();
     print!("Agent name [{}]: ", hostname);
@@ -718,6 +747,7 @@ async fn init() -> Result<()> {
     let mut config = AgentConfig {
         server_url,
         jwt_token: String::new(), // populated by `connect`
+        ca_cert_path,
         agent_name,
         uuid,
         log_paths: log_candidates.clone(),
@@ -835,6 +865,11 @@ fn get_hostname() -> String {
         }
     }
     "bannkenn-agent".to_string()
+}
+
+fn is_unknown_issuer_error(err: &anyhow::Error) -> bool {
+    err.chain()
+        .any(|cause| cause.to_string().contains("UnknownIssuer"))
 }
 
 fn is_permission_denied(err: &anyhow::Error) -> bool {
@@ -1044,11 +1079,12 @@ async fn register_agent_and_get_token(
     server_url: &str,
     agent_name: &str,
     agent_uuid: &str,
+    ca_cert_path: Option<&str>,
 ) -> Result<String> {
     let base = server_url.trim_end_matches('/');
     let url = format!("{}/api/v1/agents/register", base);
 
-    let response = HttpClient::new()
+    let response = build_http_client(ca_cert_path)?
         .post(&url)
         .header("Content-Type", "application/json")
         .json(&json!({ "name": agent_name, "uuid": agent_uuid }))
@@ -1092,7 +1128,23 @@ async fn register_and_persist_agent(config: &mut AgentConfig) -> Result<String> 
 
     println!("\nConnecting to {} as '{}'…", config.server_url, name);
 
-    let token = register_agent_and_get_token(&config.server_url, &name, &config.uuid).await?;
+    let token = match register_agent_and_get_token(
+        &config.server_url,
+        &name,
+        &config.uuid,
+        config.ca_cert_path.as_deref(),
+    )
+    .await
+    {
+        Ok(token) => token,
+        Err(err) if is_unknown_issuer_error(&err) => {
+            return Err(anyhow::anyhow!(
+                "TLS certificate is not trusted. Copy the server certificate/CA PEM to this machine and set ca_cert_path in ~/.config/bannkenn/agent.toml, or install that certificate/CA into the system trust store. Original error: {}",
+                err
+            ));
+        }
+        Err(err) => return Err(err),
+    };
     config.jwt_token = token;
     config.agent_name = name.clone();
     config.save()?;

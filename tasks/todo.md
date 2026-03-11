@@ -781,3 +781,48 @@
 - Updated `README.md` with the no-domain nginx/TLS flow, certificate generation command, and the correct agent `server_url` target (`https://SERVER_IP:1234`).
 - Verified `deploy/nginx/generate-ip-cert.sh` with `bash -n` and by generating a temporary certificate whose SAN includes `IP Address:192.0.2.10`.
 - Verified the nginx config with a disposable `nginx:alpine` container running `nginx -t -c /etc/nginx/nginx.conf`.
+
+## Phase 43 – Docker Compose nginx TLS service (Codex)
+- [x] Add an nginx service to `docker/docker-compose.yml` that fits the host-network deployment
+- [x] Document the compose-managed TLS startup flow and certificate directory handling in README
+- [x] Verify the compose file and nginx service configuration
+
+## Review (Phase 43)
+- Added an opt-in `nginx` service to `docker/docker-compose.yml` under the `tls` profile.
+- The nginx container uses `network_mode: host` so it can proxy to `127.0.0.1:3022` and `127.0.0.1:3021` while listening on host `1234` and `1235`.
+- Mounted the existing nginx config from `deploy/nginx/bannkenn-tls.example.conf` and the certificate directory from `${BANNKENN_NGINX_SSL_DIR:-/etc/nginx/ssl}`.
+- Kept the default `docker compose up -d --build` behavior as HTTP-only so users without certificates are not forced into a broken TLS startup.
+- Updated `README.md` to document the exact TLS startup command: `docker compose -f docker/docker-compose.yml --profile tls up -d --build`.
+- Verified compose resolution with:
+  - `docker compose -f docker/docker-compose.yml config`
+  - `docker compose -f docker/docker-compose.yml --profile tls config`
+
+## Phase 44 – Multi-address TLS certificate guidance (Codex)
+- [x] Extend the nginx certificate helper to support multiple SAN IPs/hostnames
+- [x] Document that agent/browser addresses must match the certificate SAN entries
+- [x] Verify multi-SAN certificate generation works as expected
+
+## Review (Phase 44)
+- Extended `deploy/nginx/generate-ip-cert.sh` so it accepts multiple SAN entries plus an optional `--out-dir` flag.
+- Kept backward compatibility with the old two-argument form: `generate-ip-cert.sh 192.0.2.10 /etc/nginx/ssl`.
+- Updated `README.md` to show both single-IP and LAN+public-IP certificate generation examples.
+- Verified with:
+  - `bash -n deploy/nginx/generate-ip-cert.sh`
+  - generating a certificate for `192.168.11.9` and `221.103.201.166`
+  - inspecting the certificate SANs with `openssl x509 -text`
+
+## Phase 45 – Agent custom CA trust for self-signed TLS (Codex)
+- [x] Add agent config support for a custom PEM CA/certificate path
+- [x] Use the custom CA path for `connect` and runtime API clients
+- [x] Document the self-signed agent workflow in README
+- [x] Verify the updated agent crate with compile/test coverage
+
+## Review (Phase 45)
+- Added `ca_cert_path` to `AgentConfig` so self-signed HTTPS servers can be trusted from a specific PEM file without modifying the whole system trust store.
+- Replaced bare `reqwest::Client::new()` construction with a shared builder that loads the configured PEM certificate when present.
+- Updated `connect` registration failures to turn `UnknownIssuer` into a clearer remediation message.
+- Updated `init` to prompt for an optional custom CA/cert PEM path whenever the server URL is `https://...`.
+- Updated `README.md` with `ca_cert_path` examples and `UnknownIssuer` remediation.
+- Verified with:
+  - `cargo check -p bannkenn-agent`
+  - `cargo test -p bannkenn-agent`

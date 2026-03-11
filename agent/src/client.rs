@@ -1,8 +1,9 @@
 use crate::shared_risk::SharedRiskSnapshot;
 use anyhow::Result;
-use reqwest::Client as HttpClient;
+use reqwest::{Certificate, Client as HttpClient};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use std::fs;
 
 /// Mirror of the server's DecisionRow for deserialization
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -34,12 +35,12 @@ pub struct ApiClient {
 
 impl ApiClient {
     /// Create a new API client
-    pub fn new(base_url: String, token: String) -> Self {
-        Self {
+    pub fn new(base_url: String, token: String, ca_cert_path: Option<String>) -> Result<Self> {
+        Ok(Self {
             base_url,
             token,
-            http: HttpClient::new(),
-        }
+            http: build_http_client(ca_cert_path.as_deref())?,
+        })
     }
 
     /// Fetch decisions with id > since_id in ascending order (for sync)
@@ -240,6 +241,18 @@ impl ApiClient {
     }
 }
 
+pub fn build_http_client(ca_cert_path: Option<&str>) -> Result<HttpClient> {
+    let mut builder = HttpClient::builder();
+
+    if let Some(path) = ca_cert_path.filter(|value| !value.trim().is_empty()) {
+        let pem = fs::read(path)?;
+        let cert = Certificate::from_pem(&pem)?;
+        builder = builder.add_root_certificate(cert);
+    }
+
+    Ok(builder.build()?)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -249,10 +262,19 @@ mod tests {
         let client = ApiClient::new(
             "http://localhost:8080".to_string(),
             "test_token".to_string(),
-        );
+            None,
+        )
+        .unwrap();
 
         assert_eq!(client.base_url, "http://localhost:8080");
         assert_eq!(client.token, "test_token");
+    }
+
+    #[test]
+    fn test_http_client_creation_without_custom_ca() {
+        let client = build_http_client(None).unwrap();
+        let clone = client.clone();
+        drop(clone);
     }
 
     #[test]

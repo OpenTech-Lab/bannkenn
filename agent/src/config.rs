@@ -15,6 +15,9 @@ use std::path::{Path, PathBuf};
 pub struct AgentConfig {
     pub server_url: String,
     pub jwt_token: String,
+    /// Optional PEM certificate/CA bundle used to trust self-signed HTTPS servers.
+    #[serde(default)]
+    pub ca_cert_path: Option<String>,
     /// Registered name used when connecting to the server (defaults to hostname)
     #[serde(default)]
     pub agent_name: String,
@@ -77,6 +80,7 @@ impl Default for AgentConfig {
         Self {
             server_url: String::new(),
             jwt_token: String::new(),
+            ca_cert_path: None,
             agent_name: String::new(),
             uuid: String::new(),
             log_path: default_log_path(),
@@ -235,6 +239,7 @@ mod tests {
         let config = AgentConfig {
             server_url: "http://localhost:8080".to_string(),
             jwt_token: "token123".to_string(),
+            ca_cert_path: Some("/tmp/server-ca.pem".to_string()),
             agent_name: "test-agent".to_string(),
             uuid: "test-uuid".to_string(),
             log_path: "/var/log/auth.log".to_string(),
@@ -254,6 +259,7 @@ mod tests {
 
         assert_eq!(config.server_url, deserialized.server_url);
         assert_eq!(config.jwt_token, deserialized.jwt_token);
+        assert_eq!(config.ca_cert_path, deserialized.ca_cert_path);
         assert_eq!(config.threshold, deserialized.threshold);
     }
 
