@@ -1,0 +1,156 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  check:
+    name: Check & Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.93.0
+          components: rustfmt, clippy
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: cargo fmt
+        run: cargo fmt --all -- --check
+
+      - name: cargo check
+        run: cargo check --workspace
+
+      - name: cargo clippy
+        run: cargo clippy --workspace -- -D warnings
+
+      - name: cargo test
+        run: cargo test --workspace
+
+  release-build:
+    name: Release Binaries
+    needs: check
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+            artifact: bannkenn-agent-linux-x64
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            artifact: bannkenn-agent-windows-x64.exe
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-musl
+            artifact: bannkenn-agent-linux-arm64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.93.0
+          targets: ${{ matrix.target }}
+
+      - name: Install musl cross-compile tools
+        if: matrix.target == 'x86_64-unknown-linux-musl'
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y musl-tools
+
+      - name: Install aarch64 musl cross-compile tools
+        if: matrix.target == 'aarch64-unknown-linux-musl'
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y gcc-aarch64-linux-gnu musl-tools
+          echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=aarch64-linux-gnu-gcc" >> $GITHUB_ENV
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-${{ matrix.target }}-cargo-${{ hashFiles('**/Cargo.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ matrix.target }}-cargo-
+
+      - name: Build release binary
+        run: cargo build --release --target ${{ matrix.target }} -p bannkenn-agent
+
+      - name: Package binary (Linux/macOS)
+        if: matrix.os == 'ubuntu-latest'
+        run: cp target/${{ matrix.target }}/release/bannkenn-agent ${{ matrix.artifact }}
+
+      - name: Package binary (Windows)
+        if: matrix.os == 'windows-latest'
+        run: cp target/${{ matrix.target }}/release/bannkenn-agent.exe ${{ matrix.artifact }}
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.artifact }}
+          path: ${{ matrix.artifact }}
+          if-no-files-found: error
+
+  release-publish:
+    name: Publish Release
+    needs: release-build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download release artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          path: dist
+          merge-multiple: true
+
+      - name: Upload draft GitHub Release
+        id: upload_release
+        continue-on-error: true
+        uses: softprops/action-gh-release@v2
+        with:
+          draft: true
+          files: dist/*
+          body_path: scripts/version/${{ github.ref_name }}.md
+
+      - name: Delete failed draft release
+        if: steps.upload_release.outcome == 'failure'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release delete "${{ github.ref_name }}" --yes --cleanup-tag=false || true
+
+      - name: Fail if draft upload failed
+        if: steps.upload_release.outcome == 'failure'
+        run: |
+          echo "GitHub release upload failed; cleaned up the draft release."
+          exit 1
+
+      - name: Publish GitHub Release
+        if: steps.upload_release.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release edit "${{ github.ref_name }}" --draft=false

@@ -1,0 +1,42 @@
+FROM rust:slim-bookworm AS builder
+
+WORKDIR /app
+
+# Copy workspace manifests first for layer caching
+COPY Cargo.toml Cargo.lock ./
+COPY docker/cargo-vendor-config.toml .cargo/config.toml
+COPY vendor/ vendor/
+COPY agent/Cargo.toml agent/
+COPY server/Cargo.toml server/
+
+# Create stub source files to cache dependency compilation
+RUN mkdir -p agent/src server/src && \
+    echo "fn main() {}" > agent/src/main.rs && \
+    echo "fn main() {}" > server/src/main.rs
+
+RUN cargo build --release --frozen --bin bannkenn-server
+RUN rm -f target/release/deps/bannkenn_server*
+
+# Copy real source
+COPY agent/ agent/
+COPY server/ server/
+
+RUN cargo build --release --frozen --bin bannkenn-server
+
+# Runtime stage
+FROM debian:bookworm-slim
+
+WORKDIR /app
+
+COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
+COPY --from=builder /app/target/release/bannkenn-server /usr/local/bin/bannkenn-server
+COPY --from=builder /app/server/data /app/server/data
+
+# Create data directory for SQLite
+RUN mkdir -p /data
+
+ENV BANNKENN_DATA_DIR=/data
+
+EXPOSE 3022
+
+CMD ["bannkenn-server"]

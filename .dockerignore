@@ -1,0 +1,11 @@
+.git
+.claude
+target
+tasks
+dashboard/node_modules
+dashboard/.next
+docs/logs
+bannkenn.db
+*.db
+*.sqlite
+*.sqlite3

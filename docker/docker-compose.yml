@@ -1,0 +1,70 @@
+services:
+  server:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.server
+    container_name: bannkenn-server
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      - BANNKENN_BIND=0.0.0.0:3022
+      - BANNKENN_LOCAL_BIND=${BANNKENN_LOCAL_BIND:-}
+      - BANNKENN_DB_PATH=/data/bannkenn.db
+      - BANNKENN_MMDB_DIR=/app/server/data
+      - BANNKENN_JWT_SECRET=${BANNKENN_JWT_SECRET:-change-me-in-production}
+      - BANNKENN_TLS_CERT_PATH=${BANNKENN_TLS_CERT_PATH:-}
+      - BANNKENN_TLS_KEY_PATH=${BANNKENN_TLS_KEY_PATH:-}
+      - RUST_LOG=info
+    volumes:
+      - bannkenn-data:/data
+      - ${BANNKENN_SERVER_TLS_DIR:-/etc/bannkenn/tls}:/etc/bannkenn/tls:ro
+    healthcheck:
+      test: ["CMD", "bannkenn-server", "healthcheck"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+  dashboard:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.dashboard
+    container_name: bannkenn-dashboard
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      - BANNKENN_SERVER_URL=${BANNKENN_DASHBOARD_SERVER_URL:-http://127.0.0.1:3022}
+    depends_on:
+      server:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3021/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+
+  nginx:
+    image: nginx:alpine
+    container_name: bannkenn-nginx
+    restart: unless-stopped
+    profiles: ["tls"]
+    network_mode: host
+    depends_on:
+      server:
+        condition: service_healthy
+      dashboard:
+        condition: service_healthy
+    volumes:
+      - ../deploy/nginx/bannkenn-tls.example.conf:/etc/nginx/nginx.conf:ro
+      - ${BANNKENN_NGINX_SSL_DIR:-/etc/nginx/ssl}:/etc/nginx/ssl:ro
+    healthcheck:
+      test: ["CMD-SHELL", "nginx -t -c /etc/nginx/nginx.conf >/dev/null 2>&1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  bannkenn-data:
+    driver: local

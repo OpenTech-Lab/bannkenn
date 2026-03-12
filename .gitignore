@@ -1,0 +1,37 @@
+# dashboard
+node_modules/
+.next/
+docs/logs
+vendor/
+
+# Rust
+target/
+
+# Local config files with secrets
+/server.toml
+/agent.toml
+*.local.toml
+
+# SQLite databases
+*.db
+*.sqlite
+*.sqlite3
+
+# Logs
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Docker
+docker/data/
+
+# Build artifacts
+dist/
