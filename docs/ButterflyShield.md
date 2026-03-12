@@ -101,7 +101,7 @@ This is where the "dynamic even though source is opened" aspect shines—the sys
 Caveats: False positives are possible (mitigate with dashboard tuning), and IP rotation can partially evade (counter with behavior clustering across IPs). Overall, it's harder to bypass than static systems, potentially on par with or better than CrowdSec due to your custom math twists.
 
 ### Final Thoughts & Next Steps
-In summary, yes—BannKenn can detect risks very well, automatically curb attacks through smart blocking/reputation, and remain hard to bypass via dynamics and math. This makes it a strong self-hosted tool for Tokyo-based setups like yours (e.g., handling regional threats like APAC scans).
+In summary, yes—BannKenn can detect risks very well, automatically curb attacks through smart blocking/reputation, and remain hard to bypass via dynamics and math. This makes it a strong self-hosted tool for setups like yours (e.g., handling regional threats like APAC scans).
 
 To make it even stronger:
 - Prototype the chaos logic in `agent/detector.rs`—I can provide a code snippet if needed.
