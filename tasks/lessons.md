@@ -192,3 +192,8 @@
 ### When the user asks to scrub sensitive data, clean current files before discussing history rewrite
 - Do not stop at explaining `git filter-repo` if the working tree still contains the exposed value in docs, tests, scripts, or task notes.
 - First remove the live occurrences the user can still see in the repo, then handle history rewrite as a second step.
+
+### Installer and setup scripts must take operator-specific network values from local config, not repo defaults
+- Do not hard-code live IPs, hostnames, tokens, or deployment-specific paths into install/setup flows when a local `.env` or explicit CLI input is more appropriate.
+- Provide a tracked `.env.example` with placeholders and keep the real `.env` local/ignored so operators can fill in their own values before running the scripts.
+- When a script depends on operator-specific values, document the `.env` step in the primary setup instructions instead of burying it in flags alone.

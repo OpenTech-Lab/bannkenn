@@ -1,5 +1,17 @@
 # BannKenn MVP Task List
 
+## Current Task – env-driven install setup
+- [x] Inspect install/cert scripts for hard-coded operator input
+- [x] Add `.env` and `.env.example` support for install/cert setup values
+- [x] Update setup docs to describe the `.env` flow
+- [x] Verify script syntax and document results in a review note
+
+## Current Task Review – env-driven install setup
+- Added a local root `.env` file for operator-specific values and a tracked `.env.example` template; updated `.gitignore` so real deployment values stay local.
+- Updated `scripts/install.sh` and `scripts/generate-ip-cert.sh` to load repo `.env` values for public address, TLS SANs, TLS output dir, and dashboard helper defaults, while still allowing CLI overrides.
+- Updated `README.md` so the first-run path is now `cp .env.example .env`, edit values, then run the install/cert helpers.
+- Verification: `bash -n scripts/install.sh`, `bash -n scripts/generate-ip-cert.sh`, `bash scripts/install.sh --help`, and an env-driven `scripts/generate-ip-cert.sh` run against a temp `.env` all passed.
+
 ## Current Task – bump-version cleanup
 - [x] Inspect current `scripts/bump-version.sh` changelog retention behavior
 - [x] Update release changelog cleanup to keep only the latest markdown file in `scripts/version/`

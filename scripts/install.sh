@@ -7,14 +7,32 @@
 
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+ENV_FILE="${BANNKENN_ENV_FILE:-$REPO_ROOT/.env}"
+
+load_repo_env() {
+    local env_file="${1:-$ENV_FILE}"
+
+    if [[ -f "$env_file" ]]; then
+        set -a
+        # shellcheck disable=SC1090
+        source "$env_file"
+        set +a
+    fi
+}
+
+load_repo_env
+
 BINARY_NAME="bannkenn-agent"
 INSTALL_DIR="/usr/local/bin"
 CONFIG_DIR="/root/.config/bannkenn"
 VERSION="${BANNKENN_VERSION:-latest}"
-DEFAULT_TLS_DIR="/etc/bannkenn/tls"
-DEFAULT_LOCAL_BIND="127.0.0.1:3023"
-DEFAULT_HTTP_DASHBOARD_URL="http://127.0.0.1:3022"
-DEFAULT_TLS_DASHBOARD_URL="http://127.0.0.1:3023"
+DEFAULT_TLS_DIR="${BANNKENN_TLS_DIR:-/etc/bannkenn/tls}"
+DEFAULT_LOCAL_BIND="${BANNKENN_LOCAL_BIND:-127.0.0.1:3023}"
+DEFAULT_HTTP_DASHBOARD_URL="${BANNKENN_HTTP_DASHBOARD_URL:-http://127.0.0.1:3022}"
+DEFAULT_TLS_DASHBOARD_URL="${BANNKENN_TLS_DASHBOARD_URL:-http://127.0.0.1:3023}"
+DEFAULT_PUBLIC_ADDRESS="${BANNKENN_PUBLIC_ADDRESS:-SERVER_IP}"
 
 # Colors
 RED='\033[0;31m'
@@ -29,6 +47,17 @@ error()   { echo -e "${RED}[ERROR]${NC} $*" >&2; exit 1; }
 usage() {
     cat <<'EOF'
 Usage:
+  cp .env.example .env && edit .env
+      Optional but recommended before running the setup helpers.
+      Supported keys include:
+        BANNKENN_PUBLIC_ADDRESS
+        BANNKENN_TLS_SANS
+        BANNKENN_TLS_DIR
+        BANNKENN_LOCAL_BIND
+        BANNKENN_HTTP_DASHBOARD_URL
+        BANNKENN_TLS_DASHBOARD_URL
+        BANNKENN_VERSION
+
   sudo bash scripts/install.sh
       Build and install bannkenn-agent from source.
 
@@ -203,19 +232,16 @@ ensure_tls_certificates() {
 install_from_cargo() {
     info "Building from source with cargo..."
 
-    local repo_root
-    repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-
     # Build as the invoking user — rustup toolchains live in their home, not root's
     local build_user="${SUDO_USER:-$USER}"
     if ! sudo -iu "$build_user" bash -lc 'export PATH="$HOME/.cargo/bin:$PATH"; command -v cargo &>/dev/null'; then
         error "cargo not found for user '$build_user'. Install Rust: https://rustup.rs"
     fi
 
-    info "Building bannkenn-agent as '$build_user' from $repo_root ..."
-    sudo -iu "$build_user" bash -lc 'export PATH="$HOME/.cargo/bin:$PATH"; cargo build --release --manifest-path "'"$repo_root"'/Cargo.toml" --bin bannkenn-agent'
+    info "Building bannkenn-agent as '$build_user' from $REPO_ROOT ..."
+    sudo -iu "$build_user" bash -lc 'export PATH="$HOME/.cargo/bin:$PATH"; cargo build --release --manifest-path "'"$REPO_ROOT"'/Cargo.toml" --bin bannkenn-agent'
 
-    install -m 755 "$repo_root/target/release/bannkenn-agent" "$INSTALL_DIR/$BINARY_NAME"
+    install -m 755 "$REPO_ROOT/target/release/bannkenn-agent" "$INSTALL_DIR/$BINARY_NAME"
     info "Installed to $INSTALL_DIR/$BINARY_NAME"
 }
 
@@ -246,13 +272,12 @@ deploy_dashboard_http() {
 
     require_docker_compose
 
-    local repo_root compose_dir
-    repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-    compose_dir="$repo_root/docker"
+    local compose_dir
+    compose_dir="$REPO_ROOT/docker"
 
     info "Starting BannKenn server/dashboard in plain HTTP mode"
-    info "  Public API: http://SERVER_IP:3022"
-    info "  Public dashboard: http://SERVER_IP:3021"
+    info "  Public API: http://${DEFAULT_PUBLIC_ADDRESS}:3022"
+    info "  Public dashboard: http://${DEFAULT_PUBLIC_ADDRESS}:3021"
     info "  Dashboard upstream: $dashboard_url"
 
     (
@@ -277,6 +302,14 @@ deploy_server_native_tls() {
     local build_flag="--build"
     local regenerate_cert="false"
     local -a tls_sans=()
+    local cli_tls_sans_provided="false"
+
+    if [[ -n "${BANNKENN_TLS_SANS:-}" ]]; then
+        # shellcheck disable=SC2206
+        tls_sans=(${BANNKENN_TLS_SANS})
+    elif [[ -n "${BANNKENN_PUBLIC_ADDRESS:-}" ]]; then
+        tls_sans=("${BANNKENN_PUBLIC_ADDRESS}")
+    fi
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
@@ -287,6 +320,10 @@ deploy_server_native_tls() {
                 ;;
             --tls-san)
                 [[ $# -ge 2 ]] || error "--tls-san requires a value"
+                if [[ "$cli_tls_sans_provided" != "true" ]]; then
+                    tls_sans=()
+                    cli_tls_sans_provided="true"
+                fi
                 tls_sans+=("$2")
                 shift 2
                 ;;
@@ -320,14 +357,13 @@ deploy_server_native_tls() {
 
     require_docker_compose
 
-    local repo_root compose_dir cert_path key_path
-    repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-    compose_dir="$repo_root/docker"
+    local compose_dir cert_path key_path
+    compose_dir="$REPO_ROOT/docker"
     cert_path="$tls_dir/bannkenn.crt"
     key_path="$tls_dir/bannkenn.key"
 
     ensure_tls_certificates \
-        "$repo_root" \
+        "$REPO_ROOT" \
         "$tls_dir" \
         "$(extract_bind_host "0.0.0.0:3022")" \
         "$regenerate_cert" \
@@ -335,7 +371,7 @@ deploy_server_native_tls() {
 
     info "Starting BannKenn server/dashboard with native TLS"
     info "  TLS host dir: $tls_dir"
-    info "  Public HTTPS API: https://SERVER_IP:3022"
+    info "  Public HTTPS API: https://${DEFAULT_PUBLIC_ADDRESS}:3022"
     info "  Local dashboard API: $dashboard_url"
 
     (

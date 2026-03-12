@@ -8,6 +8,7 @@ vendor/
 target/
 
 # Local config files with secrets
+.env
 /server.toml
 /agent.toml
 *.local.toml

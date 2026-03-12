@@ -2,9 +2,29 @@
 
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+ENV_FILE="${BANNKENN_ENV_FILE:-$REPO_ROOT/.env}"
+
+load_repo_env() {
+    local env_file="${1:-$ENV_FILE}"
+
+    if [[ -f "$env_file" ]]; then
+        set -a
+        # shellcheck disable=SC1090
+        source "$env_file"
+        set +a
+    fi
+}
+
+load_repo_env
+
 usage() {
     echo "Usage: $0 [--out-dir DIR] <ip-or-host> [ip-or-host ...]" >&2
+    echo "       $0 [--out-dir DIR]    # uses BANNKENN_TLS_SANS or BANNKENN_PUBLIC_ADDRESS from .env" >&2
     echo "Examples:" >&2
+    echo "  cp .env.example .env && edit .env" >&2
+    echo "  $0" >&2
     echo "  $0 192.0.2.10" >&2
     echo "  $0 192.0.2.10 /etc/nginx/ssl" >&2
     echo "  $0 --out-dir /etc/nginx/ssl 192.0.2.10 198.51.100.24" >&2
@@ -16,7 +36,7 @@ is_ip_san() {
     [[ "$value" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ || "$value" == *:* ]]
 }
 
-output_dir="/etc/nginx/ssl"
+output_dir="${BANNKENN_TLS_DIR:-/etc/nginx/ssl}"
 declare -a san_entries=()
 
 while [[ $# -gt 0 ]]; do
@@ -41,8 +61,17 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [[ ${#san_entries[@]} -eq 0 ]]; then
-    usage
-    exit 1
+    if [[ -n "${BANNKENN_TLS_SANS:-}" ]]; then
+        # shellcheck disable=SC2206
+        san_entries=(${BANNKENN_TLS_SANS})
+    elif [[ -n "${BANNKENN_PUBLIC_ADDRESS:-}" ]]; then
+        san_entries=("${BANNKENN_PUBLIC_ADDRESS}")
+    else
+        usage
+        echo >&2
+        echo "No SAN entries provided. Set BANNKENN_TLS_SANS or BANNKENN_PUBLIC_ADDRESS in .env, or pass IP/hostname arguments." >&2
+        exit 1
+    fi
 fi
 
 # Backward compatibility with the old form:

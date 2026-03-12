@@ -32,7 +32,18 @@ git clone https://github.com/OpenTech-Lab/bannkenn.git
 cd bannkenn
 ```
 
-### 2. Start server + dashboard
+### 2. Configure local setup values
+
+Before running `scripts/install.sh` or `scripts/generate-ip-cert.sh`, copy the local env template and replace the placeholders with your own IP/hostname and TLS settings:
+
+```bash
+cp .env.example .env
+$EDITOR .env
+```
+
+At minimum, set `BANNKENN_PUBLIC_ADDRESS`. For self-signed TLS flows, also set `BANNKENN_TLS_SANS` to every IP/hostname agents or browsers will use.
+
+### 3. Start server + dashboard
 
 Recommended one-command HTTP setup:
 
@@ -70,15 +81,16 @@ If your dashboard stays local and only agents need secure remote access, native 
 
 If you want the helper to generate a self-signed certificate for you, skip this manual step and pass one or more `--tls-san` values to `dashboard-native-tls`.
 
-LAN IP only:
+If `.env` already contains `BANNKENN_TLS_SANS` and `BANNKENN_TLS_DIR`, the helper can use them directly:
+
+```bash
+sudo bash scripts/generate-ip-cert.sh
+```
+
+Override examples:
 
 ```bash
 sudo bash scripts/generate-ip-cert.sh --out-dir /etc/bannkenn/tls 192.0.2.10
-```
-
-LAN IP plus public IP:
-
-```bash
 sudo bash scripts/generate-ip-cert.sh --out-dir /etc/bannkenn/tls 192.0.2.10 198.51.100.24
 ```
 
@@ -167,7 +179,7 @@ Recommended nginx layout for the current repo state:
 1. Generate a certificate whose SAN entries match the exact address clients will use.
 
 ```bash
-sudo bash scripts/generate-ip-cert.sh --out-dir /etc/nginx/ssl 192.0.2.10 198.51.100.24
+sudo bash scripts/generate-ip-cert.sh --out-dir /etc/nginx/ssl
 ```
 
 2. Start BannKenn with the TLS profile:
