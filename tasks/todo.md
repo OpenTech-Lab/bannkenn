@@ -10,15 +10,29 @@
 ## Phase 1 — eBPF Sensor + File Activity Detection
 - [ ] Add `aya` and `aya-log` to agent/Cargo.toml
 - [ ] Create `agent/src/ebpf/mod.rs` — sensor management, ring buffer polling
-- [ ] Create `agent/src/ebpf/events.rs` — BehaviorEvent struct (pid, exe_path, file_ops, io_rate, etc.)
+- [x] Create `agent/src/ebpf/events.rs` — BehaviorEvent struct (pid, exe_path, file_ops, io_rate, etc.)
 - [ ] Create eBPF programs: fanotify-equivalent file monitoring via tracepoints
 - [ ] Hook `sched_process_exec` / `sched_process_exit` for PID lifecycle tracking
-- [ ] Create `agent/src/correlator.rs` — PID-to-process map, event correlation
-- [ ] Create `agent/src/scorer.rs` — Scorer trait + composite behavior scoring
-- [ ] Add `[containment]` section to `agent/src/config.rs`
-- [ ] Implement rename/write counters and anomaly scoring
-- [ ] Add protected PID allowlist (init, systemd, sshd, agent itself)
-- [ ] Integration test: simulated mass file rename triggers score > 30
+- [x] Create `agent/src/correlator.rs` — PID-to-process map, event correlation
+- [x] Create `agent/src/scorer.rs` — Scorer trait + composite behavior scoring
+- [x] Add `[containment]` section to `agent/src/config.rs`
+- [x] Implement rename/write counters and anomaly scoring
+- [x] Add protected PID allowlist (init, systemd, sshd, agent itself)
+- [x] Integration test: simulated mass file rename triggers score > 30
+
+### Phase 1 Execution Slice — 2026-03-14
+- [x] Add containment config types and defaults to `agent/src/config.rs`
+- [x] Add a `BehaviorEvent` model separate from existing `SecurityEvent`
+- [x] Implement a userspace file-activity sensor that can produce `BehaviorEvent`s now
+- [x] Implement a correlator/scorer pipeline for rename/write bursts and protected PID filtering
+- [x] Wire Phase 1 behavior monitoring into the agent runtime behind config flags
+- [x] Add an integration-style test for mass rename scoring
+- [x] Verify with targeted `cargo test -p bannkenn-agent`
+
+### Review
+- Implemented a compileable Phase 1 slice in the agent: containment config, a separate behavior-event pipeline, userspace file polling, `/proc`-based process correlation, and composite behavior scoring.
+- Verified with `cargo test -p bannkenn-agent` on 2026-03-14: all agent tests passed, including the new mass-rename regression.
+- Remaining Phase 1 gaps are the true Aya/eBPF pieces: vendored `aya` dependencies, kernel probes/tracepoints, and PID lifecycle hooks from `sched_process_exec/exit`.
 
 ## Phase 2 — Containment State Machine + Throttling
 - [ ] Create `agent/src/containment.rs` — state machine (NORMAL → SUSPICIOUS → THROTTLE → FUSE)

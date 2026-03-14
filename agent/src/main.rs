@@ -3,12 +3,15 @@ mod butterfly;
 mod campaign;
 mod client;
 mod config;
+mod correlator;
+mod ebpf;
 mod event_risk;
 mod firewall;
 mod geoip;
 mod outbox;
 mod patterns;
 mod risk_level;
+mod scorer;
 mod service;
 mod shared_risk;
 mod sync;
@@ -32,7 +35,12 @@ use tokio::time::{interval, Duration};
 use uuid::Uuid;
 
 use crate::client::{build_http_client, ApiClient};
-use crate::config::{default_runtime_campaign_config, AgentConfig, OfflineAgentState};
+use crate::config::{
+    default_runtime_campaign_config, default_runtime_containment_config, AgentConfig,
+    ContainmentConfig, OfflineAgentState,
+};
+use crate::ebpf::events::{BehaviorEvent, BehaviorLevel};
+use crate::ebpf::SensorManager;
 use crate::firewall::{
     allow_ip, cleanup_firewall, detect_backend, effective_block_patterns, init_firewall,
     is_block_pattern_effectively_enforced, pattern_set_covers_pattern, pattern_set_matches_ip,
@@ -188,6 +196,23 @@ async fn run() -> Result<()> {
         config.threshold,
         config.window_secs
     );
+    if let Some(containment) = config.containment.as_ref() {
+        if containment.enabled {
+            tracing::info!(
+                "Containment sensor enabled (dry_run={}, watch_paths={}, poll_interval_ms={})",
+                containment.dry_run,
+                containment.watch_paths.len(),
+                containment.poll_interval_ms.max(100)
+            );
+            if containment.watch_paths.is_empty() {
+                tracing::warn!(
+                    "Containment is enabled but no watch_paths are configured; behavior sensing will stay idle"
+                );
+            }
+        } else {
+            tracing::info!("Containment behavior monitoring disabled");
+        }
+    }
 
     // Initialise GeoIP resolver if an mmdb directory is configured.
     // This is optional — if absent, country/ASN features degrade to "Unknown".
@@ -360,6 +385,7 @@ async fn run() -> Result<()> {
     }
 
     let (tx, mut rx) = mpsc::channel::<SecurityEvent>(1000);
+    let (behavior_tx, mut behavior_rx) = mpsc::channel::<BehaviorEvent>(256);
     let (block_outcome_tx, block_outcome_rx) = mpsc::channel::<BlockOutcome>(1000);
     let outbox = Arc::new(Mutex::new(Outbox::load_default()?));
     let outbox_notify = Arc::new(Notify::new());
@@ -386,6 +412,21 @@ async fn run() -> Result<()> {
             tracing::error!("Watcher error: {}", e);
         }
     });
+
+    let behavior_handle = if let Some(manager) = config_arc
+        .containment
+        .as_ref()
+        .and_then(SensorManager::from_config)
+    {
+        Some(tokio::spawn(async move {
+            if let Err(e) = manager.run(behavior_tx).await {
+                tracing::error!("Behavior sensor error: {}", e);
+            }
+        }))
+    } else {
+        drop(behavior_tx);
+        None
+    };
 
     let sync_client = ApiClient::new(
         config_arc.server_url.clone(),
@@ -452,19 +493,35 @@ async fn run() -> Result<()> {
     });
 
     let mut shutdown_reason = None;
+    let mut behavior_channel_open = behavior_handle.is_some();
     let shutdown = shutdown_signal();
     tokio::pin!(shutdown);
 
     loop {
         let event = tokio::select! {
             maybe_event = rx.recv() => match maybe_event {
-                Some(event) => event,
+                Some(event) => Some(event),
                 None => break,
             },
+            maybe_behavior = behavior_rx.recv(), if behavior_channel_open => {
+                match maybe_behavior {
+                    Some(event) => {
+                        handle_behavior_event(&event, config_arc.containment.as_ref());
+                        None
+                    }
+                    None => {
+                        behavior_channel_open = false;
+                        None
+                    }
+                }
+            }
             reason = &mut shutdown => {
                 shutdown_reason = Some(reason);
                 break;
             }
+        };
+        let Some(event) = event else {
+            continue;
         };
 
         tracing::info!(
@@ -684,11 +741,17 @@ async fn run() -> Result<()> {
     }
 
     watcher_handle.abort();
+    if let Some(handle) = &behavior_handle {
+        handle.abort();
+    }
     sync_handle.abort();
     flush_handle.abort();
     heartbeat_handle.abort();
 
     let _ = watcher_handle.await;
+    if let Some(handle) = behavior_handle {
+        let _ = handle.await;
+    }
     let _ = sync_handle.await;
     let _ = flush_handle.await;
     let _ = heartbeat_handle.await;
@@ -715,6 +778,87 @@ async fn enqueue_outbox(outbox: &Arc<Mutex<Outbox>>, payload: OutboxPayload, not
     match enqueue_result {
         Ok(_) => notify.notify_one(),
         Err(e) => tracing::warn!("Failed to persist outbound report: {}", e),
+    }
+}
+
+fn handle_behavior_event(event: &BehaviorEvent, containment: Option<&ContainmentConfig>) {
+    let process = event
+        .exe_path
+        .as_deref()
+        .or(event.process_name.as_deref())
+        .unwrap_or("unknown");
+    let reasons = if event.reasons.is_empty() {
+        "none".to_string()
+    } else {
+        event.reasons.join(", ")
+    };
+    let enforcement_mode = match event.level {
+        BehaviorLevel::Observed | BehaviorLevel::Suspicious => "observe-only",
+        BehaviorLevel::ThrottleCandidate => {
+            if containment
+                .map(|cfg| cfg.throttle_enabled && !cfg.dry_run)
+                .unwrap_or(false)
+            {
+                "throttle-ready (Phase 2 pending)"
+            } else {
+                "dry-run throttle candidate"
+            }
+        }
+        BehaviorLevel::FuseCandidate => {
+            if containment
+                .map(|cfg| cfg.fuse_enabled && !cfg.dry_run)
+                .unwrap_or(false)
+            {
+                "fuse-ready (Phase 2 pending)"
+            } else {
+                "dry-run fuse candidate"
+            }
+        }
+    };
+
+    match event.level {
+        BehaviorLevel::Observed => tracing::debug!(
+            "Behavior activity: level={} score={} pid={} process={} ops=create:{} write:{} rename:{} delete:{} root={} reasons={} mode={}",
+            event.level.as_str(),
+            event.score,
+            event.pid.map(|pid| pid.to_string()).unwrap_or_else(|| "unknown".to_string()),
+            process,
+            event.file_ops.created,
+            event.file_ops.modified,
+            event.file_ops.renamed,
+            event.file_ops.deleted,
+            event.watched_root,
+            reasons,
+            enforcement_mode
+        ),
+        BehaviorLevel::Suspicious | BehaviorLevel::ThrottleCandidate => tracing::warn!(
+            "Behavior activity: level={} score={} pid={} process={} ops=create:{} write:{} rename:{} delete:{} root={} reasons={} mode={}",
+            event.level.as_str(),
+            event.score,
+            event.pid.map(|pid| pid.to_string()).unwrap_or_else(|| "unknown".to_string()),
+            process,
+            event.file_ops.created,
+            event.file_ops.modified,
+            event.file_ops.renamed,
+            event.file_ops.deleted,
+            event.watched_root,
+            reasons,
+            enforcement_mode
+        ),
+        BehaviorLevel::FuseCandidate => tracing::error!(
+            "Behavior activity: level={} score={} pid={} process={} ops=create:{} write:{} rename:{} delete:{} root={} reasons={} mode={}",
+            event.level.as_str(),
+            event.score,
+            event.pid.map(|pid| pid.to_string()).unwrap_or_else(|| "unknown".to_string()),
+            process,
+            event.file_ops.created,
+            event.file_ops.modified,
+            event.file_ops.renamed,
+            event.file_ops.deleted,
+            event.watched_root,
+            reasons,
+            enforcement_mode
+        ),
     }
 }
 
@@ -840,6 +984,7 @@ async fn init() -> Result<()> {
         event_risk: None,
         campaign: Some(default_runtime_campaign_config()),
         mmdb_dir: None,
+        containment: Some(default_runtime_containment_config()),
     };
 
     config.save()?;

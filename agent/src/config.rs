@@ -10,6 +10,71 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ContainmentConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_true")]
+    pub dry_run: bool,
+    #[serde(default)]
+    pub throttle_enabled: bool,
+    #[serde(default)]
+    pub fuse_enabled: bool,
+    #[serde(default = "default_auto_fuse_release_min")]
+    pub auto_fuse_release_min: u64,
+    #[serde(default)]
+    pub watch_paths: Vec<String>,
+    #[serde(default = "default_poll_interval_ms")]
+    pub poll_interval_ms: u64,
+    #[serde(default)]
+    pub protected_paths: Vec<String>,
+    #[serde(default = "default_protected_pid_allowlist")]
+    pub protected_pid_allowlist: Vec<String>,
+    #[serde(default = "default_suspicious_score")]
+    pub suspicious_score: u32,
+    #[serde(default = "default_throttle_score")]
+    pub throttle_score: u32,
+    #[serde(default = "default_fuse_score")]
+    pub fuse_score: u32,
+    #[serde(default = "default_rename_score")]
+    pub rename_score: u32,
+    #[serde(default = "default_write_score")]
+    pub write_score: u32,
+    #[serde(default = "default_delete_score")]
+    pub delete_score: u32,
+    #[serde(default = "default_protected_path_bonus")]
+    pub protected_path_bonus: u32,
+    #[serde(default = "default_unknown_process_bonus")]
+    pub unknown_process_bonus: u32,
+    #[serde(default = "default_bytes_per_score")]
+    pub bytes_per_score: u64,
+}
+
+impl Default for ContainmentConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            dry_run: true,
+            throttle_enabled: false,
+            fuse_enabled: false,
+            auto_fuse_release_min: default_auto_fuse_release_min(),
+            watch_paths: Vec::new(),
+            poll_interval_ms: default_poll_interval_ms(),
+            protected_paths: Vec::new(),
+            protected_pid_allowlist: default_protected_pid_allowlist(),
+            suspicious_score: default_suspicious_score(),
+            throttle_score: default_throttle_score(),
+            fuse_score: default_fuse_score(),
+            rename_score: default_rename_score(),
+            write_score: default_write_score(),
+            delete_score: default_delete_score(),
+            protected_path_bonus: default_protected_path_bonus(),
+            unknown_process_bonus: default_unknown_process_bonus(),
+            bytes_per_score: default_bytes_per_score(),
+        }
+    }
+}
+
 /// Agent configuration loaded from TOML file or defaults
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentConfig {
@@ -61,6 +126,10 @@ pub struct AgentConfig {
     /// If absent, GeoIP features silently degrade to \"Unknown\".
     #[serde(default)]
     pub mmdb_dir: Option<String>,
+    /// Optional staged containment/file-activity monitoring configuration.
+    /// When absent, runtime defaults keep the feature disabled but configured.
+    #[serde(default)]
+    pub containment: Option<ContainmentConfig>,
 }
 
 fn default_log_path() -> String {
@@ -73,6 +142,63 @@ fn default_threshold() -> u32 {
 
 fn default_window_secs() -> u64 {
     60
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn default_auto_fuse_release_min() -> u64 {
+    15
+}
+
+fn default_poll_interval_ms() -> u64 {
+    1000
+}
+
+fn default_suspicious_score() -> u32 {
+    30
+}
+
+fn default_throttle_score() -> u32 {
+    60
+}
+
+fn default_fuse_score() -> u32 {
+    90
+}
+
+fn default_rename_score() -> u32 {
+    5
+}
+
+fn default_write_score() -> u32 {
+    3
+}
+
+fn default_delete_score() -> u32 {
+    4
+}
+
+fn default_protected_path_bonus() -> u32 {
+    10
+}
+
+fn default_unknown_process_bonus() -> u32 {
+    8
+}
+
+fn default_bytes_per_score() -> u64 {
+    1_048_576
+}
+
+fn default_protected_pid_allowlist() -> Vec<String> {
+    vec![
+        "init".to_string(),
+        "systemd".to_string(),
+        "sshd".to_string(),
+        "bannkenn-agent".to_string(),
+    ]
 }
 
 impl Default for AgentConfig {
@@ -93,6 +219,7 @@ impl Default for AgentConfig {
             event_risk: None,
             campaign: None,
             mmdb_dir: None,
+            containment: None,
         }
     }
 }
@@ -101,6 +228,9 @@ impl AgentConfig {
     fn apply_runtime_detection_defaults(mut self) -> Self {
         if self.campaign.is_none() {
             self.campaign = Some(default_runtime_campaign_config());
+        }
+        if self.containment.is_none() {
+            self.containment = Some(default_runtime_containment_config());
         }
         self
     }
@@ -157,6 +287,10 @@ pub fn default_runtime_campaign_config() -> CampaignConfig {
         enabled: true,
         ..Default::default()
     }
+}
+
+pub fn default_runtime_containment_config() -> ContainmentConfig {
+    ContainmentConfig::default()
 }
 
 /// Persistent cursor tracking the last synced decision id
@@ -252,6 +386,7 @@ mod tests {
             event_risk: None,
             campaign: None,
             mmdb_dir: None,
+            containment: Some(ContainmentConfig::default()),
         };
 
         let toml_str = toml::to_string(&config).unwrap();
@@ -261,6 +396,7 @@ mod tests {
         assert_eq!(config.jwt_token, deserialized.jwt_token);
         assert_eq!(config.ca_cert_path, deserialized.ca_cert_path);
         assert_eq!(config.threshold, deserialized.threshold);
+        assert_eq!(config.containment, deserialized.containment);
     }
 
     #[test]
@@ -271,6 +407,21 @@ mod tests {
             .expect("runtime defaults should populate campaign config");
         assert!(campaign.enabled);
         assert_eq!(campaign.distinct_ips_threshold, 3);
+    }
+
+    #[test]
+    fn runtime_defaults_populate_containment_config_without_enabling_it() {
+        let config = AgentConfig::default().apply_runtime_detection_defaults();
+        let containment = config
+            .containment
+            .expect("runtime defaults should populate containment config");
+        assert!(!containment.enabled);
+        assert!(containment.dry_run);
+        assert!(!containment.fuse_enabled);
+        assert_eq!(containment.suspicious_score, 30);
+        assert!(containment
+            .protected_pid_allowlist
+            .contains(&"bannkenn-agent".to_string()));
     }
 
     #[test]
