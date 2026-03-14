@@ -11,6 +11,7 @@ use std::time::Duration;
 
 mod agents;
 mod behavior;
+mod commands;
 mod community;
 mod containment;
 mod events;

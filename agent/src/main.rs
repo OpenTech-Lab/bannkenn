@@ -57,6 +57,8 @@ use crate::shared_risk::SharedRiskSnapshot;
 use crate::tofu::{fetch_presented_certificate, save_presented_certificate};
 use crate::watcher::{watch, BlockOutcome, SecurityEvent};
 
+const OPERATOR_ACTION_POLL_INTERVAL_SECS: u64 = 10;
+
 #[derive(Parser)]
 #[command(name = "bannkenn-agent")]
 #[command(about = "BannKenn Agent - Intrusion Prevention System", long_about = None)]
@@ -402,6 +404,14 @@ async fn run() -> Result<()> {
     if let Some(ticker) = containment_tick.as_mut() {
         ticker.tick().await;
     }
+    let operator_action_client = ApiClient::new(
+        config_arc.server_url.clone(),
+        config_arc.jwt_token.clone(),
+        config_arc.ca_cert_path.clone(),
+    )?;
+    let mut operator_action_tick =
+        interval(Duration::from_secs(OPERATOR_ACTION_POLL_INTERVAL_SECS));
+    operator_action_tick.tick().await;
 
     let config_for_watcher = Arc::clone(&config_arc);
     let known_ips_for_watcher = Arc::clone(&known_blocked_ips);
@@ -571,6 +581,17 @@ async fn run() -> Result<()> {
                         Ok(None) => {}
                         Err(error) => tracing::warn!("Containment timer tick failed: {}", error),
                     }
+                }
+                None
+            }
+            _ = operator_action_tick.tick() => {
+                if let Err(error) = poll_operator_containment_actions(
+                    &operator_action_client,
+                    containment_runtime.as_ref(),
+                    &outbox,
+                    &outbox_notify,
+                ).await {
+                    tracing::warn!("Operator containment action poll failed: {}", error);
                 }
                 None
             }
@@ -838,6 +859,86 @@ async fn enqueue_outbox(outbox: &Arc<Mutex<Outbox>>, payload: OutboxPayload, not
         Ok(_) => notify.notify_one(),
         Err(e) => tracing::warn!("Failed to persist outbound report: {}", e),
     }
+}
+
+async fn poll_operator_containment_actions(
+    client: &ApiClient,
+    containment_runtime: Option<&ContainmentRuntime>,
+    outbox: &Arc<Mutex<Outbox>>,
+    notify: &Arc<Notify>,
+) -> Result<()> {
+    let actions = client.fetch_pending_containment_actions(20).await?;
+    if actions.is_empty() {
+        return Ok(());
+    }
+
+    tracing::info!(
+        "Processing {} pending operator containment action(s)",
+        actions.len()
+    );
+
+    for action in actions {
+        let executed_at = chrono::Utc::now().to_rfc3339();
+
+        let result = if let Some(runtime) = containment_runtime {
+            match runtime.apply_operator_action(&action).await {
+                Ok(result) => result,
+                Err(error) => {
+                    let message = format!("failed to apply operator action: {}", error);
+                    client
+                        .acknowledge_containment_action(
+                            action.id,
+                            "failed",
+                            None,
+                            &message,
+                            &executed_at,
+                        )
+                        .await?;
+                    tracing::warn!(
+                        "Operator containment action {} failed for agent {}: {}",
+                        action.id,
+                        action.agent_name,
+                        error
+                    );
+                    continue;
+                }
+            }
+        } else {
+            let message = "containment runtime is disabled on this agent".to_string();
+            client
+                .acknowledge_containment_action(action.id, "failed", None, &message, &executed_at)
+                .await?;
+            tracing::warn!(
+                "Operator containment action {} ignored because containment is disabled",
+                action.id
+            );
+            continue;
+        };
+
+        if let Some(decision) = result.decision.as_ref() {
+            log_containment_decision(decision);
+            if let Some(payload) = OutboxPayload::from_containment_decision(decision) {
+                enqueue_outbox(outbox, payload, notify).await;
+            }
+        }
+
+        let status = if result.applied { "applied" } else { "failed" };
+        let resulting_state = result
+            .decision
+            .as_ref()
+            .map(|decision| decision.state.as_str());
+        client
+            .acknowledge_containment_action(
+                action.id,
+                status,
+                resulting_state,
+                &result.message,
+                &executed_at,
+            )
+            .await?;
+    }
+
+    Ok(())
 }
 
 fn log_behavior_event(event: &BehaviorEvent, containment: Option<&ContainmentConfig>) {

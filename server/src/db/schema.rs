@@ -110,6 +110,28 @@ pub(crate) async fn migrate(pool: &SqlitePool) -> anyhow::Result<()> {
 
     sqlx::query(
         r#"
+        CREATE TABLE IF NOT EXISTS containment_actions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            agent_name TEXT NOT NULL,
+            command_kind TEXT NOT NULL,
+            reason TEXT NOT NULL,
+            watched_root TEXT,
+            pid INTEGER,
+            requested_by TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'pending',
+            resulting_state TEXT,
+            result_message TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            executed_at TEXT
+        )
+        "#,
+    )
+    .execute(pool)
+    .await?;
+
+    sqlx::query(
+        r#"
         CREATE TABLE IF NOT EXISTS incidents (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             incident_key TEXT NOT NULL,
@@ -294,6 +316,24 @@ pub(crate) async fn migrate(pool: &SqlitePool) -> anyhow::Result<()> {
     sqlx::query(
         r#"
         CREATE INDEX IF NOT EXISTS idx_agent_containment_status_updated_at ON agent_containment_status(updated_at DESC)
+        "#,
+    )
+    .execute(pool)
+    .await?;
+
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_containment_actions_agent_status_created_at
+            ON containment_actions(agent_name, status, created_at ASC)
+        "#,
+    )
+    .execute(pool)
+    .await?;
+
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_containment_actions_updated_at
+            ON containment_actions(updated_at DESC)
         "#,
     )
     .execute(pool)

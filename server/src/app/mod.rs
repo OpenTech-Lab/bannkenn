@@ -7,6 +7,7 @@ use std::sync::Arc;
 use tracing::{error, info};
 
 pub use healthcheck::{healthcheck_target, healthcheck_url, run_healthcheck};
+pub use router::build_router;
 pub use runtime::{listener_addresses_conflict, parse_optional_bind};
 
 pub async fn main_entry() -> anyhow::Result<()> {

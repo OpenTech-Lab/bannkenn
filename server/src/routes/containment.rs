@@ -38,6 +38,19 @@ pub struct ListParams {
     pub limit: Option<i64>,
 }
 
+pub async fn list_events(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<ListParams>,
+) -> Result<impl IntoResponse, StatusCode> {
+    let limit = params.limit.unwrap_or(500).clamp(1, 5000);
+    let rows = state
+        .db
+        .list_containment_events(limit)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(Json(rows))
+}
+
 fn is_valid_state(value: &str) -> bool {
     matches!(value, "normal" | "suspicious" | "throttle" | "fuse")
 }

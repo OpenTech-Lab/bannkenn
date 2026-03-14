@@ -3,6 +3,7 @@ pub mod alerts;
 pub mod behavior_events;
 pub mod community;
 pub mod containment;
+pub mod containment_actions;
 pub mod decisions;
 pub mod health;
 pub mod incidents;

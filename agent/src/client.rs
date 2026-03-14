@@ -26,6 +26,23 @@ pub struct WhitelistEntry {
     pub created_at: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ContainmentActionRow {
+    pub id: i64,
+    pub agent_name: String,
+    pub command_kind: String,
+    pub reason: String,
+    pub watched_root: Option<String>,
+    pub pid: Option<u32>,
+    pub requested_by: String,
+    pub status: String,
+    pub resulting_state: Option<String>,
+    pub result_message: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+    pub executed_at: Option<String>,
+}
+
 /// API client for communicating with the BannKenn server
 #[derive(Clone)]
 pub struct ApiClient {
@@ -106,6 +123,77 @@ impl ApiClient {
         }
 
         Ok(response.json().await?)
+    }
+
+    pub async fn fetch_pending_containment_actions(
+        &self,
+        limit: i64,
+    ) -> Result<Vec<ContainmentActionRow>> {
+        let url = format!(
+            "{}/api/v1/agents/containment-actions/pending?limit={}",
+            self.base_url, limit
+        );
+
+        let response = self
+            .http
+            .get(&url)
+            .header("Authorization", format!("Bearer {}", self.token))
+            .send()
+            .await?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let text = response.text().await.unwrap_or_default();
+            return Err(anyhow::anyhow!(
+                "Server returned containment-actions error {}: {}",
+                status,
+                text
+            ));
+        }
+
+        Ok(response.json().await?)
+    }
+
+    pub async fn acknowledge_containment_action(
+        &self,
+        action_id: i64,
+        status: &str,
+        resulting_state: Option<&str>,
+        result_message: &str,
+        executed_at: &str,
+    ) -> Result<()> {
+        let url = format!(
+            "{}/api/v1/agents/containment-actions/{}/ack",
+            self.base_url, action_id
+        );
+
+        let body = json!({
+            "status": status,
+            "resulting_state": resulting_state,
+            "result_message": result_message,
+            "executed_at": executed_at,
+        });
+
+        let response = self
+            .http
+            .post(&url)
+            .header("Authorization", format!("Bearer {}", self.token))
+            .header("Content-Type", "application/json")
+            .json(&body)
+            .send()
+            .await?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let text = response.text().await.unwrap_or_default();
+            return Err(anyhow::anyhow!(
+                "Server returned containment-action ack error {}: {}",
+                status,
+                text
+            ));
+        }
+
+        Ok(())
     }
 
     /// Report a block decision to the server

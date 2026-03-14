@@ -1,7 +1,7 @@
 use crate::{auth, behavior_pg::BehaviorPgArchive, config::ServerConfig, db::Db, routes};
 use axum::{
     middleware,
-    routing::{delete, get, patch, post},
+    routing::{delete, get, post},
     Router,
 };
 use std::sync::Arc;
@@ -28,11 +28,25 @@ pub fn build_router(
         .route("/", get(routes::agents::list))
         .route("/register", post(routes::agents::register))
         .with_state(agents_state.clone());
+    let containment_actions_state =
+        Arc::new(routes::containment_actions::AppState { db: db.clone() });
 
     let agents_protected_router = Router::new()
         .route("/heartbeat", post(routes::agents::heartbeat))
         .route("/shared-risk", get(routes::agents::shared_risk_profile))
         .with_state(agents_state.clone())
+        .merge(
+            Router::new()
+                .route(
+                    "/containment-actions/pending",
+                    get(routes::containment_actions::list_pending),
+                )
+                .route(
+                    "/containment-actions/:id/ack",
+                    post(routes::containment_actions::acknowledge),
+                )
+                .with_state(containment_actions_state.clone()),
+        )
         .layer(auth_middleware_layer.clone());
 
     let agents_admin_router = Router::new()
@@ -46,9 +60,23 @@ pub fn build_router(
         .route("/:id/containment", get(routes::agents::list_containment))
         .route(
             "/:id",
-            patch(routes::agents::update_nickname).delete(routes::agents::delete_agent),
+            get(routes::agents::detail)
+                .patch(routes::agents::update_nickname)
+                .delete(routes::agents::delete_agent),
         )
-        .with_state(agents_state);
+        .with_state(agents_state)
+        .merge(
+            Router::new()
+                .route(
+                    "/:id/containment-actions",
+                    get(routes::containment_actions::list_by_agent),
+                )
+                .route(
+                    "/:id/containment-actions",
+                    post(routes::containment_actions::create),
+                )
+                .with_state(containment_actions_state),
+        );
 
     let decisions_state = Arc::new(routes::decisions::AppState { db: db.clone() });
     let ip_lookup_state = Arc::new(routes::ip_lookup::AppState { db: db.clone() });
@@ -93,7 +121,7 @@ pub fn build_router(
         .with_state(containment_state.clone());
     let containment_write = Router::new()
         .route("/", post(routes::containment::create))
-        .with_state(containment_state)
+        .with_state(containment_state.clone())
         .layer(auth_middleware_layer.clone());
 
     let incidents_read = Router::new()
@@ -133,7 +161,11 @@ pub fn build_router(
         )
         .nest(
             "/api/v1/containment",
-            containment_read.merge(containment_write),
+            containment_read.merge(containment_write).merge(
+                Router::new()
+                    .route("/events", get(routes::containment::list_events))
+                    .with_state(containment_state.clone()),
+            ),
         )
         .nest("/api/v1/incidents", incidents_read)
         .nest("/api/v1/alerts", alerts_read)

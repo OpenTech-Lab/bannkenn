@@ -66,6 +66,55 @@ impl Db {
         Ok(row.map(|(name,)| name))
     }
 
+    pub async fn get_agent_with_last_seen(
+        &self,
+        id: i64,
+    ) -> anyhow::Result<Option<AgentStatusRow>> {
+        let row = sqlx::query_as::<
+            _,
+            (
+                i64,
+                String,
+                Option<String>,
+                Option<String>,
+                String,
+                Option<String>,
+                Option<i64>,
+            ),
+        >(
+            r#"
+            SELECT
+                a.id,
+                a.name,
+                a.uuid,
+                a.nickname,
+                a.created_at,
+                h.last_heartbeat_at as last_seen_at,
+                h.butterfly_shield_enabled
+            FROM agents a
+            LEFT JOIN agent_heartbeats h ON h.agent_name = a.name
+            WHERE a.id = ?
+            "#,
+        )
+        .bind(id)
+        .fetch_optional(&self.0)
+        .await?;
+
+        Ok(row.map(
+            |(id, name, uuid, nickname, created_at, last_seen_at, butterfly_shield_enabled)| {
+                AgentStatusRow {
+                    id,
+                    name,
+                    uuid,
+                    nickname,
+                    created_at,
+                    last_seen_at,
+                    butterfly_shield_enabled: butterfly_shield_enabled.map(|v| v != 0),
+                }
+            },
+        ))
+    }
+
     pub async fn find_agent_by_token_hash(&self, hash: &str) -> anyhow::Result<Option<AgentRow>> {
         let row = sqlx::query_as::<_, (i64, String, String, String)>(
             "SELECT id, name, token_hash, created_at FROM agents WHERE token_hash = ?",

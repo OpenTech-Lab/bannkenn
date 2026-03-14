@@ -131,34 +131,26 @@ pub async fn list(
     let now = Utc::now();
     let agents = rows
         .into_iter()
-        .map(|a| {
-            let status = match a
-                .last_seen_at
-                .as_ref()
-                .and_then(|value| DateTime::parse_from_rfc3339(value).ok())
-                .map(|dt| dt.with_timezone(&Utc))
-            {
-                Some(last_seen) if now.signed_duration_since(last_seen) <= Duration::minutes(2) => {
-                    "online".to_string()
-                }
-                Some(_) => "offline".to_string(),
-                None => "unknown".to_string(),
-            };
-
-            AgentStatusResponse {
-                id: a.id,
-                name: a.name,
-                uuid: a.uuid,
-                nickname: a.nickname,
-                created_at: a.created_at,
-                last_seen_at: a.last_seen_at,
-                status,
-                butterfly_shield_enabled: a.butterfly_shield_enabled,
-            }
-        })
+        .map(|row| map_agent_status(row, now))
         .collect::<Vec<_>>();
 
     Ok(Json(agents))
+}
+
+pub async fn detail(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<i64>,
+) -> Result<impl IntoResponse, StatusCode> {
+    let Some(agent) = state
+        .db
+        .get_agent_with_last_seen(id)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+    else {
+        return Err(StatusCode::NOT_FOUND);
+    };
+
+    Ok(Json(map_agent_status(agent, Utc::now())))
 }
 
 pub async fn heartbeat(
@@ -351,4 +343,30 @@ pub async fn backfill_geoip(
         latest_country: latest.as_ref().and_then(|d| d.country.clone()),
         latest_asn_org: latest.as_ref().and_then(|d| d.asn_org.clone()),
     }))
+}
+
+fn map_agent_status(row: crate::db::AgentStatusRow, now: DateTime<Utc>) -> AgentStatusResponse {
+    let status = match row
+        .last_seen_at
+        .as_ref()
+        .and_then(|value| DateTime::parse_from_rfc3339(value).ok())
+        .map(|dt| dt.with_timezone(&Utc))
+    {
+        Some(last_seen) if now.signed_duration_since(last_seen) <= Duration::minutes(2) => {
+            "online".to_string()
+        }
+        Some(_) => "offline".to_string(),
+        None => "unknown".to_string(),
+    };
+
+    AgentStatusResponse {
+        id: row.id,
+        name: row.name,
+        uuid: row.uuid,
+        nickname: row.nickname,
+        created_at: row.created_at,
+        last_seen_at: row.last_seen_at,
+        status,
+        butterfly_shield_enabled: row.butterfly_shield_enabled,
+    }
 }

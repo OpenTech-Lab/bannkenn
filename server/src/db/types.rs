@@ -94,6 +94,23 @@ pub struct ContainmentStatusRow {
     pub updated_at: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ContainmentActionRow {
+    pub id: i64,
+    pub agent_name: String,
+    pub command_kind: String,
+    pub reason: String,
+    pub watched_root: Option<String>,
+    pub pid: Option<u32>,
+    pub requested_by: String,
+    pub status: String,
+    pub resulting_state: Option<String>,
+    pub result_message: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+    pub executed_at: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct IncidentRow {
     pub id: i64,
@@ -180,6 +197,16 @@ pub struct NewContainmentEvent {
     pub actions: Vec<String>,
     pub outcomes: Vec<ContainmentOutcomeRow>,
     pub timestamp: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct NewContainmentAction {
+    pub agent_name: String,
+    pub command_kind: String,
+    pub reason: String,
+    pub watched_root: Option<String>,
+    pub pid: Option<u32>,
+    pub requested_by: String,
 }
 
 #[derive(Debug, Clone)]

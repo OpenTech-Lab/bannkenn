@@ -249,6 +249,51 @@ impl Db {
         rows.into_iter().map(map_containment_status_row).collect()
     }
 
+    pub async fn list_containment_events(
+        &self,
+        limit: i64,
+    ) -> anyhow::Result<Vec<ContainmentEventRow>> {
+        let rows = sqlx::query_as::<
+            _,
+            (
+                i64,
+                String,
+                String,
+                Option<String>,
+                String,
+                String,
+                Option<i64>,
+                i64,
+                String,
+                String,
+                String,
+            ),
+        >(
+            r#"
+            SELECT
+                id,
+                agent_name,
+                state,
+                previous_state,
+                reason,
+                watched_root,
+                pid,
+                score,
+                actions_json,
+                outcomes_json,
+                created_at
+            FROM containment_events
+            ORDER BY created_at DESC, id DESC
+            LIMIT ?
+            "#,
+        )
+        .bind(limit)
+        .fetch_all(&self.0)
+        .await?;
+
+        rows.into_iter().map(map_containment_event_row).collect()
+    }
+
     pub async fn list_containment_events_by_agent(
         &self,
         agent_name: &str,

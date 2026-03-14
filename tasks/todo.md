@@ -131,12 +131,31 @@
 - [x] Verify with targeted agent/server test suites
 
 ## Phase 4 — Dashboard Integration
-- [ ] Containment status panel (per-host state machine visualization)
-- [ ] Threat level heatmap across hosts
-- [ ] Activity timeline with behavior events
-- [ ] Active throttling events list
-- [ ] Manual fuse trigger/release controls
-- [ ] Incident detail view with event timeline
+- [x] Containment status panel (per-host state machine visualization)
+- [x] Threat level heatmap across hosts
+- [x] Activity timeline with behavior events
+- [x] Active throttling events list
+- [x] Manual fuse trigger/release controls
+- [x] Incident detail view with event timeline
+
+### Phase 4 Execution Slice — 2026-03-14
+- [x] Add a scalable server-side operator containment command queue for manual fuse trigger/release requests
+- [x] Teach the agent to poll/apply containment operator commands and acknowledge outcomes back to the server
+- [x] Expose dashboard proxy routes for containment statuses, incidents, alerts, behavior events, and operator containment actions
+- [x] Refactor dashboard home/agent detail UI into smaller feature modules before layering in Phase 4 panels
+- [x] Add a fleet containment status panel with per-host state visualization and manual fuse controls
+- [x] Add a fleet threat heatmap plus active throttling list driven by containment/incident data
+- [x] Add a recent activity timeline that surfaces behavior events, containment changes, and alerts coherently
+- [x] Add an incident detail page with reconstructed timeline and link it from the dashboard
+- [x] Add focused server tests for containment operator commands and verify dashboard/server builds/tests
+
+### Phase 4 Review — 2026-03-14
+- Added a server-side containment action queue plus agent polling/acknowledgement flow for operator-triggered FUSE actions, with history persisted in `containment_actions`.
+- Added scalable read APIs needed by the dashboard: direct agent detail reads and global containment event history alongside the existing incident/alert/behavior feeds.
+- Moved the new containment tests out of inline source blocks into `server/tests/containment_actions.rs` and `agent/tests/containment.rs` so Phase 4 additions follow the repo’s test-folder rule.
+- Refactored the dashboard into feature modules under `dashboard/src/features/monitoring/` with dedicated API/data helper layers, smaller page entrypoints, and reusable containment/timeline/incident components.
+- Shipped the full Phase 4 UI surface: fleet containment panel, threat heatmap, active throttling list, unified activity timeline, incidents index/detail views, and manual FUSE trigger/release controls on fleet and agent detail screens.
+- Verified with `cargo test -p bannkenn-agent -p bannkenn-server`, `npm ci`, `npm run build` in `dashboard/`, `cargo fmt`, and `git diff --check` on 2026-03-14.
 
 ## Deployment
 - [ ] Add eBPF build stage to Docker (linux-headers, clang, llvm)
