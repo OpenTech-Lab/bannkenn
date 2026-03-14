@@ -205,3 +205,8 @@
 - Do not hard-code live IPs, hostnames, tokens, or deployment-specific paths into install/setup flows when a local `.env` or explicit CLI input is more appropriate.
 - Provide a tracked `.env.example` with placeholders and keep the real `.env` local/ignored so operators can fill in their own values before running the scripts.
 - When a script depends on operator-specific values, document the `.env` step in the primary setup instructions instead of burying it in flags alone.
+
+### Before starting the next phase, do the maintainability pass while the context is still fresh
+- If a large phase adds oversized files or growing inline tests, refactor them before starting the next phase instead of treating cleanup as optional follow-up.
+- Keep server tests in `server/tests/` with shared fixtures/modules rather than expanding `#[cfg(test)]` blocks inside production files.
+- Prefer thin binaries and domain-focused modules so the next upgrade extends existing seams instead of reopening monolith files.

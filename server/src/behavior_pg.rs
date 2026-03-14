@@ -39,6 +39,16 @@ const BEHAVIOR_ARCHIVE_INDEXES: &[&str] = &[
     "CREATE INDEX IF NOT EXISTS idx_behavior_events_archive_root_created_at ON behavior_events_archive(watched_root, created_at DESC)",
 ];
 
+#[doc(hidden)]
+pub fn archive_schema_sql() -> &'static str {
+    CREATE_BEHAVIOR_ARCHIVE_SQL
+}
+
+#[doc(hidden)]
+pub fn archive_index_statements() -> &'static [&'static str] {
+    BEHAVIOR_ARCHIVE_INDEXES
+}
+
 #[derive(Debug, Clone)]
 pub struct BehaviorPgArchive {
     pool: PgPool,
@@ -191,63 +201,5 @@ impl BehaviorPgArchive {
         .await?;
 
         Ok(())
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::db::{BehaviorFileOpsRow, NewBehaviorEvent};
-
-    #[test]
-    fn archive_bootstrap_defines_expected_indexes() {
-        assert!(CREATE_BEHAVIOR_ARCHIVE_SQL.contains("behavior_events_archive"));
-        assert!(BEHAVIOR_ARCHIVE_INDEXES
-            .iter()
-            .any(|statement| statement.contains("agent_name, created_at DESC")));
-        assert!(BEHAVIOR_ARCHIVE_INDEXES
-            .iter()
-            .any(|statement| statement.contains("level, created_at DESC")));
-        assert!(BEHAVIOR_ARCHIVE_INDEXES
-            .iter()
-            .any(|statement| statement.contains("watched_root, created_at DESC")));
-    }
-
-    #[test]
-    fn archive_record_preserves_ingested_behavior_fields() {
-        let event = NewBehaviorEvent {
-            agent_name: "agent-a".to_string(),
-            source: "ebpf_ringbuf".to_string(),
-            watched_root: "/srv/data".to_string(),
-            pid: Some(42),
-            process_name: Some("python3".to_string()),
-            exe_path: Some("/usr/bin/python3".to_string()),
-            command_line: Some("python3 encrypt.py".to_string()),
-            correlation_hits: 3,
-            file_ops: BehaviorFileOpsRow {
-                created: 1,
-                modified: 2,
-                renamed: 4,
-                deleted: 1,
-            },
-            touched_paths: vec!["/srv/data/a.txt".to_string()],
-            protected_paths_touched: vec!["/srv/data/secret.txt".to_string()],
-            bytes_written: 16384,
-            io_rate_bytes_per_sec: 4096,
-            score: 88,
-            reasons: vec!["rename burst x4".to_string()],
-            level: "fuse_candidate".to_string(),
-            timestamp: Some("2026-03-14T09:00:00+00:00".to_string()),
-        };
-
-        let record =
-            BehaviorArchiveRecord::from_ingested_event(17, 5, &event, "2026-03-14T09:00:00+00:00")
-                .unwrap();
-
-        assert_eq!(record.sqlite_event_id, 17);
-        assert_eq!(record.incident_id, 5);
-        assert_eq!(record.file_ops_renamed, 4);
-        assert_eq!(record.level, "fuse_candidate");
-        assert!(record.reasons_json.contains("rename burst x4"));
     }
 }

@@ -150,6 +150,19 @@
 - [ ] Exercise real privileged eBPF attachment on a Linux host and document the exact runtime capability requirements
 - [ ] Exercise real privileged cgroup/tc containment enforcement on a Linux host and document the exact runtime prerequisites/observed behavior
 
+## Refactor Slice — 2026-03-14
+- [x] Split oversized server runtime code into library modules with a thin binary entrypoint
+- [x] Split oversized server DB code into focused submodules under `server/src/db/`
+- [x] Move server-side tests out of inline source blocks into dedicated files under `server/tests/`
+- [x] Keep public interfaces stable so existing routes/behavior compile without downstream churn
+- [x] Verify with formatting, server tests, full workspace tests, and diff checks
+
+### Refactor Review — 2026-03-14
+- Reworked the server crate into a library-first layout with a thin `server/src/main.rs` entrypoint and grouped runtime code under `server/src/app/`.
+- Broke the database layer into focused modules for schema bootstrap, events, whitelist/maintenance, agents, community intelligence, behavior ingestion, containment, incidents, helpers, and shared row types; the `server/src/db.rs` root is now a small module hub.
+- Moved server tests into `server/tests/` with a shared `tests/support/` fixture module so future coverage can grow without inflating production source files.
+- Verified the refactor with `cargo check -p bannkenn-server`, `cargo test -p bannkenn-server`, `cargo test -p bannkenn-agent -p bannkenn-server`, `cargo fmt`, and `git diff --check` on 2026-03-14.
+
 ---
 
 # TODOS.md — Deferred Items

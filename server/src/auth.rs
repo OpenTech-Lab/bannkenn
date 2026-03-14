@@ -102,27 +102,3 @@ pub async fn auth_middleware(
 
     Ok(next.run(request).await)
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_create_and_verify_token() {
-        let secret = "test-secret";
-        let agent_name = "test-agent";
-
-        let token = create_token(agent_name, secret).expect("Failed to create token");
-        let claims = verify_token(&token, secret).expect("Failed to verify token");
-
-        assert_eq!(claims.sub, agent_name);
-        assert!(claims.exp > claims.iat);
-    }
-
-    #[test]
-    fn test_verify_invalid_token() {
-        let secret = "test-secret";
-        let result = verify_token("invalid.token.here", secret);
-        assert!(result.is_err());
-    }
-}
