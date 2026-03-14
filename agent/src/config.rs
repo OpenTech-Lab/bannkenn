@@ -30,6 +30,10 @@ pub struct ContainmentConfig {
     pub protected_paths: Vec<String>,
     #[serde(default = "default_protected_pid_allowlist")]
     pub protected_pid_allowlist: Vec<String>,
+    #[serde(default)]
+    pub ebpf_object_path: Option<String>,
+    #[serde(default = "default_ebpf_ringbuf_map")]
+    pub ebpf_ringbuf_map: String,
     #[serde(default = "default_suspicious_score")]
     pub suspicious_score: u32,
     #[serde(default = "default_throttle_score")]
@@ -62,6 +66,8 @@ impl Default for ContainmentConfig {
             poll_interval_ms: default_poll_interval_ms(),
             protected_paths: Vec::new(),
             protected_pid_allowlist: default_protected_pid_allowlist(),
+            ebpf_object_path: None,
+            ebpf_ringbuf_map: default_ebpf_ringbuf_map(),
             suspicious_score: default_suspicious_score(),
             throttle_score: default_throttle_score(),
             fuse_score: default_fuse_score(),
@@ -199,6 +205,10 @@ fn default_protected_pid_allowlist() -> Vec<String> {
         "sshd".to_string(),
         "bannkenn-agent".to_string(),
     ]
+}
+
+fn default_ebpf_ringbuf_map() -> String {
+    "BK_EVENTS".to_string()
 }
 
 impl Default for AgentConfig {

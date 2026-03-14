@@ -1,5 +1,20 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use std::mem::size_of;
+
+pub const RAW_BEHAVIOR_PATH_CAPACITY: usize = 256;
+pub const RAW_BEHAVIOR_PROCESS_CAPACITY: usize = 128;
+pub const RAW_BEHAVIOR_EVENT_KIND_FILE_ACTIVITY: u32 = 0;
+pub const RAW_BEHAVIOR_EVENT_KIND_PROCESS_EXEC: u32 = 1;
+pub const RAW_BEHAVIOR_EVENT_KIND_PROCESS_EXIT: u32 = 2;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RawBehaviorEventKind {
+    FileActivity,
+    ProcessExec,
+    ProcessExit,
+    Unknown(u32),
+}
 
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct FileOperationCounts {
@@ -79,4 +94,154 @@ pub struct BehaviorEvent {
     pub score: u32,
     pub reasons: Vec<String>,
     pub level: BehaviorLevel,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct RawBehaviorRingEvent {
+    pub pid: u32,
+    pub event_kind: u32,
+    pub bytes_written: u64,
+    pub created: u32,
+    pub modified: u32,
+    pub renamed: u32,
+    pub deleted: u32,
+    pub protected_path_touched: u32,
+    pub path_len: u32,
+    pub process_name_len: u32,
+    pub path: [u8; RAW_BEHAVIOR_PATH_CAPACITY],
+    pub process_name: [u8; RAW_BEHAVIOR_PROCESS_CAPACITY],
+}
+
+unsafe impl aya::Pod for RawBehaviorRingEvent {}
+
+impl RawBehaviorRingEvent {
+    pub fn from_bytes(bytes: &[u8]) -> Option<Self> {
+        if bytes.len() < size_of::<Self>() {
+            return None;
+        }
+
+        let mut event = Self {
+            pid: 0,
+            event_kind: RAW_BEHAVIOR_EVENT_KIND_FILE_ACTIVITY,
+            bytes_written: 0,
+            created: 0,
+            modified: 0,
+            renamed: 0,
+            deleted: 0,
+            protected_path_touched: 0,
+            path_len: 0,
+            process_name_len: 0,
+            path: [0; RAW_BEHAVIOR_PATH_CAPACITY],
+            process_name: [0; RAW_BEHAVIOR_PROCESS_CAPACITY],
+        };
+        // The ring buffer payload is emitted by a fixed-size C-compatible struct.
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                bytes.as_ptr(),
+                &mut event as *mut Self as *mut u8,
+                size_of::<Self>(),
+            );
+        }
+        Some(event)
+    }
+
+    pub fn path_string(&self) -> String {
+        let len = usize::try_from(self.path_len)
+            .ok()
+            .map(|len| len.min(self.path.len()))
+            .unwrap_or(0);
+        String::from_utf8_lossy(&self.path[..len]).into_owned()
+    }
+
+    pub fn process_name_string(&self) -> String {
+        let len = usize::try_from(self.process_name_len)
+            .ok()
+            .map(|len| len.min(self.process_name.len()))
+            .unwrap_or(0);
+        String::from_utf8_lossy(&self.process_name[..len]).into_owned()
+    }
+
+    pub fn event_kind(&self) -> RawBehaviorEventKind {
+        match self.event_kind {
+            RAW_BEHAVIOR_EVENT_KIND_FILE_ACTIVITY => RawBehaviorEventKind::FileActivity,
+            RAW_BEHAVIOR_EVENT_KIND_PROCESS_EXEC => RawBehaviorEventKind::ProcessExec,
+            RAW_BEHAVIOR_EVENT_KIND_PROCESS_EXIT => RawBehaviorEventKind::ProcessExit,
+            other => RawBehaviorEventKind::Unknown(other),
+        }
+    }
+
+    pub fn is_lifecycle_event(&self) -> bool {
+        matches!(
+            self.event_kind(),
+            RawBehaviorEventKind::ProcessExec | RawBehaviorEventKind::ProcessExit
+        )
+    }
+
+    pub fn file_ops(&self) -> FileOperationCounts {
+        FileOperationCounts {
+            created: self.created,
+            modified: self.modified,
+            renamed: self.renamed,
+            deleted: self.deleted,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn raw_ring_event_round_trips_strings() {
+        let mut raw = RawBehaviorRingEvent {
+            pid: 42,
+            event_kind: RAW_BEHAVIOR_EVENT_KIND_FILE_ACTIVITY,
+            bytes_written: 1024,
+            created: 1,
+            modified: 2,
+            renamed: 3,
+            deleted: 4,
+            protected_path_touched: 1,
+            path_len: 13,
+            process_name_len: 7,
+            path: [0; RAW_BEHAVIOR_PATH_CAPACITY],
+            process_name: [0; RAW_BEHAVIOR_PROCESS_CAPACITY],
+        };
+        raw.path[..13].copy_from_slice(b"/srv/data.txt");
+        raw.process_name[..7].copy_from_slice(b"python3");
+
+        let bytes = unsafe {
+            std::slice::from_raw_parts(
+                &raw as *const RawBehaviorRingEvent as *const u8,
+                size_of::<RawBehaviorRingEvent>(),
+            )
+        };
+        let parsed = RawBehaviorRingEvent::from_bytes(bytes).expect("parse raw event");
+        assert_eq!(parsed.path_string(), "/srv/data.txt");
+        assert_eq!(parsed.process_name_string(), "python3");
+        assert_eq!(parsed.file_ops().renamed, 3);
+        assert_eq!(parsed.event_kind(), RawBehaviorEventKind::FileActivity);
+    }
+
+    #[test]
+    fn raw_ring_event_identifies_lifecycle_variants() {
+        let raw = RawBehaviorRingEvent {
+            pid: 99,
+            event_kind: RAW_BEHAVIOR_EVENT_KIND_PROCESS_EXIT,
+            bytes_written: 0,
+            created: 0,
+            modified: 0,
+            renamed: 0,
+            deleted: 0,
+            protected_path_touched: 0,
+            path_len: 0,
+            process_name_len: 0,
+            path: [0; RAW_BEHAVIOR_PATH_CAPACITY],
+            process_name: [0; RAW_BEHAVIOR_PROCESS_CAPACITY],
+        };
+
+        assert!(raw.is_lifecycle_event());
+        assert_eq!(raw.event_kind(), RawBehaviorEventKind::ProcessExit);
+    }
 }

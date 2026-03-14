@@ -36,3 +36,4 @@ docker/data/
 
 # Build artifacts
 dist/
+agent/ebpf/*.o

@@ -27,3 +27,5 @@ base64 = "0.22"
 sha2 = "0.10"
 rustls = { version = "0.21", features = ["dangerous_configuration"] }
 tokio-rustls = "0.24"
+aya = "0.13.1"
+aya-log = "0.2.1"

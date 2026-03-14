@@ -8,11 +8,11 @@
 - **Feature Flags**: `[containment]` config section with enabled, dry_run, throttle_enabled, fuse_enabled, auto_fuse_release_min
 
 ## Phase 1 — eBPF Sensor + File Activity Detection
-- [ ] Add `aya` and `aya-log` to agent/Cargo.toml
-- [ ] Create `agent/src/ebpf/mod.rs` — sensor management, ring buffer polling
+- [x] Add `aya` and `aya-log` to agent/Cargo.toml
+- [x] Create `agent/src/ebpf/mod.rs` — sensor management, ring buffer polling
 - [x] Create `agent/src/ebpf/events.rs` — BehaviorEvent struct (pid, exe_path, file_ops, io_rate, etc.)
-- [ ] Create eBPF programs: fanotify-equivalent file monitoring via tracepoints
-- [ ] Hook `sched_process_exec` / `sched_process_exit` for PID lifecycle tracking
+- [x] Create eBPF programs: fanotify-equivalent file monitoring via tracepoints
+- [x] Hook `sched_process_exec` / `sched_process_exit` for PID lifecycle tracking
 - [x] Create `agent/src/correlator.rs` — PID-to-process map, event correlation
 - [x] Create `agent/src/scorer.rs` — Scorer trait + composite behavior scoring
 - [x] Add `[containment]` section to `agent/src/config.rs`
@@ -24,15 +24,26 @@
 - [x] Add containment config types and defaults to `agent/src/config.rs`
 - [x] Add a `BehaviorEvent` model separate from existing `SecurityEvent`
 - [x] Implement a userspace file-activity sensor that can produce `BehaviorEvent`s now
+- [x] Add a `/proc`-based lifecycle tracker that surfaces exec/exit-style process transitions for watched roots
 - [x] Implement a correlator/scorer pipeline for rename/write bursts and protected PID filtering
+- [x] Factor the behavior sensor behind a backend boundary so an Aya/ring-buffer source can replace the userspace poller cleanly
+- [x] Vendor `aya`/`aya-log` and add a real Aya loader + ring-buffer backend path that can consume a prebuilt eBPF object
+- [x] Add a buildable kernel-side BPF object and loader map population for watched/protected path prefixes
+- [x] Auto-detect the repo-local BPF object when it has been built so containment can use Aya without extra config in dev
 - [x] Wire Phase 1 behavior monitoring into the agent runtime behind config flags
 - [x] Add an integration-style test for mass rename scoring
 - [x] Verify with targeted `cargo test -p bannkenn-agent`
+- [x] Verify the vendored/offline Cargo path still passes after adding Aya
+- [x] Verify the BPF object compiles and exposes the expected tracepoint/map symbols
 
 ### Review
 - Implemented a compileable Phase 1 slice in the agent: containment config, a separate behavior-event pipeline, userspace file polling, `/proc`-based process correlation, and composite behavior scoring.
-- Verified with `cargo test -p bannkenn-agent` on 2026-03-14: all agent tests passed, including the new mass-rename regression.
-- Remaining Phase 1 gaps are the true Aya/eBPF pieces: vendored `aya` dependencies, kernel probes/tracepoints, and PID lifecycle hooks from `sched_process_exec/exit`.
+- Tightened the Phase 1 architecture with a lifecycle tracker for watched-root processes and a backend abstraction so the future Aya/ring-buffer path has a clean integration point.
+- Added the kernel-side BPF slice in `agent/ebpf/containment.bpf.c`: tracepoints for `sched_process_exec`, `sched_process_exit`, `sys_enter_openat`, `sys_exit_openat`, `sys_enter_write`, `sys_enter_close`, `sys_enter_renameat`, `sys_enter_renameat2`, and `sys_enter_unlinkat`, plus ring-buffer and watched/protected-prefix maps.
+- Extended the Aya loader so it populates the kernel prefix maps, auto-detects the repo-local `agent/ebpf/bannkenn-containment.bpf.o` artifact when present, and converts exec/exit ring events into lifecycle hints without disturbing the userspace polling fallback.
+- Added `scripts/build-ebpf.sh` and verified on 2026-03-14 that it produces a BTF-enabled object whose symbol table exposes the expected `bk_*` programs and `BK_EVENTS`/`BK_WATCH_ROOTS`/`BK_PROTECTED_ROOTS` maps.
+- Verified with `cargo test -p bannkenn-agent`, `./scripts/build-ebpf.sh`, and `readelf` inspection on 2026-03-14: all agent tests passed, and the generated BPF ELF matches the loader contract.
+- Remaining containment follow-up is now packaging/runtime validation: bundle the object in Docker/installer flows, and exercise actual privileged attachment on a Linux host with root and the needed kernel capabilities.
 
 ## Phase 2 — Containment State Machine + Throttling
 - [ ] Create `agent/src/containment.rs` — state machine (NORMAL → SUSPICIOUS → THROTTLE → FUSE)
