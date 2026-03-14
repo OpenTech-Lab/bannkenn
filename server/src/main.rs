@@ -180,6 +180,11 @@ fn build_router(db: Arc<Db>, config: ServerConfig) -> Router {
         .route("/:id/telemetry", get(routes::agents::list_telemetry))
         .route("/:id/decisions", get(routes::agents::list_decisions))
         .route(
+            "/:id/behavior-events",
+            get(routes::agents::list_behavior_events),
+        )
+        .route("/:id/containment", get(routes::agents::list_containment))
+        .route(
             "/:id",
             patch(routes::agents::update_nickname).delete(routes::agents::delete_agent),
         )
@@ -188,6 +193,8 @@ fn build_router(db: Arc<Db>, config: ServerConfig) -> Router {
     let decisions_state = Arc::new(routes::decisions::AppState { db: db.clone() });
     let ip_lookup_state = Arc::new(routes::ip_lookup::AppState { db: db.clone() });
     let telemetry_state = Arc::new(routes::telemetry::AppState { db: db.clone() });
+    let behavior_events_state = Arc::new(routes::behavior_events::AppState { db: db.clone() });
+    let containment_state = Arc::new(routes::containment::AppState { db: db.clone() });
     let community_state = Arc::new(routes::community::AppState { db: db.clone() });
     let ssh_logins_state = Arc::new(routes::ssh_logins::AppState { db: db.clone() });
     let whitelist_state = Arc::new(routes::whitelist::AppState { db: db.clone() });
@@ -212,6 +219,24 @@ fn build_router(db: Arc<Db>, config: ServerConfig) -> Router {
     let telemetry_write = Router::new()
         .route("/", post(routes::telemetry::create))
         .with_state(telemetry_state)
+        .layer(auth_middleware_layer.clone());
+
+    let behavior_events_read = Router::new()
+        .route("/", get(routes::behavior_events::list))
+        .with_state(behavior_events_state.clone());
+
+    let behavior_events_write = Router::new()
+        .route("/", post(routes::behavior_events::create))
+        .with_state(behavior_events_state)
+        .layer(auth_middleware_layer.clone());
+
+    let containment_read = Router::new()
+        .route("/", get(routes::containment::list))
+        .with_state(containment_state.clone());
+
+    let containment_write = Router::new()
+        .route("/", post(routes::containment::create))
+        .with_state(containment_state)
         .layer(auth_middleware_layer.clone());
 
     // Public: GET /api/v1/ssh-logins
@@ -239,6 +264,14 @@ fn build_router(db: Arc<Db>, config: ServerConfig) -> Router {
             get(routes::ip_lookup::lookup).with_state(ip_lookup_state),
         )
         .nest("/api/v1/telemetry", telemetry_read.merge(telemetry_write))
+        .nest(
+            "/api/v1/behavior_events",
+            behavior_events_read.merge(behavior_events_write),
+        )
+        .nest(
+            "/api/v1/containment",
+            containment_read.merge(containment_write),
+        )
         .nest(
             "/api/v1/ssh-logins",
             ssh_logins_read.merge(ssh_logins_write),

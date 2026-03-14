@@ -189,6 +189,10 @@
 - If a phase summary calls out concrete remaining gaps, add them as explicit tasks in `tasks/todo.md` before picking the work back up.
 - Do not leave actionable follow-up only in prose or final-answer caveats; keep the repo task log aligned with the implementation queue.
 
+### Deferred runtime-validation caveats belong in optional tasks, not only in handoff text
+- If work is complete except for privileged/live-host validation, add that gap to the optional follow-up section in `tasks/todo.md`.
+- That keeps future execution work discoverable and avoids losing an important validation step in reply text alone.
+
 ### Sensitive-data cleanup needs separate checks for the working tree and git history
 - A repo can already have the live file sanitized while the sensitive value still exists in earlier commits.
 - For requests to remove exposed IPs, tokens, or hostnames, verify both the current file contents and `git rev-list`/history matches before deciding whether to edit files, rewrite history, or both.

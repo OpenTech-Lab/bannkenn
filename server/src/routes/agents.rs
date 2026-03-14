@@ -62,6 +62,16 @@ pub struct AgentTelemetryParams {
     pub limit: Option<i64>,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct AgentBehaviorEventsParams {
+    pub limit: Option<i64>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct AgentContainmentParams {
+    pub limit: Option<i64>,
+}
+
 #[derive(Debug, Serialize)]
 pub struct SharedRiskResponse {
     pub generated_at: String,
@@ -258,6 +268,54 @@ pub async fn list_telemetry(
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     Ok(Json(telemetry))
+}
+
+pub async fn list_behavior_events(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<i64>,
+    Query(params): Query<AgentBehaviorEventsParams>,
+) -> Result<impl IntoResponse, StatusCode> {
+    let limit = params.limit.unwrap_or(1000).clamp(1, 5000);
+    let Some(agent_name) = state
+        .db
+        .get_agent_name_by_id(id)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+    else {
+        return Err(StatusCode::NOT_FOUND);
+    };
+
+    let behavior_events = state
+        .db
+        .list_behavior_events_by_agent(&agent_name, limit)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    Ok(Json(behavior_events))
+}
+
+pub async fn list_containment(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<i64>,
+    Query(params): Query<AgentContainmentParams>,
+) -> Result<impl IntoResponse, StatusCode> {
+    let limit = params.limit.unwrap_or(500).clamp(1, 2000);
+    let Some(agent_name) = state
+        .db
+        .get_agent_name_by_id(id)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+    else {
+        return Err(StatusCode::NOT_FOUND);
+    };
+
+    let containment_events = state
+        .db
+        .list_containment_events_by_agent(&agent_name, limit)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    Ok(Json(containment_events))
 }
 
 pub async fn backfill_geoip(

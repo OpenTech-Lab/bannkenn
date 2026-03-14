@@ -1,5 +1,7 @@
 pub mod agents;
+pub mod behavior_events;
 pub mod community;
+pub mod containment;
 pub mod decisions;
 pub mod health;
 pub mod ip_lookup;

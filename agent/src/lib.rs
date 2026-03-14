@@ -12,6 +12,7 @@ pub mod firewall;
 pub mod geoip;
 pub mod outbox;
 pub mod patterns;
+pub mod reporting;
 pub mod risk_level;
 pub mod scorer;
 pub mod shared_risk;

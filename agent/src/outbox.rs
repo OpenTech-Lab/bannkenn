@@ -1,4 +1,7 @@
 use crate::client::ApiClient;
+use crate::containment::ContainmentDecision;
+use crate::ebpf::events::BehaviorEvent;
+use crate::reporting::{BehaviorEventUpload, ContainmentStatusUpload};
 use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -28,6 +31,12 @@ pub enum OutboxPayload {
         username: String,
         #[serde(default)]
         timestamp: Option<String>,
+    },
+    BehaviorEvent {
+        report: BehaviorEventUpload,
+    },
+    ContainmentStatus {
+        report: ContainmentStatusUpload,
     },
 }
 
@@ -115,6 +124,19 @@ impl Outbox {
     }
 }
 
+impl OutboxPayload {
+    pub fn from_behavior_event(event: &BehaviorEvent) -> Self {
+        Self::BehaviorEvent {
+            report: BehaviorEventUpload::from(event),
+        }
+    }
+
+    pub fn from_containment_decision(decision: &ContainmentDecision) -> Option<Self> {
+        ContainmentStatusUpload::from_decision(decision)
+            .map(|report| Self::ContainmentStatus { report })
+    }
+}
+
 pub async fn flush_pending(
     client: &ApiClient,
     outbox: &Arc<Mutex<Outbox>>,
@@ -158,6 +180,10 @@ pub async fn flush_pending(
                     .report_ssh_login(ip, username, timestamp.as_deref())
                     .await
             }
+            OutboxPayload::BehaviorEvent { report } => client.report_behavior_event(report).await,
+            OutboxPayload::ContainmentStatus { report } => {
+                client.report_containment_status(report).await
+            }
         };
 
         match send_result {
@@ -180,6 +206,9 @@ pub async fn flush_pending(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::reporting::{
+        BehaviorEventUpload, ContainmentOutcomeUpload, ContainmentStatusUpload,
+    };
 
     #[test]
     fn outbox_round_trips_and_acks_items() {
@@ -253,6 +282,73 @@ username = "root"
         match outbox.peek().unwrap().payload {
             OutboxPayload::Decision { timestamp, .. } => assert_eq!(timestamp, None),
             payload => panic!("expected decision payload, got {payload:?}"),
+        }
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn outbox_round_trips_behavior_and_containment_reports() {
+        let dir = std::env::temp_dir().join(format!("bannkenn-outbox-{}", uuid::Uuid::new_v4()));
+        let path = dir.join("outbox.toml");
+
+        let mut outbox = Outbox::load(path.clone());
+        outbox
+            .enqueue(OutboxPayload::BehaviorEvent {
+                report: BehaviorEventUpload {
+                    timestamp: "2026-03-14T10:00:00+00:00".to_string(),
+                    source: "ebpf_ringbuf".to_string(),
+                    watched_root: "/srv/data".to_string(),
+                    pid: Some(42),
+                    process_name: Some("python3".to_string()),
+                    exe_path: Some("/usr/bin/python3".to_string()),
+                    command_line: Some("python3 encrypt.py".to_string()),
+                    correlation_hits: 3,
+                    file_ops: crate::ebpf::events::FileOperationCounts {
+                        modified: 5,
+                        renamed: 2,
+                        ..Default::default()
+                    },
+                    touched_paths: vec!["/srv/data/a.txt".to_string()],
+                    protected_paths_touched: vec!["/srv/data/secret.txt".to_string()],
+                    bytes_written: 4096,
+                    io_rate_bytes_per_sec: 2048,
+                    score: 61,
+                    reasons: vec!["rename burst".to_string()],
+                    level: "throttle_candidate".to_string(),
+                },
+            })
+            .unwrap();
+        outbox
+            .enqueue(OutboxPayload::ContainmentStatus {
+                report: ContainmentStatusUpload {
+                    timestamp: "2026-03-14T10:00:05+00:00".to_string(),
+                    state: "throttle".to_string(),
+                    previous_state: Some("suspicious".to_string()),
+                    reason: "throttle score threshold crossed".to_string(),
+                    watched_root: "/srv/data".to_string(),
+                    pid: Some(42),
+                    score: 61,
+                    actions: vec!["ApplyIoThrottle".to_string()],
+                    outcomes: vec![ContainmentOutcomeUpload {
+                        enforcer: "cgroup".to_string(),
+                        applied: false,
+                        dry_run: true,
+                        detail: "dry-run".to_string(),
+                    }],
+                },
+            })
+            .unwrap();
+
+        let reloaded = Outbox::load(path);
+        assert_eq!(reloaded.len(), 2);
+
+        match reloaded.peek().unwrap().payload {
+            OutboxPayload::BehaviorEvent { report } => {
+                assert_eq!(report.source, "ebpf_ringbuf");
+                assert_eq!(report.level, "throttle_candidate");
+            }
+            payload => panic!("expected behavior event payload, got {payload:?}"),
         }
 
         let _ = fs::remove_dir_all(dir);

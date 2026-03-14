@@ -1,3 +1,4 @@
+use crate::reporting::{BehaviorEventUpload, ContainmentStatusUpload};
 use crate::shared_risk::SharedRiskSnapshot;
 use anyhow::Result;
 use reqwest::{Certificate, Client as HttpClient};
@@ -222,6 +223,56 @@ impl ApiClient {
         }
 
         tracing::debug!("SSH login reported: user={} ip={}", username, ip);
+        Ok(())
+    }
+
+    pub async fn report_behavior_event(&self, event: &BehaviorEventUpload) -> Result<()> {
+        let url = format!("{}/api/v1/behavior_events", self.base_url);
+
+        let response = self
+            .http
+            .post(&url)
+            .header("Authorization", format!("Bearer {}", self.token))
+            .header("Content-Type", "application/json")
+            .json(event)
+            .send()
+            .await?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let text = response.text().await.unwrap_or_default();
+            return Err(anyhow::anyhow!(
+                "Server returned behavior-event error {}: {}",
+                status,
+                text
+            ));
+        }
+
+        Ok(())
+    }
+
+    pub async fn report_containment_status(&self, report: &ContainmentStatusUpload) -> Result<()> {
+        let url = format!("{}/api/v1/containment", self.base_url);
+
+        let response = self
+            .http
+            .post(&url)
+            .header("Authorization", format!("Bearer {}", self.token))
+            .header("Content-Type", "application/json")
+            .json(report)
+            .send()
+            .await?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let text = response.text().await.unwrap_or_default();
+            return Err(anyhow::anyhow!(
+                "Server returned containment error {}: {}",
+                status,
+                text
+            ));
+        }
+
         Ok(())
     }
 

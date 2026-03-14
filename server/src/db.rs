@@ -1,8 +1,10 @@
 use crate::geoip;
 use crate::ip_pattern::{canonicalize_ip_pattern, pattern_covers_pattern};
 use chrono::{DateTime, Utc};
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePool};
+use sqlx::Row;
 use std::str::FromStr;
 use std::time::Duration;
 
@@ -48,6 +50,37 @@ fn normalize_lookup_geo(value: String) -> Option<String> {
     } else {
         Some(trimmed.to_string())
     }
+}
+
+fn encode_json<T: Serialize>(value: &T) -> anyhow::Result<String> {
+    Ok(serde_json::to_string(value)?)
+}
+
+fn decode_json<T: DeserializeOwned>(value: &str, field: &str) -> anyhow::Result<T> {
+    serde_json::from_str(value)
+        .map_err(|err| anyhow::anyhow!("failed to decode {} JSON: {}", field, err))
+}
+
+fn to_i64<T>(value: T, field: &str) -> anyhow::Result<i64>
+where
+    T: TryInto<i64>,
+    T::Error: std::fmt::Display,
+{
+    value
+        .try_into()
+        .map_err(|err| anyhow::anyhow!("{} out of range: {}", field, err))
+}
+
+fn from_i64_u32(value: i64, field: &str) -> anyhow::Result<u32> {
+    u32::try_from(value).map_err(|_| anyhow::anyhow!("{} out of range: {}", field, value))
+}
+
+fn from_i64_u64(value: i64, field: &str) -> anyhow::Result<u64> {
+    u64::try_from(value).map_err(|_| anyhow::anyhow!("{} out of range: {}", field, value))
+}
+
+fn from_i64_opt_u32(value: Option<i64>, field: &str) -> anyhow::Result<Option<u32>> {
+    value.map(|value| from_i64_u32(value, field)).transpose()
 }
 
 fn source_label(source: &str, agent_display_name: Option<String>) -> String {
@@ -96,6 +129,108 @@ pub struct TelemetryRow {
     pub country: Option<String>,
     pub asn_org: Option<String>,
     pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BehaviorFileOpsRow {
+    pub created: u32,
+    pub modified: u32,
+    pub renamed: u32,
+    pub deleted: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BehaviorEventRow {
+    pub id: i64,
+    pub agent_name: String,
+    pub source: String,
+    pub watched_root: String,
+    pub pid: Option<u32>,
+    pub process_name: Option<String>,
+    pub exe_path: Option<String>,
+    pub command_line: Option<String>,
+    pub correlation_hits: u32,
+    pub file_ops: BehaviorFileOpsRow,
+    pub touched_paths: Vec<String>,
+    pub protected_paths_touched: Vec<String>,
+    pub bytes_written: u64,
+    pub io_rate_bytes_per_sec: u64,
+    pub score: u32,
+    pub reasons: Vec<String>,
+    pub level: String,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ContainmentOutcomeRow {
+    pub enforcer: String,
+    pub applied: bool,
+    pub dry_run: bool,
+    pub detail: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ContainmentEventRow {
+    pub id: i64,
+    pub agent_name: String,
+    pub state: String,
+    pub previous_state: Option<String>,
+    pub reason: String,
+    pub watched_root: String,
+    pub pid: Option<u32>,
+    pub score: u32,
+    pub actions: Vec<String>,
+    pub outcomes: Vec<ContainmentOutcomeRow>,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ContainmentStatusRow {
+    pub agent_name: String,
+    pub state: String,
+    pub previous_state: Option<String>,
+    pub reason: String,
+    pub watched_root: String,
+    pub pid: Option<u32>,
+    pub score: u32,
+    pub actions: Vec<String>,
+    pub outcomes: Vec<ContainmentOutcomeRow>,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct NewBehaviorEvent {
+    pub agent_name: String,
+    pub source: String,
+    pub watched_root: String,
+    pub pid: Option<u32>,
+    pub process_name: Option<String>,
+    pub exe_path: Option<String>,
+    pub command_line: Option<String>,
+    pub correlation_hits: u32,
+    pub file_ops: BehaviorFileOpsRow,
+    pub touched_paths: Vec<String>,
+    pub protected_paths_touched: Vec<String>,
+    pub bytes_written: u64,
+    pub io_rate_bytes_per_sec: u64,
+    pub score: u32,
+    pub reasons: Vec<String>,
+    pub level: String,
+    pub timestamp: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct NewContainmentEvent {
+    pub agent_name: String,
+    pub state: String,
+    pub previous_state: Option<String>,
+    pub reason: String,
+    pub watched_root: String,
+    pub pid: Option<u32>,
+    pub score: u32,
+    pub actions: Vec<String>,
+    pub outcomes: Vec<ContainmentOutcomeRow>,
+    pub timestamp: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -299,6 +434,75 @@ impl Db {
 
         sqlx::query(
             r#"
+            CREATE TABLE IF NOT EXISTS behavior_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                agent_name TEXT NOT NULL,
+                source TEXT NOT NULL,
+                watched_root TEXT NOT NULL,
+                pid INTEGER,
+                process_name TEXT,
+                exe_path TEXT,
+                command_line TEXT,
+                correlation_hits INTEGER NOT NULL DEFAULT 0,
+                file_ops_created INTEGER NOT NULL DEFAULT 0,
+                file_ops_modified INTEGER NOT NULL DEFAULT 0,
+                file_ops_renamed INTEGER NOT NULL DEFAULT 0,
+                file_ops_deleted INTEGER NOT NULL DEFAULT 0,
+                touched_paths_json TEXT NOT NULL DEFAULT '[]',
+                protected_paths_json TEXT NOT NULL DEFAULT '[]',
+                bytes_written INTEGER NOT NULL DEFAULT 0,
+                io_rate_bytes_per_sec INTEGER NOT NULL DEFAULT 0,
+                score INTEGER NOT NULL DEFAULT 0,
+                reasons_json TEXT NOT NULL DEFAULT '[]',
+                level TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            )
+            "#,
+        )
+        .execute(&self.0)
+        .await?;
+
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS containment_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                agent_name TEXT NOT NULL,
+                state TEXT NOT NULL,
+                previous_state TEXT,
+                reason TEXT NOT NULL,
+                watched_root TEXT NOT NULL,
+                pid INTEGER,
+                score INTEGER NOT NULL DEFAULT 0,
+                actions_json TEXT NOT NULL DEFAULT '[]',
+                outcomes_json TEXT NOT NULL DEFAULT '[]',
+                created_at TEXT NOT NULL
+            )
+            "#,
+        )
+        .execute(&self.0)
+        .await?;
+
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS agent_containment_status (
+                agent_name TEXT PRIMARY KEY,
+                state TEXT NOT NULL,
+                previous_state TEXT,
+                reason TEXT NOT NULL,
+                watched_root TEXT NOT NULL,
+                pid INTEGER,
+                score INTEGER NOT NULL DEFAULT 0,
+                actions_json TEXT NOT NULL DEFAULT '[]',
+                outcomes_json TEXT NOT NULL DEFAULT '[]',
+                updated_at TEXT NOT NULL
+            )
+            "#,
+        )
+        .execute(&self.0)
+        .await?;
+
+        sqlx::query(
+            r#"
             CREATE TABLE IF NOT EXISTS agents (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 name TEXT NOT NULL UNIQUE,
@@ -353,6 +557,54 @@ impl Db {
         sqlx::query(
             r#"
             CREATE INDEX IF NOT EXISTS idx_telemetry_ip_source_created_at ON telemetry_events(ip, source, created_at DESC)
+            "#,
+        )
+        .execute(&self.0)
+        .await?;
+
+        sqlx::query(
+            r#"
+            CREATE INDEX IF NOT EXISTS idx_behavior_events_created_at ON behavior_events(created_at DESC)
+            "#,
+        )
+        .execute(&self.0)
+        .await?;
+
+        sqlx::query(
+            r#"
+            CREATE INDEX IF NOT EXISTS idx_behavior_events_agent_created_at ON behavior_events(agent_name, created_at DESC)
+            "#,
+        )
+        .execute(&self.0)
+        .await?;
+
+        sqlx::query(
+            r#"
+            CREATE INDEX IF NOT EXISTS idx_behavior_events_level_created_at ON behavior_events(level, created_at DESC)
+            "#,
+        )
+        .execute(&self.0)
+        .await?;
+
+        sqlx::query(
+            r#"
+            CREATE INDEX IF NOT EXISTS idx_containment_events_created_at ON containment_events(created_at DESC)
+            "#,
+        )
+        .execute(&self.0)
+        .await?;
+
+        sqlx::query(
+            r#"
+            CREATE INDEX IF NOT EXISTS idx_containment_events_agent_created_at ON containment_events(agent_name, created_at DESC)
+            "#,
+        )
+        .execute(&self.0)
+        .await?;
+
+        sqlx::query(
+            r#"
+            CREATE INDEX IF NOT EXISTS idx_agent_containment_status_updated_at ON agent_containment_status(updated_at DESC)
             "#,
         )
         .execute(&self.0)
@@ -515,6 +767,148 @@ impl Db {
         .bind(&geo.country)
         .bind(&geo.asn_org)
         .bind(&created_at)
+        .execute(&self.0)
+        .await?;
+
+        Ok(result.last_insert_rowid())
+    }
+
+    pub async fn insert_behavior_event(&self, event: &NewBehaviorEvent) -> anyhow::Result<i64> {
+        let created_at = normalize_event_timestamp(event.timestamp.as_deref());
+        let touched_paths_json = encode_json(&event.touched_paths)?;
+        let protected_paths_json = encode_json(&event.protected_paths_touched)?;
+        let reasons_json = encode_json(&event.reasons)?;
+        let result = sqlx::query(
+            r#"
+            INSERT INTO behavior_events (
+                agent_name,
+                source,
+                watched_root,
+                pid,
+                process_name,
+                exe_path,
+                command_line,
+                correlation_hits,
+                file_ops_created,
+                file_ops_modified,
+                file_ops_renamed,
+                file_ops_deleted,
+                touched_paths_json,
+                protected_paths_json,
+                bytes_written,
+                io_rate_bytes_per_sec,
+                score,
+                reasons_json,
+                level,
+                created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            "#,
+        )
+        .bind(&event.agent_name)
+        .bind(&event.source)
+        .bind(&event.watched_root)
+        .bind(event.pid.map(i64::from))
+        .bind(&event.process_name)
+        .bind(&event.exe_path)
+        .bind(&event.command_line)
+        .bind(i64::from(event.correlation_hits))
+        .bind(i64::from(event.file_ops.created))
+        .bind(i64::from(event.file_ops.modified))
+        .bind(i64::from(event.file_ops.renamed))
+        .bind(i64::from(event.file_ops.deleted))
+        .bind(touched_paths_json)
+        .bind(protected_paths_json)
+        .bind(to_i64(event.bytes_written, "bytes_written")?)
+        .bind(to_i64(
+            event.io_rate_bytes_per_sec,
+            "io_rate_bytes_per_sec",
+        )?)
+        .bind(i64::from(event.score))
+        .bind(reasons_json)
+        .bind(&event.level)
+        .bind(created_at)
+        .execute(&self.0)
+        .await?;
+
+        Ok(result.last_insert_rowid())
+    }
+
+    pub async fn record_containment_event(
+        &self,
+        event: &NewContainmentEvent,
+    ) -> anyhow::Result<i64> {
+        let created_at = normalize_event_timestamp(event.timestamp.as_deref());
+        let actions_json = encode_json(&event.actions)?;
+        let outcomes_json = encode_json(&event.outcomes)?;
+
+        let result = sqlx::query(
+            r#"
+            INSERT INTO containment_events (
+                agent_name,
+                state,
+                previous_state,
+                reason,
+                watched_root,
+                pid,
+                score,
+                actions_json,
+                outcomes_json,
+                created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            "#,
+        )
+        .bind(&event.agent_name)
+        .bind(&event.state)
+        .bind(&event.previous_state)
+        .bind(&event.reason)
+        .bind(&event.watched_root)
+        .bind(event.pid.map(i64::from))
+        .bind(i64::from(event.score))
+        .bind(&actions_json)
+        .bind(&outcomes_json)
+        .bind(&created_at)
+        .execute(&self.0)
+        .await?;
+
+        sqlx::query(
+            r#"
+            INSERT INTO agent_containment_status (
+                agent_name,
+                state,
+                previous_state,
+                reason,
+                watched_root,
+                pid,
+                score,
+                actions_json,
+                outcomes_json,
+                updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(agent_name) DO UPDATE SET
+                state = excluded.state,
+                previous_state = excluded.previous_state,
+                reason = excluded.reason,
+                watched_root = excluded.watched_root,
+                pid = excluded.pid,
+                score = excluded.score,
+                actions_json = excluded.actions_json,
+                outcomes_json = excluded.outcomes_json,
+                updated_at = excluded.updated_at
+            "#,
+        )
+        .bind(&event.agent_name)
+        .bind(&event.state)
+        .bind(&event.previous_state)
+        .bind(&event.reason)
+        .bind(&event.watched_root)
+        .bind(event.pid.map(i64::from))
+        .bind(i64::from(event.score))
+        .bind(actions_json)
+        .bind(outcomes_json)
+        .bind(created_at)
         .execute(&self.0)
         .await?;
 
@@ -851,6 +1245,359 @@ impl Db {
                 },
             )
             .collect())
+    }
+
+    pub async fn list_behavior_events(&self, limit: i64) -> anyhow::Result<Vec<BehaviorEventRow>> {
+        let rows = sqlx::query(
+            r#"
+            SELECT
+                id,
+                agent_name,
+                source,
+                watched_root,
+                pid,
+                process_name,
+                exe_path,
+                command_line,
+                correlation_hits,
+                file_ops_created,
+                file_ops_modified,
+                file_ops_renamed,
+                file_ops_deleted,
+                touched_paths_json,
+                protected_paths_json,
+                bytes_written,
+                io_rate_bytes_per_sec,
+                score,
+                reasons_json,
+                level,
+                created_at
+            FROM behavior_events
+            ORDER BY created_at DESC, id DESC
+            LIMIT ?
+            "#,
+        )
+        .bind(limit)
+        .fetch_all(&self.0)
+        .await?;
+
+        rows.into_iter()
+            .map(|row| {
+                let touched_paths_json: String = row.try_get("touched_paths_json")?;
+                let protected_paths_json: String = row.try_get("protected_paths_json")?;
+                let reasons_json: String = row.try_get("reasons_json")?;
+
+                Ok(BehaviorEventRow {
+                    id: row.try_get("id")?,
+                    agent_name: row.try_get("agent_name")?,
+                    source: row.try_get("source")?,
+                    watched_root: row.try_get("watched_root")?,
+                    pid: from_i64_opt_u32(row.try_get("pid")?, "behavior_events.pid")?,
+                    process_name: row.try_get("process_name")?,
+                    exe_path: row.try_get("exe_path")?,
+                    command_line: row.try_get("command_line")?,
+                    correlation_hits: from_i64_u32(
+                        row.try_get("correlation_hits")?,
+                        "behavior_events.correlation_hits",
+                    )?,
+                    file_ops: BehaviorFileOpsRow {
+                        created: from_i64_u32(
+                            row.try_get("file_ops_created")?,
+                            "behavior_events.file_ops_created",
+                        )?,
+                        modified: from_i64_u32(
+                            row.try_get("file_ops_modified")?,
+                            "behavior_events.file_ops_modified",
+                        )?,
+                        renamed: from_i64_u32(
+                            row.try_get("file_ops_renamed")?,
+                            "behavior_events.file_ops_renamed",
+                        )?,
+                        deleted: from_i64_u32(
+                            row.try_get("file_ops_deleted")?,
+                            "behavior_events.file_ops_deleted",
+                        )?,
+                    },
+                    touched_paths: decode_json(
+                        &touched_paths_json,
+                        "behavior_events.touched_paths_json",
+                    )?,
+                    protected_paths_touched: decode_json(
+                        &protected_paths_json,
+                        "behavior_events.protected_paths_json",
+                    )?,
+                    bytes_written: from_i64_u64(
+                        row.try_get("bytes_written")?,
+                        "behavior_events.bytes_written",
+                    )?,
+                    io_rate_bytes_per_sec: from_i64_u64(
+                        row.try_get("io_rate_bytes_per_sec")?,
+                        "behavior_events.io_rate_bytes_per_sec",
+                    )?,
+                    score: from_i64_u32(row.try_get("score")?, "behavior_events.score")?,
+                    reasons: decode_json(&reasons_json, "behavior_events.reasons_json")?,
+                    level: row.try_get("level")?,
+                    created_at: row.try_get("created_at")?,
+                })
+            })
+            .collect()
+    }
+
+    pub async fn list_behavior_events_by_agent(
+        &self,
+        agent_name: &str,
+        limit: i64,
+    ) -> anyhow::Result<Vec<BehaviorEventRow>> {
+        let rows = sqlx::query(
+            r#"
+            SELECT
+                id,
+                agent_name,
+                source,
+                watched_root,
+                pid,
+                process_name,
+                exe_path,
+                command_line,
+                correlation_hits,
+                file_ops_created,
+                file_ops_modified,
+                file_ops_renamed,
+                file_ops_deleted,
+                touched_paths_json,
+                protected_paths_json,
+                bytes_written,
+                io_rate_bytes_per_sec,
+                score,
+                reasons_json,
+                level,
+                created_at
+            FROM behavior_events
+            WHERE agent_name = ?
+            ORDER BY created_at DESC, id DESC
+            LIMIT ?
+            "#,
+        )
+        .bind(agent_name)
+        .bind(limit)
+        .fetch_all(&self.0)
+        .await?;
+
+        rows.into_iter()
+            .map(|row| {
+                let touched_paths_json: String = row.try_get("touched_paths_json")?;
+                let protected_paths_json: String = row.try_get("protected_paths_json")?;
+                let reasons_json: String = row.try_get("reasons_json")?;
+
+                Ok(BehaviorEventRow {
+                    id: row.try_get("id")?,
+                    agent_name: row.try_get("agent_name")?,
+                    source: row.try_get("source")?,
+                    watched_root: row.try_get("watched_root")?,
+                    pid: from_i64_opt_u32(row.try_get("pid")?, "behavior_events.pid")?,
+                    process_name: row.try_get("process_name")?,
+                    exe_path: row.try_get("exe_path")?,
+                    command_line: row.try_get("command_line")?,
+                    correlation_hits: from_i64_u32(
+                        row.try_get("correlation_hits")?,
+                        "behavior_events.correlation_hits",
+                    )?,
+                    file_ops: BehaviorFileOpsRow {
+                        created: from_i64_u32(
+                            row.try_get("file_ops_created")?,
+                            "behavior_events.file_ops_created",
+                        )?,
+                        modified: from_i64_u32(
+                            row.try_get("file_ops_modified")?,
+                            "behavior_events.file_ops_modified",
+                        )?,
+                        renamed: from_i64_u32(
+                            row.try_get("file_ops_renamed")?,
+                            "behavior_events.file_ops_renamed",
+                        )?,
+                        deleted: from_i64_u32(
+                            row.try_get("file_ops_deleted")?,
+                            "behavior_events.file_ops_deleted",
+                        )?,
+                    },
+                    touched_paths: decode_json(
+                        &touched_paths_json,
+                        "behavior_events.touched_paths_json",
+                    )?,
+                    protected_paths_touched: decode_json(
+                        &protected_paths_json,
+                        "behavior_events.protected_paths_json",
+                    )?,
+                    bytes_written: from_i64_u64(
+                        row.try_get("bytes_written")?,
+                        "behavior_events.bytes_written",
+                    )?,
+                    io_rate_bytes_per_sec: from_i64_u64(
+                        row.try_get("io_rate_bytes_per_sec")?,
+                        "behavior_events.io_rate_bytes_per_sec",
+                    )?,
+                    score: from_i64_u32(row.try_get("score")?, "behavior_events.score")?,
+                    reasons: decode_json(&reasons_json, "behavior_events.reasons_json")?,
+                    level: row.try_get("level")?,
+                    created_at: row.try_get("created_at")?,
+                })
+            })
+            .collect()
+    }
+
+    pub async fn list_containment_statuses(
+        &self,
+        limit: i64,
+    ) -> anyhow::Result<Vec<ContainmentStatusRow>> {
+        let rows = sqlx::query_as::<
+            _,
+            (
+                String,
+                String,
+                Option<String>,
+                String,
+                String,
+                Option<i64>,
+                i64,
+                String,
+                String,
+                String,
+            ),
+        >(
+            r#"
+            SELECT
+                agent_name,
+                state,
+                previous_state,
+                reason,
+                watched_root,
+                pid,
+                score,
+                actions_json,
+                outcomes_json,
+                updated_at
+            FROM agent_containment_status
+            ORDER BY updated_at DESC, agent_name ASC
+            LIMIT ?
+            "#,
+        )
+        .bind(limit)
+        .fetch_all(&self.0)
+        .await?;
+
+        rows.into_iter()
+            .map(
+                |(
+                    agent_name,
+                    state,
+                    previous_state,
+                    reason,
+                    watched_root,
+                    pid,
+                    score,
+                    actions_json,
+                    outcomes_json,
+                    updated_at,
+                )| {
+                    Ok(ContainmentStatusRow {
+                        agent_name,
+                        state,
+                        previous_state,
+                        reason,
+                        watched_root,
+                        pid: from_i64_opt_u32(pid, "agent_containment_status.pid")?,
+                        score: from_i64_u32(score, "agent_containment_status.score")?,
+                        actions: decode_json(
+                            &actions_json,
+                            "agent_containment_status.actions_json",
+                        )?,
+                        outcomes: decode_json(
+                            &outcomes_json,
+                            "agent_containment_status.outcomes_json",
+                        )?,
+                        updated_at,
+                    })
+                },
+            )
+            .collect()
+    }
+
+    pub async fn list_containment_events_by_agent(
+        &self,
+        agent_name: &str,
+        limit: i64,
+    ) -> anyhow::Result<Vec<ContainmentEventRow>> {
+        let rows = sqlx::query_as::<
+            _,
+            (
+                i64,
+                String,
+                String,
+                Option<String>,
+                String,
+                String,
+                Option<i64>,
+                i64,
+                String,
+                String,
+                String,
+            ),
+        >(
+            r#"
+            SELECT
+                id,
+                agent_name,
+                state,
+                previous_state,
+                reason,
+                watched_root,
+                pid,
+                score,
+                actions_json,
+                outcomes_json,
+                created_at
+            FROM containment_events
+            WHERE agent_name = ?
+            ORDER BY created_at DESC, id DESC
+            LIMIT ?
+            "#,
+        )
+        .bind(agent_name)
+        .bind(limit)
+        .fetch_all(&self.0)
+        .await?;
+
+        rows.into_iter()
+            .map(
+                |(
+                    id,
+                    agent_name,
+                    state,
+                    previous_state,
+                    reason,
+                    watched_root,
+                    pid,
+                    score,
+                    actions_json,
+                    outcomes_json,
+                    created_at,
+                )| {
+                    Ok(ContainmentEventRow {
+                        id,
+                        agent_name,
+                        state,
+                        previous_state,
+                        reason,
+                        watched_root,
+                        pid: from_i64_opt_u32(pid, "containment_events.pid")?,
+                        score: from_i64_u32(score, "containment_events.score")?,
+                        actions: decode_json(&actions_json, "containment_events.actions_json")?,
+                        outcomes: decode_json(&outcomes_json, "containment_events.outcomes_json")?,
+                        created_at,
+                    })
+                },
+            )
+            .collect()
     }
 
     pub async fn list_whitelist_entries(
@@ -2270,5 +3017,107 @@ mod tests {
         let decisions = db.list_decisions(10).await.unwrap();
         assert_eq!(decisions.len(), 1);
         assert_eq!(decisions[0].ip, "203.0.113.0/24");
+    }
+
+    #[tokio::test]
+    async fn behavior_events_round_trip_structured_payloads() {
+        let db = Db::new(":memory:").await.expect("Failed to create test DB");
+
+        let id = db
+            .insert_behavior_event(&NewBehaviorEvent {
+                agent_name: "agent-a".to_string(),
+                source: "ebpf_ringbuf".to_string(),
+                watched_root: "/srv/data".to_string(),
+                pid: Some(42),
+                process_name: Some("python3".to_string()),
+                exe_path: Some("/usr/bin/python3".to_string()),
+                command_line: Some("python3 encrypt.py".to_string()),
+                correlation_hits: 4,
+                file_ops: BehaviorFileOpsRow {
+                    created: 1,
+                    modified: 2,
+                    renamed: 3,
+                    deleted: 4,
+                },
+                touched_paths: vec!["/srv/data/a.txt".to_string()],
+                protected_paths_touched: vec!["/srv/data/secret.txt".to_string()],
+                bytes_written: 8192,
+                io_rate_bytes_per_sec: 4096,
+                score: 67,
+                reasons: vec!["rename burst".to_string(), "protected path".to_string()],
+                level: "throttle_candidate".to_string(),
+                timestamp: Some("2026-03-14T09:00:00+00:00".to_string()),
+            })
+            .await
+            .unwrap();
+        assert!(id > 0);
+
+        let rows = db.list_behavior_events(10).await.unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].agent_name, "agent-a");
+        assert_eq!(rows[0].file_ops.renamed, 3);
+        assert_eq!(rows[0].protected_paths_touched.len(), 1);
+        assert_eq!(rows[0].level, "throttle_candidate");
+
+        let agent_rows = db
+            .list_behavior_events_by_agent("agent-a", 10)
+            .await
+            .unwrap();
+        assert_eq!(agent_rows, rows);
+    }
+
+    #[tokio::test]
+    async fn containment_events_update_latest_status_and_keep_history() {
+        let db = Db::new(":memory:").await.expect("Failed to create test DB");
+
+        db.record_containment_event(&NewContainmentEvent {
+            agent_name: "agent-a".to_string(),
+            state: "suspicious".to_string(),
+            previous_state: Some("normal".to_string()),
+            reason: "suspicious score threshold crossed".to_string(),
+            watched_root: "/srv/data".to_string(),
+            pid: Some(42),
+            score: 35,
+            actions: Vec::new(),
+            outcomes: Vec::new(),
+            timestamp: Some("2026-03-14T09:00:00+00:00".to_string()),
+        })
+        .await
+        .unwrap();
+
+        db.record_containment_event(&NewContainmentEvent {
+            agent_name: "agent-a".to_string(),
+            state: "throttle".to_string(),
+            previous_state: Some("suspicious".to_string()),
+            reason: "throttle score threshold crossed".to_string(),
+            watched_root: "/srv/data".to_string(),
+            pid: Some(42),
+            score: 65,
+            actions: vec!["ApplyIoThrottle".to_string()],
+            outcomes: vec![ContainmentOutcomeRow {
+                enforcer: "cgroup".to_string(),
+                applied: false,
+                dry_run: true,
+                detail: "dry-run".to_string(),
+            }],
+            timestamp: Some("2026-03-14T09:01:00+00:00".to_string()),
+        })
+        .await
+        .unwrap();
+
+        let statuses = db.list_containment_statuses(10).await.unwrap();
+        assert_eq!(statuses.len(), 1);
+        assert_eq!(statuses[0].agent_name, "agent-a");
+        assert_eq!(statuses[0].state, "throttle");
+        assert_eq!(statuses[0].actions, vec!["ApplyIoThrottle"]);
+        assert_eq!(statuses[0].outcomes[0].enforcer, "cgroup");
+
+        let history = db
+            .list_containment_events_by_agent("agent-a", 10)
+            .await
+            .unwrap();
+        assert_eq!(history.len(), 2);
+        assert_eq!(history[0].state, "throttle");
+        assert_eq!(history[1].state, "suspicious");
     }
 }

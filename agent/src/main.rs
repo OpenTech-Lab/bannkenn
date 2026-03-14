@@ -12,6 +12,7 @@ mod firewall;
 mod geoip;
 mod outbox;
 mod patterns;
+mod reporting;
 mod risk_level;
 mod scorer;
 mod service;
@@ -517,9 +518,22 @@ async fn run() -> Result<()> {
                 match maybe_behavior {
                     Some(event) => {
                         log_behavior_event(&event, config_arc.containment.as_ref());
+                        enqueue_outbox(
+                            &outbox,
+                            OutboxPayload::from_behavior_event(&event),
+                            &outbox_notify,
+                        )
+                        .await;
                         if let Some(runtime) = containment_runtime.as_ref() {
                             match runtime.handle_event(&event).await {
-                                Ok(Some(decision)) => log_containment_decision(&decision),
+                                Ok(Some(decision)) => {
+                                    log_containment_decision(&decision);
+                                    if let Some(payload) =
+                                        OutboxPayload::from_containment_decision(&decision)
+                                    {
+                                        enqueue_outbox(&outbox, payload, &outbox_notify).await;
+                                    }
+                                }
                                 Ok(None) => {}
                                 Err(error) => tracing::warn!(
                                     "Containment runtime failed for behavior event pid={} score={}: {}",
@@ -546,7 +560,14 @@ async fn run() -> Result<()> {
             }, if containment_runtime.is_some() => {
                 if let Some(runtime) = containment_runtime.as_ref() {
                     match runtime.tick().await {
-                        Ok(Some(decision)) => log_containment_decision(&decision),
+                        Ok(Some(decision)) => {
+                            log_containment_decision(&decision);
+                            if let Some(payload) =
+                                OutboxPayload::from_containment_decision(&decision)
+                            {
+                                enqueue_outbox(&outbox, payload, &outbox_notify).await;
+                            }
+                        }
                         Ok(None) => {}
                         Err(error) => tracing::warn!("Containment timer tick failed: {}", error),
                     }

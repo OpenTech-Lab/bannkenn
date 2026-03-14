@@ -67,6 +67,9 @@
 - Verified the Phase 2 slice with `cargo test -p bannkenn-agent` on 2026-03-14, including new transition/decay tests in `agent/src/containment.rs`.
 - Closed the next Phase 2 enforcement gap too: containment config now includes explicit cgroup/tc throttle defaults plus management-channel port exemptions, the runtime passes the configured server heartbeat endpoint into the enforcement dispatcher, `agent/src/enforcement/cgroup.rs` now applies real cgroup v2 `io.max` limits for throttled PIDs, and `agent/src/enforcement/tc.rs` now builds a real HTB throttle plan that keeps SSH plus the configured heartbeat endpoint on the fast lane.
 - Verified the enforcement follow-up with `cargo fmt`, `cargo test -p bannkenn-agent`, and `git diff --check` on 2026-03-14, including new unit coverage for cgroup device/`io.max` planning and tc management-channel allowlist command generation.
+- Added a first Phase 3 server slice: the server now stores structured behavior events plus containment history/current status in the existing database, exposes `POST/GET /api/v1/behavior_events` and `POST/GET /api/v1/containment`, and adds per-agent read routes for recent behavior events and containment history.
+- Wired the agent into that Phase 3 slice too: new upload payloads/outbox variants report behavior batches and containment transitions to the server so the new endpoints are immediately exercised instead of staying dead code.
+- Verified the Phase 3 slice with `cargo fmt`, `cargo test -p bannkenn-agent -p bannkenn-server`, and `git diff --check` on 2026-03-14, including new persistence tests in `server/src/db.rs` and a new outbox round-trip test in `agent/src/outbox.rs`.
 
 ## Phase 2 — Containment State Machine + Throttling
 - [x] Create `agent/src/containment.rs` — state machine (NORMAL → SUSPICIOUS → THROTTLE → FUSE)
@@ -97,12 +100,22 @@
 - [x] Verify with targeted `cargo test -p bannkenn-agent`
 
 ## Phase 3 — Server Enhancements
-- [ ] Add behavior event ingestion endpoint (POST /api/v1/behavior_events)
-- [ ] Add containment status endpoint (GET/POST /api/v1/containment)
+- [x] Add behavior event ingestion endpoint (POST /api/v1/behavior_events)
+- [x] Add containment status endpoint (GET/POST /api/v1/containment)
 - [ ] Add incident aggregation and timeline reconstruction
 - [ ] Cross-agent behavior correlation
 - [ ] Administrator alert system (containment level changes)
 - [ ] Store BehaviorEvents in PostgreSQL with appropriate indexes
+
+### Phase 3 Execution Slice — 2026-03-14
+- [x] Add server-side storage and indexes for behavior events in the existing database
+- [x] Add `POST /api/v1/behavior_events` and `GET /api/v1/behavior_events`
+- [x] Add containment event/history storage plus current-status tracking in the existing database
+- [x] Add `POST /api/v1/containment` and `GET /api/v1/containment`
+- [x] Add agent-scoped read routes for recent behavior events and containment history
+- [x] Wire the agent client/outbox/runtime to upload behavior events and containment transitions
+- [x] Add focused DB/client tests for the new Phase 3 contracts
+- [x] Verify with targeted agent/server test suites
 
 ## Phase 4 — Dashboard Integration
 - [ ] Containment status panel (per-host state machine visualization)
@@ -122,6 +135,7 @@
 - [ ] Teach `bannkenn-agent update` to fetch/install the matching `.bpf.o` release asset
 - [ ] Add a Dockerized agent build/package path that includes the containment BPF object when containerized agent distribution is needed
 - [ ] Exercise real privileged eBPF attachment on a Linux host and document the exact runtime capability requirements
+- [ ] Exercise real privileged cgroup/tc containment enforcement on a Linux host and document the exact runtime prerequisites/observed behavior
 
 ---
 
