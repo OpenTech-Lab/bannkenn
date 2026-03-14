@@ -1,4 +1,5 @@
 mod auth;
+mod behavior_pg;
 mod config;
 mod db;
 mod feeds;
@@ -14,6 +15,7 @@ use axum::{
     routing::{delete, get, patch, post},
     Router,
 };
+use behavior_pg::BehaviorPgArchive;
 use config::{ServerConfig, ServerTlsConfig};
 use db::Db;
 use hyper::body::Incoming;
@@ -76,6 +78,13 @@ async fn run_server() -> anyhow::Result<()> {
     info!("Database initialized at {}", config.db_path);
 
     let db = Arc::new(db);
+    let behavior_archive = if let Some(database_url) = config.behavior_pg_url.as_deref() {
+        let archive = BehaviorPgArchive::connect(database_url).await?;
+        info!("Optional PostgreSQL behavior archive initialized");
+        Some(Arc::new(archive))
+    } else {
+        None
+    };
 
     // Run geo backfill in background so startup/healthcheck are not blocked on large datasets.
     let db_for_backfill = db.clone();
@@ -138,7 +147,7 @@ async fn run_server() -> anyhow::Result<()> {
         }
     });
 
-    let router = build_router(db.clone(), config.clone());
+    let router = build_router(db.clone(), config.clone(), behavior_archive);
     let config = Arc::new(config);
     serve_router(router, config).await?;
 
@@ -146,7 +155,11 @@ async fn run_server() -> anyhow::Result<()> {
     Ok(())
 }
 
-fn build_router(db: Arc<Db>, config: ServerConfig) -> Router {
+fn build_router(
+    db: Arc<Db>,
+    config: ServerConfig,
+    behavior_archive: Option<Arc<BehaviorPgArchive>>,
+) -> Router {
     let config = Arc::new(config);
     let auth_config = auth::AuthConfig {
         jwt_secret: config.jwt_secret.clone(),
@@ -193,8 +206,13 @@ fn build_router(db: Arc<Db>, config: ServerConfig) -> Router {
     let decisions_state = Arc::new(routes::decisions::AppState { db: db.clone() });
     let ip_lookup_state = Arc::new(routes::ip_lookup::AppState { db: db.clone() });
     let telemetry_state = Arc::new(routes::telemetry::AppState { db: db.clone() });
-    let behavior_events_state = Arc::new(routes::behavior_events::AppState { db: db.clone() });
+    let behavior_events_state = Arc::new(routes::behavior_events::AppState {
+        db: db.clone(),
+        behavior_archive,
+    });
     let containment_state = Arc::new(routes::containment::AppState { db: db.clone() });
+    let incidents_state = Arc::new(routes::incidents::AppState { db: db.clone() });
+    let alerts_state = Arc::new(routes::alerts::AppState { db: db.clone() });
     let community_state = Arc::new(routes::community::AppState { db: db.clone() });
     let ssh_logins_state = Arc::new(routes::ssh_logins::AppState { db: db.clone() });
     let whitelist_state = Arc::new(routes::whitelist::AppState { db: db.clone() });
@@ -239,6 +257,15 @@ fn build_router(db: Arc<Db>, config: ServerConfig) -> Router {
         .with_state(containment_state)
         .layer(auth_middleware_layer.clone());
 
+    let incidents_read = Router::new()
+        .route("/", get(routes::incidents::list))
+        .route("/:id", get(routes::incidents::detail))
+        .with_state(incidents_state);
+
+    let alerts_read = Router::new()
+        .route("/", get(routes::alerts::list))
+        .with_state(alerts_state);
+
     // Public: GET /api/v1/ssh-logins
     let ssh_logins_read = Router::new()
         .route("/", get(routes::ssh_logins::list))
@@ -272,6 +299,8 @@ fn build_router(db: Arc<Db>, config: ServerConfig) -> Router {
             "/api/v1/containment",
             containment_read.merge(containment_write),
         )
+        .nest("/api/v1/incidents", incidents_read)
+        .nest("/api/v1/alerts", alerts_read)
         .nest(
             "/api/v1/ssh-logins",
             ssh_logins_read.merge(ssh_logins_write),

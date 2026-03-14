@@ -7,6 +7,7 @@ pub struct ServerConfig {
     pub bind: String,
     pub local_bind: Option<String>,
     pub db_path: String,
+    pub behavior_pg_url: Option<String>,
     pub jwt_secret: String,
     pub tls_cert_path: Option<String>,
     pub tls_key_path: Option<String>,
@@ -24,6 +25,7 @@ impl Default for ServerConfig {
             bind: "0.0.0.0:3022".to_string(),
             local_bind: None,
             db_path: "bannkenn.db".to_string(),
+            behavior_pg_url: None,
             jwt_secret: "change-me-in-production".to_string(),
             tls_cert_path: None,
             tls_key_path: None,
@@ -52,6 +54,10 @@ impl ServerConfig {
 
         if let Ok(db_path) = std::env::var("BANNKENN_DB_PATH") {
             config.db_path = db_path;
+        }
+
+        if let Ok(behavior_pg_url) = std::env::var("BANNKENN_BEHAVIOR_PG_URL") {
+            config.behavior_pg_url = normalize_optional_string(Some(behavior_pg_url));
         }
 
         if let Ok(jwt_secret) = std::env::var("BANNKENN_JWT_SECRET") {
@@ -105,6 +111,7 @@ mod tests {
         assert_eq!(config.bind, "0.0.0.0:3022");
         assert_eq!(config.local_bind, None);
         assert_eq!(config.db_path, "bannkenn.db");
+        assert_eq!(config.behavior_pg_url, None);
         assert_eq!(config.jwt_secret, "change-me-in-production");
         assert_eq!(config.tls_cert_path, None);
         assert_eq!(config.tls_key_path, None);

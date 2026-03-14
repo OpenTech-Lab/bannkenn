@@ -1,12 +1,15 @@
 use crate::geoip;
 use crate::ip_pattern::{canonicalize_ip_pattern, pattern_covers_pattern};
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Duration as ChronoDuration, Utc};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePool};
-use sqlx::Row;
+use sqlx::{Row, Sqlite, Transaction};
 use std::str::FromStr;
 use std::time::Duration;
+
+const INCIDENT_CORRELATION_WINDOW_MINUTES: i64 = 30;
 
 fn normalize_reason_category(reason: &str) -> &str {
     if let Some(idx) = reason.rfind(" (") {
@@ -99,6 +102,194 @@ fn source_kind(source: &str, agent_id: Option<i64>) -> &'static str {
         "campaign"
     } else {
         "community"
+    }
+}
+
+fn normalize_behavior_reason_category(reason: &str) -> String {
+    let normalized = normalize_reason_category(reason).trim().to_lowercase();
+    if let Some((prefix, suffix)) = normalized.rsplit_once(" x") {
+        if !prefix.is_empty() && suffix.chars().all(|ch| ch.is_ascii_digit()) {
+            return prefix.to_string();
+        }
+    }
+    normalized
+}
+
+fn normalize_behavior_reasons_key(reasons: &[String]) -> String {
+    let mut reasons = reasons
+        .iter()
+        .map(|reason| normalize_behavior_reason_category(reason))
+        .filter(|reason| !reason.is_empty())
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+    if reasons.is_empty() {
+        "observed".to_string()
+    } else {
+        reasons.sort();
+        reasons.join("|")
+    }
+}
+
+fn primary_behavior_reason(reasons: &[String]) -> String {
+    reasons
+        .first()
+        .map(|reason| normalize_behavior_reason_category(reason))
+        .filter(|reason| !reason.is_empty())
+        .unwrap_or_else(|| "behavior activity".to_string())
+}
+
+fn severity_rank(severity: &str) -> u8 {
+    match severity {
+        "critical" => 4,
+        "high" => 3,
+        "medium" => 2,
+        "low" => 1,
+        _ => 0,
+    }
+}
+
+fn max_severity(current: &str, candidate: &str) -> &'static str {
+    if severity_rank(candidate) > severity_rank(current) {
+        match candidate {
+            "critical" => "critical",
+            "high" => "high",
+            "medium" => "medium",
+            _ => "low",
+        }
+    } else {
+        match current {
+            "critical" => "critical",
+            "high" => "high",
+            "medium" => "medium",
+            _ => "low",
+        }
+    }
+}
+
+fn behavior_level_to_severity(level: &str) -> &'static str {
+    match level {
+        "fuse_candidate" => "critical",
+        "throttle_candidate" => "high",
+        "suspicious" => "medium",
+        _ => "low",
+    }
+}
+
+fn containment_state_to_severity(state: &str) -> &'static str {
+    match state {
+        "fuse" => "critical",
+        "throttle" => "high",
+        "suspicious" => "medium",
+        _ => "low",
+    }
+}
+
+fn incident_cutoff(created_at: &str) -> String {
+    DateTime::parse_from_rfc3339(created_at)
+        .map(|dt| {
+            dt.with_timezone(&Utc) - ChronoDuration::minutes(INCIDENT_CORRELATION_WINDOW_MINUTES)
+        })
+        .unwrap_or_else(|_| {
+            Utc::now() - ChronoDuration::minutes(INCIDENT_CORRELATION_WINDOW_MINUTES)
+        })
+        .to_rfc3339()
+}
+
+fn build_behavior_incident_key(event: &NewBehaviorEvent) -> String {
+    format!(
+        "behavior:{}:{}",
+        event.watched_root.to_lowercase(),
+        normalize_behavior_reasons_key(&event.reasons)
+    )
+}
+
+fn build_behavior_incident_title(primary_reason: &str, cross_agent: bool) -> String {
+    if cross_agent {
+        format!("Cross-agent behavior incident: {}", primary_reason)
+    } else {
+        format!("Behavior incident: {}", primary_reason)
+    }
+}
+
+fn build_behavior_incident_summary(
+    primary_reason: &str,
+    agent_count: usize,
+    roots: &[String],
+    watched_root: &str,
+) -> String {
+    if agent_count > 1 {
+        format!(
+            "{} correlated across {} agents on {}",
+            primary_reason,
+            agent_count,
+            roots
+                .first()
+                .cloned()
+                .unwrap_or_else(|| watched_root.to_string())
+        )
+    } else {
+        format!("{} observed on {}", primary_reason, watched_root)
+    }
+}
+
+fn build_containment_alert_title(agent_name: &str, state: &str) -> String {
+    match state {
+        "normal" => format!("Containment cleared on {}", agent_name),
+        _ => format!("Containment transitioned to {} on {}", state, agent_name),
+    }
+}
+
+fn build_containment_alert_message(event: &NewContainmentEvent) -> String {
+    format!(
+        "{} on {} for {} ({})",
+        event.state, event.agent_name, event.watched_root, event.reason
+    )
+}
+
+fn build_cross_agent_alert_title(primary_reason: &str) -> String {
+    format!("Cross-agent incident detected: {}", primary_reason)
+}
+
+fn build_cross_agent_alert_message(
+    primary_reason: &str,
+    affected_agents: &[String],
+    watched_root: &str,
+) -> String {
+    format!(
+        "{} correlated across {} agents on {}",
+        primary_reason,
+        affected_agents.len(),
+        watched_root
+    )
+}
+
+fn build_containment_incident_key(event: &NewContainmentEvent) -> String {
+    format!(
+        "containment:{}:{}",
+        event.agent_name.to_lowercase(),
+        event.watched_root.to_lowercase()
+    )
+}
+
+fn build_containment_incident_title(agent_name: &str, state: &str) -> String {
+    match state {
+        "normal" => format!("Containment cleared on {}", agent_name),
+        _ => format!("Containment incident: {} on {}", state, agent_name),
+    }
+}
+
+fn build_containment_incident_summary(event: &NewContainmentEvent) -> String {
+    format!(
+        "{} on {} for {} ({})",
+        event.state, event.agent_name, event.watched_root, event.reason
+    )
+}
+
+fn push_unique_sorted(values: &mut Vec<String>, candidate: &str) {
+    if values.iter().all(|existing| existing != candidate) {
+        values.push(candidate.to_string());
+        values.sort();
     }
 }
 
@@ -198,6 +389,59 @@ pub struct ContainmentStatusRow {
     pub updated_at: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct IncidentRow {
+    pub id: i64,
+    pub incident_key: String,
+    pub status: String,
+    pub severity: String,
+    pub title: String,
+    pub summary: String,
+    pub primary_reason: String,
+    pub latest_state: Option<String>,
+    pub latest_score: u32,
+    pub event_count: u32,
+    pub correlated_agent_count: u32,
+    pub affected_agents: Vec<String>,
+    pub affected_roots: Vec<String>,
+    pub cross_agent: bool,
+    pub first_seen_at: String,
+    pub last_seen_at: String,
+    pub alert_count: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct IncidentTimelineRow {
+    pub id: i64,
+    pub source_type: String,
+    pub source_event_id: Option<i64>,
+    pub agent_name: String,
+    pub watched_root: String,
+    pub severity: String,
+    pub message: String,
+    pub payload: Value,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct IncidentDetailRow {
+    pub incident: IncidentRow,
+    pub timeline: Vec<IncidentTimelineRow>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct AdminAlertRow {
+    pub id: i64,
+    pub alert_type: String,
+    pub severity: String,
+    pub title: String,
+    pub message: String,
+    pub agent_name: Option<String>,
+    pub incident_id: Option<i64>,
+    pub metadata: Value,
+    pub created_at: String,
+}
+
 #[derive(Debug, Clone)]
 pub struct NewBehaviorEvent {
     pub agent_name: String,
@@ -231,6 +475,35 @@ pub struct NewContainmentEvent {
     pub actions: Vec<String>,
     pub outcomes: Vec<ContainmentOutcomeRow>,
     pub timestamp: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct BehaviorIngestResult {
+    pub id: i64,
+    pub incident_id: i64,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone)]
+struct IncidentState {
+    id: i64,
+    incident_key: String,
+    status: String,
+    severity: String,
+    title: String,
+    summary: String,
+    primary_reason: String,
+    latest_state: Option<String>,
+    latest_score: u32,
+    event_count: u32,
+    correlated_agent_count: u32,
+    affected_agents: Vec<String>,
+    affected_roots: Vec<String>,
+    cross_agent: bool,
+    cross_agent_alerted: bool,
+    first_seen_at: String,
+    last_seen_at: String,
+    alert_count: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -436,6 +709,7 @@ impl Db {
             r#"
             CREATE TABLE IF NOT EXISTS behavior_events (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                incident_id INTEGER,
                 agent_name TEXT NOT NULL,
                 source TEXT NOT NULL,
                 watched_root TEXT NOT NULL,
@@ -466,6 +740,7 @@ impl Db {
             r#"
             CREATE TABLE IF NOT EXISTS containment_events (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                incident_id INTEGER,
                 agent_name TEXT NOT NULL,
                 state TEXT NOT NULL,
                 previous_state TEXT,
@@ -495,6 +770,70 @@ impl Db {
                 actions_json TEXT NOT NULL DEFAULT '[]',
                 outcomes_json TEXT NOT NULL DEFAULT '[]',
                 updated_at TEXT NOT NULL
+            )
+            "#,
+        )
+        .execute(&self.0)
+        .await?;
+
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS incidents (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                incident_key TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'open',
+                severity TEXT NOT NULL,
+                title TEXT NOT NULL,
+                summary TEXT NOT NULL,
+                primary_reason TEXT NOT NULL,
+                latest_state TEXT,
+                latest_score INTEGER NOT NULL DEFAULT 0,
+                event_count INTEGER NOT NULL DEFAULT 0,
+                correlated_agent_count INTEGER NOT NULL DEFAULT 0,
+                affected_agents_json TEXT NOT NULL DEFAULT '[]',
+                affected_roots_json TEXT NOT NULL DEFAULT '[]',
+                cross_agent INTEGER NOT NULL DEFAULT 0,
+                cross_agent_alerted INTEGER NOT NULL DEFAULT 0,
+                alert_count INTEGER NOT NULL DEFAULT 0,
+                first_seen_at TEXT NOT NULL,
+                last_seen_at TEXT NOT NULL
+            )
+            "#,
+        )
+        .execute(&self.0)
+        .await?;
+
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS incident_timeline (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                incident_id INTEGER NOT NULL,
+                source_type TEXT NOT NULL,
+                source_event_id INTEGER,
+                agent_name TEXT NOT NULL,
+                watched_root TEXT NOT NULL,
+                severity TEXT NOT NULL,
+                message TEXT NOT NULL,
+                payload_json TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL
+            )
+            "#,
+        )
+        .execute(&self.0)
+        .await?;
+
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS admin_alerts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                alert_type TEXT NOT NULL,
+                severity TEXT NOT NULL,
+                title TEXT NOT NULL,
+                message TEXT NOT NULL,
+                agent_name TEXT,
+                incident_id INTEGER,
+                metadata_json TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL
             )
             "#,
         )
@@ -588,6 +927,15 @@ impl Db {
 
         sqlx::query(
             r#"
+            CREATE INDEX IF NOT EXISTS idx_behavior_events_incident_created_at
+                ON behavior_events(incident_id, created_at DESC)
+            "#,
+        )
+        .execute(&self.0)
+        .await?;
+
+        sqlx::query(
+            r#"
             CREATE INDEX IF NOT EXISTS idx_containment_events_created_at ON containment_events(created_at DESC)
             "#,
         )
@@ -604,7 +952,51 @@ impl Db {
 
         sqlx::query(
             r#"
+            CREATE INDEX IF NOT EXISTS idx_containment_events_incident_created_at
+                ON containment_events(incident_id, created_at DESC)
+            "#,
+        )
+        .execute(&self.0)
+        .await?;
+
+        sqlx::query(
+            r#"
             CREATE INDEX IF NOT EXISTS idx_agent_containment_status_updated_at ON agent_containment_status(updated_at DESC)
+            "#,
+        )
+        .execute(&self.0)
+        .await?;
+
+        sqlx::query(
+            r#"
+            CREATE INDEX IF NOT EXISTS idx_incidents_last_seen_at ON incidents(last_seen_at DESC)
+            "#,
+        )
+        .execute(&self.0)
+        .await?;
+
+        sqlx::query(
+            r#"
+            CREATE INDEX IF NOT EXISTS idx_incidents_key_last_seen
+                ON incidents(incident_key, last_seen_at DESC)
+            "#,
+        )
+        .execute(&self.0)
+        .await?;
+
+        sqlx::query(
+            r#"
+            CREATE INDEX IF NOT EXISTS idx_incident_timeline_incident_created_at
+                ON incident_timeline(incident_id, created_at ASC)
+            "#,
+        )
+        .execute(&self.0)
+        .await?;
+
+        sqlx::query(
+            r#"
+            CREATE INDEX IF NOT EXISTS idx_admin_alerts_created_at
+                ON admin_alerts(created_at DESC)
             "#,
         )
         .execute(&self.0)
@@ -632,6 +1024,12 @@ impl Db {
             .execute(&self.0)
             .await;
         let _ = sqlx::query("ALTER TABLE decisions ADD COLUMN asn_org TEXT")
+            .execute(&self.0)
+            .await;
+        let _ = sqlx::query("ALTER TABLE behavior_events ADD COLUMN incident_id INTEGER")
+            .execute(&self.0)
+            .await;
+        let _ = sqlx::query("ALTER TABLE containment_events ADD COLUMN incident_id INTEGER")
             .execute(&self.0)
             .await;
 
@@ -775,63 +1173,136 @@ impl Db {
 
     pub async fn insert_behavior_event(&self, event: &NewBehaviorEvent) -> anyhow::Result<i64> {
         let created_at = normalize_event_timestamp(event.timestamp.as_deref());
-        let touched_paths_json = encode_json(&event.touched_paths)?;
-        let protected_paths_json = encode_json(&event.protected_paths_touched)?;
-        let reasons_json = encode_json(&event.reasons)?;
-        let result = sqlx::query(
-            r#"
-            INSERT INTO behavior_events (
-                agent_name,
-                source,
-                watched_root,
-                pid,
-                process_name,
-                exe_path,
-                command_line,
-                correlation_hits,
-                file_ops_created,
-                file_ops_modified,
-                file_ops_renamed,
-                file_ops_deleted,
-                touched_paths_json,
-                protected_paths_json,
-                bytes_written,
-                io_rate_bytes_per_sec,
-                score,
-                reasons_json,
-                level,
-                created_at
+        let mut tx = self.0.begin().await?;
+        let id = Self::insert_behavior_event_row(&mut tx, event, &created_at, None).await?;
+        tx.commit().await?;
+        Ok(id)
+    }
+
+    pub async fn ingest_behavior_event(
+        &self,
+        event: &NewBehaviorEvent,
+    ) -> anyhow::Result<BehaviorIngestResult> {
+        let created_at = normalize_event_timestamp(event.timestamp.as_deref());
+        let incident_key = build_behavior_incident_key(event);
+        let primary_reason = primary_behavior_reason(&event.reasons);
+        let mut tx = self.0.begin().await?;
+        let cutoff = incident_cutoff(&created_at);
+
+        let mut incident = if let Some(existing) =
+            Self::find_recent_incident_by_key(&mut tx, &incident_key, &cutoff).await?
+        {
+            existing
+        } else {
+            Self::create_incident(
+                &mut tx,
+                &incident_key,
+                build_behavior_incident_title(&primary_reason, false),
+                build_behavior_incident_summary(
+                    &primary_reason,
+                    1,
+                    &[event.watched_root.clone()],
+                    &event.watched_root,
+                ),
+                primary_reason.clone(),
+                behavior_level_to_severity(&event.level),
+                &created_at,
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            "#,
+            .await?
+        };
+
+        let event_id =
+            Self::insert_behavior_event_row(&mut tx, event, &created_at, Some(incident.id)).await?;
+
+        Self::insert_incident_timeline(
+            &mut tx,
+            incident.id,
+            "behavior_event",
+            Some(event_id),
+            &event.agent_name,
+            &event.watched_root,
+            behavior_level_to_severity(&event.level),
+            &format!("{} observed on {}", primary_reason, event.watched_root),
+            &json!({
+                "source": &event.source,
+                "level": &event.level,
+                "pid": event.pid,
+                "process_name": &event.process_name,
+                "exe_path": &event.exe_path,
+                "command_line": &event.command_line,
+                "correlation_hits": event.correlation_hits,
+                "file_ops": &event.file_ops,
+                "touched_paths": &event.touched_paths,
+                "protected_paths_touched": &event.protected_paths_touched,
+                "bytes_written": event.bytes_written,
+                "io_rate_bytes_per_sec": event.io_rate_bytes_per_sec,
+                "score": event.score,
+                "reasons": &event.reasons,
+            }),
+            &created_at,
         )
-        .bind(&event.agent_name)
-        .bind(&event.source)
-        .bind(&event.watched_root)
-        .bind(event.pid.map(i64::from))
-        .bind(&event.process_name)
-        .bind(&event.exe_path)
-        .bind(&event.command_line)
-        .bind(i64::from(event.correlation_hits))
-        .bind(i64::from(event.file_ops.created))
-        .bind(i64::from(event.file_ops.modified))
-        .bind(i64::from(event.file_ops.renamed))
-        .bind(i64::from(event.file_ops.deleted))
-        .bind(touched_paths_json)
-        .bind(protected_paths_json)
-        .bind(to_i64(event.bytes_written, "bytes_written")?)
-        .bind(to_i64(
-            event.io_rate_bytes_per_sec,
-            "io_rate_bytes_per_sec",
-        )?)
-        .bind(i64::from(event.score))
-        .bind(reasons_json)
-        .bind(&event.level)
-        .bind(created_at)
-        .execute(&self.0)
         .await?;
 
-        Ok(result.last_insert_rowid())
+        push_unique_sorted(&mut incident.affected_agents, &event.agent_name);
+        push_unique_sorted(&mut incident.affected_roots, &event.watched_root);
+        incident.correlated_agent_count = incident.affected_agents.len() as u32;
+        incident.cross_agent = incident.correlated_agent_count > 1;
+        incident.event_count += 1;
+        incident.latest_score = event.score;
+        incident.last_seen_at = created_at.clone();
+        incident.severity =
+            max_severity(&incident.severity, behavior_level_to_severity(&event.level)).to_string();
+        incident.title =
+            build_behavior_incident_title(&incident.primary_reason, incident.cross_agent);
+        incident.summary = build_behavior_incident_summary(
+            &incident.primary_reason,
+            incident.affected_agents.len(),
+            &incident.affected_roots,
+            &event.watched_root,
+        );
+
+        if incident.cross_agent && !incident.cross_agent_alerted {
+            let watched_root = incident
+                .affected_roots
+                .first()
+                .cloned()
+                .unwrap_or_else(|| event.watched_root.clone());
+            let title = build_cross_agent_alert_title(&incident.primary_reason);
+            let message = build_cross_agent_alert_message(
+                &incident.primary_reason,
+                &incident.affected_agents,
+                &watched_root,
+            );
+            Self::insert_admin_alert(
+                &mut tx,
+                "cross_agent_incident",
+                "high",
+                &title,
+                &message,
+                None,
+                Some(incident.id),
+                &json!({
+                    "incident_key": &incident.incident_key,
+                    "primary_reason": &incident.primary_reason,
+                    "affected_agents": &incident.affected_agents,
+                    "affected_roots": &incident.affected_roots,
+                    "event_count": incident.event_count,
+                }),
+                &created_at,
+            )
+            .await?;
+            incident.cross_agent_alerted = true;
+            incident.alert_count += 1;
+        }
+
+        Self::update_incident(&mut tx, &incident).await?;
+        tx.commit().await?;
+
+        Ok(BehaviorIngestResult {
+            id: event_id,
+            incident_id: incident.id,
+            created_at,
+        })
     }
 
     pub async fn record_containment_event(
@@ -839,39 +1310,37 @@ impl Db {
         event: &NewContainmentEvent,
     ) -> anyhow::Result<i64> {
         let created_at = normalize_event_timestamp(event.timestamp.as_deref());
+        let mut tx = self.0.begin().await?;
+        let cutoff = incident_cutoff(&created_at);
+
+        let mut incident = if let Some(existing) = Self::find_recent_incident_for_agent_root(
+            &mut tx,
+            &event.agent_name,
+            &event.watched_root,
+            &cutoff,
+        )
+        .await?
+        {
+            existing
+        } else {
+            Self::create_incident(
+                &mut tx,
+                &build_containment_incident_key(event),
+                build_containment_incident_title(&event.agent_name, &event.state),
+                build_containment_incident_summary(event),
+                event.reason.clone(),
+                containment_state_to_severity(&event.state),
+                &created_at,
+            )
+            .await?
+        };
+
+        let event_id =
+            Self::insert_containment_event_row(&mut tx, event, &created_at, Some(incident.id))
+                .await?;
+
         let actions_json = encode_json(&event.actions)?;
         let outcomes_json = encode_json(&event.outcomes)?;
-
-        let result = sqlx::query(
-            r#"
-            INSERT INTO containment_events (
-                agent_name,
-                state,
-                previous_state,
-                reason,
-                watched_root,
-                pid,
-                score,
-                actions_json,
-                outcomes_json,
-                created_at
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            "#,
-        )
-        .bind(&event.agent_name)
-        .bind(&event.state)
-        .bind(&event.previous_state)
-        .bind(&event.reason)
-        .bind(&event.watched_root)
-        .bind(event.pid.map(i64::from))
-        .bind(i64::from(event.score))
-        .bind(&actions_json)
-        .bind(&outcomes_json)
-        .bind(&created_at)
-        .execute(&self.0)
-        .await?;
-
         sqlx::query(
             r#"
             INSERT INTO agent_containment_status (
@@ -906,10 +1375,583 @@ impl Db {
         .bind(&event.watched_root)
         .bind(event.pid.map(i64::from))
         .bind(i64::from(event.score))
+        .bind(&actions_json)
+        .bind(&outcomes_json)
+        .bind(&created_at)
+        .execute(&mut *tx)
+        .await?;
+
+        Self::insert_incident_timeline(
+            &mut tx,
+            incident.id,
+            "containment_event",
+            Some(event_id),
+            &event.agent_name,
+            &event.watched_root,
+            containment_state_to_severity(&event.state),
+            &build_containment_alert_message(event),
+            &json!({
+                "state": &event.state,
+                "previous_state": &event.previous_state,
+                "reason": &event.reason,
+                "pid": event.pid,
+                "score": event.score,
+                "actions": &event.actions,
+                "outcomes": &event.outcomes,
+            }),
+            &created_at,
+        )
+        .await?;
+
+        push_unique_sorted(&mut incident.affected_agents, &event.agent_name);
+        push_unique_sorted(&mut incident.affected_roots, &event.watched_root);
+        incident.correlated_agent_count = incident.affected_agents.len() as u32;
+        incident.cross_agent = incident.correlated_agent_count > 1;
+        incident.event_count += 1;
+        incident.latest_state = Some(event.state.clone());
+        incident.latest_score = event.score;
+        incident.last_seen_at = created_at.clone();
+        incident.severity = max_severity(
+            &incident.severity,
+            containment_state_to_severity(&event.state),
+        )
+        .to_string();
+
+        if incident.incident_key.starts_with("containment:") {
+            incident.primary_reason = event.reason.clone();
+            incident.title = build_containment_incident_title(&event.agent_name, &event.state);
+            incident.summary = build_containment_incident_summary(event);
+        } else {
+            incident.title =
+                build_behavior_incident_title(&incident.primary_reason, incident.cross_agent);
+            incident.summary = format!(
+                "{}; containment moved to {} on {}",
+                build_behavior_incident_summary(
+                    &incident.primary_reason,
+                    incident.affected_agents.len(),
+                    &incident.affected_roots,
+                    &event.watched_root,
+                ),
+                event.state,
+                event.agent_name
+            );
+        }
+
+        let alert_title = build_containment_alert_title(&event.agent_name, &event.state);
+        let alert_message = build_containment_alert_message(event);
+        Self::insert_admin_alert(
+            &mut tx,
+            "containment_transition",
+            containment_state_to_severity(&event.state),
+            &alert_title,
+            &alert_message,
+            Some(&event.agent_name),
+            Some(incident.id),
+            &json!({
+                "state": &event.state,
+                "previous_state": &event.previous_state,
+                "reason": &event.reason,
+                "watched_root": &event.watched_root,
+                "score": event.score,
+                "actions": &event.actions,
+                "outcomes": &event.outcomes,
+            }),
+            &created_at,
+        )
+        .await?;
+        incident.alert_count += 1;
+
+        Self::update_incident(&mut tx, &incident).await?;
+        tx.commit().await?;
+
+        Ok(event_id)
+    }
+
+    async fn insert_behavior_event_row(
+        tx: &mut Transaction<'_, Sqlite>,
+        event: &NewBehaviorEvent,
+        created_at: &str,
+        incident_id: Option<i64>,
+    ) -> anyhow::Result<i64> {
+        let touched_paths_json = encode_json(&event.touched_paths)?;
+        let protected_paths_json = encode_json(&event.protected_paths_touched)?;
+        let reasons_json = encode_json(&event.reasons)?;
+        let result = sqlx::query(
+            r#"
+            INSERT INTO behavior_events (
+                incident_id,
+                agent_name,
+                source,
+                watched_root,
+                pid,
+                process_name,
+                exe_path,
+                command_line,
+                correlation_hits,
+                file_ops_created,
+                file_ops_modified,
+                file_ops_renamed,
+                file_ops_deleted,
+                touched_paths_json,
+                protected_paths_json,
+                bytes_written,
+                io_rate_bytes_per_sec,
+                score,
+                reasons_json,
+                level,
+                created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            "#,
+        )
+        .bind(incident_id)
+        .bind(&event.agent_name)
+        .bind(&event.source)
+        .bind(&event.watched_root)
+        .bind(event.pid.map(i64::from))
+        .bind(&event.process_name)
+        .bind(&event.exe_path)
+        .bind(&event.command_line)
+        .bind(i64::from(event.correlation_hits))
+        .bind(i64::from(event.file_ops.created))
+        .bind(i64::from(event.file_ops.modified))
+        .bind(i64::from(event.file_ops.renamed))
+        .bind(i64::from(event.file_ops.deleted))
+        .bind(touched_paths_json)
+        .bind(protected_paths_json)
+        .bind(to_i64(event.bytes_written, "bytes_written")?)
+        .bind(to_i64(
+            event.io_rate_bytes_per_sec,
+            "io_rate_bytes_per_sec",
+        )?)
+        .bind(i64::from(event.score))
+        .bind(reasons_json)
+        .bind(&event.level)
+        .bind(created_at)
+        .execute(&mut **tx)
+        .await?;
+
+        Ok(result.last_insert_rowid())
+    }
+
+    async fn insert_containment_event_row(
+        tx: &mut Transaction<'_, Sqlite>,
+        event: &NewContainmentEvent,
+        created_at: &str,
+        incident_id: Option<i64>,
+    ) -> anyhow::Result<i64> {
+        let actions_json = encode_json(&event.actions)?;
+        let outcomes_json = encode_json(&event.outcomes)?;
+        let result = sqlx::query(
+            r#"
+            INSERT INTO containment_events (
+                incident_id,
+                agent_name,
+                state,
+                previous_state,
+                reason,
+                watched_root,
+                pid,
+                score,
+                actions_json,
+                outcomes_json,
+                created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            "#,
+        )
+        .bind(incident_id)
+        .bind(&event.agent_name)
+        .bind(&event.state)
+        .bind(&event.previous_state)
+        .bind(&event.reason)
+        .bind(&event.watched_root)
+        .bind(event.pid.map(i64::from))
+        .bind(i64::from(event.score))
         .bind(actions_json)
         .bind(outcomes_json)
         .bind(created_at)
-        .execute(&self.0)
+        .execute(&mut **tx)
+        .await?;
+
+        Ok(result.last_insert_rowid())
+    }
+
+    async fn create_incident(
+        tx: &mut Transaction<'_, Sqlite>,
+        incident_key: &str,
+        title: String,
+        summary: String,
+        primary_reason: String,
+        severity: &str,
+        created_at: &str,
+    ) -> anyhow::Result<IncidentState> {
+        let empty_list = encode_json(&Vec::<String>::new())?;
+        let result = sqlx::query(
+            r#"
+            INSERT INTO incidents (
+                incident_key,
+                status,
+                severity,
+                title,
+                summary,
+                primary_reason,
+                latest_state,
+                latest_score,
+                event_count,
+                correlated_agent_count,
+                affected_agents_json,
+                affected_roots_json,
+                cross_agent,
+                cross_agent_alerted,
+                alert_count,
+                first_seen_at,
+                last_seen_at
+            )
+            VALUES (?, 'open', ?, ?, ?, ?, NULL, 0, 0, 0, ?, ?, 0, 0, 0, ?, ?)
+            "#,
+        )
+        .bind(incident_key)
+        .bind(severity)
+        .bind(&title)
+        .bind(&summary)
+        .bind(&primary_reason)
+        .bind(&empty_list)
+        .bind(&empty_list)
+        .bind(created_at)
+        .bind(created_at)
+        .execute(&mut **tx)
+        .await?;
+
+        Ok(IncidentState {
+            id: result.last_insert_rowid(),
+            incident_key: incident_key.to_string(),
+            status: "open".to_string(),
+            severity: severity.to_string(),
+            title,
+            summary,
+            primary_reason,
+            latest_state: None,
+            latest_score: 0,
+            event_count: 0,
+            correlated_agent_count: 0,
+            affected_agents: Vec::new(),
+            affected_roots: Vec::new(),
+            cross_agent: false,
+            cross_agent_alerted: false,
+            first_seen_at: created_at.to_string(),
+            last_seen_at: created_at.to_string(),
+            alert_count: 0,
+        })
+    }
+
+    async fn find_recent_incident_by_key(
+        tx: &mut Transaction<'_, Sqlite>,
+        incident_key: &str,
+        cutoff: &str,
+    ) -> anyhow::Result<Option<IncidentState>> {
+        let row = sqlx::query(
+            r#"
+            SELECT
+                id,
+                incident_key,
+                status,
+                severity,
+                title,
+                summary,
+                primary_reason,
+                latest_state,
+                latest_score,
+                event_count,
+                correlated_agent_count,
+                affected_agents_json,
+                affected_roots_json,
+                cross_agent,
+                cross_agent_alerted,
+                first_seen_at,
+                last_seen_at,
+                alert_count
+            FROM incidents
+            WHERE incident_key = ?
+              AND status = 'open'
+              AND last_seen_at >= ?
+            ORDER BY last_seen_at DESC, id DESC
+            LIMIT 1
+            "#,
+        )
+        .bind(incident_key)
+        .bind(cutoff)
+        .fetch_optional(&mut **tx)
+        .await?;
+
+        row.map(Self::map_incident_state).transpose()
+    }
+
+    async fn find_recent_incident_for_agent_root(
+        tx: &mut Transaction<'_, Sqlite>,
+        agent_name: &str,
+        watched_root: &str,
+        cutoff: &str,
+    ) -> anyhow::Result<Option<IncidentState>> {
+        let behavior_row = sqlx::query(
+            r#"
+            SELECT
+                i.id,
+                i.incident_key,
+                i.status,
+                i.severity,
+                i.title,
+                i.summary,
+                i.primary_reason,
+                i.latest_state,
+                i.latest_score,
+                i.event_count,
+                i.correlated_agent_count,
+                i.affected_agents_json,
+                i.affected_roots_json,
+                i.cross_agent,
+                i.cross_agent_alerted,
+                i.first_seen_at,
+                i.last_seen_at,
+                i.alert_count
+            FROM incidents i
+            INNER JOIN behavior_events b ON b.incident_id = i.id
+            WHERE b.agent_name = ?
+              AND b.watched_root = ?
+              AND b.created_at >= ?
+            ORDER BY b.created_at DESC, b.id DESC
+            LIMIT 1
+            "#,
+        )
+        .bind(agent_name)
+        .bind(watched_root)
+        .bind(cutoff)
+        .fetch_optional(&mut **tx)
+        .await?;
+
+        if let Some(row) = behavior_row {
+            return Self::map_incident_state(row).map(Some);
+        }
+
+        let containment_row = sqlx::query(
+            r#"
+            SELECT
+                i.id,
+                i.incident_key,
+                i.status,
+                i.severity,
+                i.title,
+                i.summary,
+                i.primary_reason,
+                i.latest_state,
+                i.latest_score,
+                i.event_count,
+                i.correlated_agent_count,
+                i.affected_agents_json,
+                i.affected_roots_json,
+                i.cross_agent,
+                i.cross_agent_alerted,
+                i.first_seen_at,
+                i.last_seen_at,
+                i.alert_count
+            FROM incidents i
+            INNER JOIN containment_events c ON c.incident_id = i.id
+            WHERE c.agent_name = ?
+              AND c.watched_root = ?
+              AND c.created_at >= ?
+            ORDER BY c.created_at DESC, c.id DESC
+            LIMIT 1
+            "#,
+        )
+        .bind(agent_name)
+        .bind(watched_root)
+        .bind(cutoff)
+        .fetch_optional(&mut **tx)
+        .await?;
+
+        containment_row.map(Self::map_incident_state).transpose()
+    }
+
+    fn map_incident_state(row: sqlx::sqlite::SqliteRow) -> anyhow::Result<IncidentState> {
+        let affected_agents_json: String = row.try_get("affected_agents_json")?;
+        let affected_roots_json: String = row.try_get("affected_roots_json")?;
+        Ok(IncidentState {
+            id: row.try_get("id")?,
+            incident_key: row.try_get("incident_key")?,
+            status: row.try_get("status")?,
+            severity: row.try_get("severity")?,
+            title: row.try_get("title")?,
+            summary: row.try_get("summary")?,
+            primary_reason: row.try_get("primary_reason")?,
+            latest_state: row.try_get("latest_state")?,
+            latest_score: from_i64_u32(row.try_get("latest_score")?, "incidents.latest_score")?,
+            event_count: from_i64_u32(row.try_get("event_count")?, "incidents.event_count")?,
+            correlated_agent_count: from_i64_u32(
+                row.try_get("correlated_agent_count")?,
+                "incidents.correlated_agent_count",
+            )?,
+            affected_agents: decode_json(&affected_agents_json, "incidents.affected_agents_json")?,
+            affected_roots: decode_json(&affected_roots_json, "incidents.affected_roots_json")?,
+            cross_agent: row.try_get::<i64, _>("cross_agent")? != 0,
+            cross_agent_alerted: row.try_get::<i64, _>("cross_agent_alerted")? != 0,
+            first_seen_at: row.try_get("first_seen_at")?,
+            last_seen_at: row.try_get("last_seen_at")?,
+            alert_count: from_i64_u32(row.try_get("alert_count")?, "incidents.alert_count")?,
+        })
+    }
+
+    fn incident_row_from_state(incident: IncidentState) -> IncidentRow {
+        IncidentRow {
+            id: incident.id,
+            incident_key: incident.incident_key,
+            status: incident.status,
+            severity: incident.severity,
+            title: incident.title,
+            summary: incident.summary,
+            primary_reason: incident.primary_reason,
+            latest_state: incident.latest_state,
+            latest_score: incident.latest_score,
+            event_count: incident.event_count,
+            correlated_agent_count: incident.correlated_agent_count,
+            affected_agents: incident.affected_agents,
+            affected_roots: incident.affected_roots,
+            cross_agent: incident.cross_agent,
+            first_seen_at: incident.first_seen_at,
+            last_seen_at: incident.last_seen_at,
+            alert_count: incident.alert_count,
+        }
+    }
+
+    async fn update_incident(
+        tx: &mut Transaction<'_, Sqlite>,
+        incident: &IncidentState,
+    ) -> anyhow::Result<()> {
+        sqlx::query(
+            r#"
+            UPDATE incidents
+            SET
+                status = ?,
+                severity = ?,
+                title = ?,
+                summary = ?,
+                primary_reason = ?,
+                latest_state = ?,
+                latest_score = ?,
+                event_count = ?,
+                correlated_agent_count = ?,
+                affected_agents_json = ?,
+                affected_roots_json = ?,
+                cross_agent = ?,
+                cross_agent_alerted = ?,
+                last_seen_at = ?,
+                alert_count = ?
+            WHERE id = ?
+            "#,
+        )
+        .bind(&incident.status)
+        .bind(&incident.severity)
+        .bind(&incident.title)
+        .bind(&incident.summary)
+        .bind(&incident.primary_reason)
+        .bind(&incident.latest_state)
+        .bind(i64::from(incident.latest_score))
+        .bind(i64::from(incident.event_count))
+        .bind(i64::from(incident.correlated_agent_count))
+        .bind(encode_json(&incident.affected_agents)?)
+        .bind(encode_json(&incident.affected_roots)?)
+        .bind(if incident.cross_agent { 1_i64 } else { 0_i64 })
+        .bind(if incident.cross_agent_alerted {
+            1_i64
+        } else {
+            0_i64
+        })
+        .bind(&incident.last_seen_at)
+        .bind(i64::from(incident.alert_count))
+        .bind(incident.id)
+        .execute(&mut **tx)
+        .await?;
+
+        Ok(())
+    }
+
+    async fn insert_incident_timeline(
+        tx: &mut Transaction<'_, Sqlite>,
+        incident_id: i64,
+        source_type: &str,
+        source_event_id: Option<i64>,
+        agent_name: &str,
+        watched_root: &str,
+        severity: &str,
+        message: &str,
+        payload: &Value,
+        created_at: &str,
+    ) -> anyhow::Result<i64> {
+        let result = sqlx::query(
+            r#"
+            INSERT INTO incident_timeline (
+                incident_id,
+                source_type,
+                source_event_id,
+                agent_name,
+                watched_root,
+                severity,
+                message,
+                payload_json,
+                created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            "#,
+        )
+        .bind(incident_id)
+        .bind(source_type)
+        .bind(source_event_id)
+        .bind(agent_name)
+        .bind(watched_root)
+        .bind(severity)
+        .bind(message)
+        .bind(encode_json(payload)?)
+        .bind(created_at)
+        .execute(&mut **tx)
+        .await?;
+
+        Ok(result.last_insert_rowid())
+    }
+
+    async fn insert_admin_alert(
+        tx: &mut Transaction<'_, Sqlite>,
+        alert_type: &str,
+        severity: &str,
+        title: &str,
+        message: &str,
+        agent_name: Option<&str>,
+        incident_id: Option<i64>,
+        metadata: &Value,
+        created_at: &str,
+    ) -> anyhow::Result<i64> {
+        let result = sqlx::query(
+            r#"
+            INSERT INTO admin_alerts (
+                alert_type,
+                severity,
+                title,
+                message,
+                agent_name,
+                incident_id,
+                metadata_json,
+                created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            "#,
+        )
+        .bind(alert_type)
+        .bind(severity)
+        .bind(title)
+        .bind(message)
+        .bind(agent_name)
+        .bind(incident_id)
+        .bind(encode_json(metadata)?)
+        .bind(created_at)
+        .execute(&mut **tx)
         .await?;
 
         Ok(result.last_insert_rowid())
@@ -1597,6 +2639,168 @@ impl Db {
                     })
                 },
             )
+            .collect()
+    }
+
+    pub async fn list_incidents(&self, limit: i64) -> anyhow::Result<Vec<IncidentRow>> {
+        let rows = sqlx::query(
+            r#"
+            SELECT
+                id,
+                incident_key,
+                status,
+                severity,
+                title,
+                summary,
+                primary_reason,
+                latest_state,
+                latest_score,
+                event_count,
+                correlated_agent_count,
+                affected_agents_json,
+                affected_roots_json,
+                cross_agent,
+                cross_agent_alerted,
+                first_seen_at,
+                last_seen_at,
+                alert_count
+            FROM incidents
+            ORDER BY last_seen_at DESC, id DESC
+            LIMIT ?
+            "#,
+        )
+        .bind(limit)
+        .fetch_all(&self.0)
+        .await?;
+
+        rows.into_iter()
+            .map(Self::map_incident_state)
+            .map(|result| result.map(Self::incident_row_from_state))
+            .collect()
+    }
+
+    pub async fn get_incident_detail(
+        &self,
+        id: i64,
+        timeline_limit: i64,
+    ) -> anyhow::Result<Option<IncidentDetailRow>> {
+        let incident_row = sqlx::query(
+            r#"
+            SELECT
+                id,
+                incident_key,
+                status,
+                severity,
+                title,
+                summary,
+                primary_reason,
+                latest_state,
+                latest_score,
+                event_count,
+                correlated_agent_count,
+                affected_agents_json,
+                affected_roots_json,
+                cross_agent,
+                cross_agent_alerted,
+                first_seen_at,
+                last_seen_at,
+                alert_count
+            FROM incidents
+            WHERE id = ?
+            "#,
+        )
+        .bind(id)
+        .fetch_optional(&self.0)
+        .await?;
+
+        let Some(incident_row) = incident_row else {
+            return Ok(None);
+        };
+
+        let timeline_rows = sqlx::query(
+            r#"
+            SELECT
+                id,
+                source_type,
+                source_event_id,
+                agent_name,
+                watched_root,
+                severity,
+                message,
+                payload_json,
+                created_at
+            FROM incident_timeline
+            WHERE incident_id = ?
+            ORDER BY created_at ASC, id ASC
+            LIMIT ?
+            "#,
+        )
+        .bind(id)
+        .bind(timeline_limit)
+        .fetch_all(&self.0)
+        .await?;
+
+        let timeline = timeline_rows
+            .into_iter()
+            .map(|row| {
+                let payload_json: String = row.try_get("payload_json")?;
+                Ok(IncidentTimelineRow {
+                    id: row.try_get("id")?,
+                    source_type: row.try_get("source_type")?,
+                    source_event_id: row.try_get("source_event_id")?,
+                    agent_name: row.try_get("agent_name")?,
+                    watched_root: row.try_get("watched_root")?,
+                    severity: row.try_get("severity")?,
+                    message: row.try_get("message")?,
+                    payload: decode_json(&payload_json, "incident_timeline.payload_json")?,
+                    created_at: row.try_get("created_at")?,
+                })
+            })
+            .collect::<anyhow::Result<Vec<_>>>()?;
+
+        Ok(Some(IncidentDetailRow {
+            incident: Self::incident_row_from_state(Self::map_incident_state(incident_row)?),
+            timeline,
+        }))
+    }
+
+    pub async fn list_admin_alerts(&self, limit: i64) -> anyhow::Result<Vec<AdminAlertRow>> {
+        let rows = sqlx::query(
+            r#"
+            SELECT
+                id,
+                alert_type,
+                severity,
+                title,
+                message,
+                agent_name,
+                incident_id,
+                metadata_json,
+                created_at
+            FROM admin_alerts
+            ORDER BY created_at DESC, id DESC
+            LIMIT ?
+            "#,
+        )
+        .bind(limit)
+        .fetch_all(&self.0)
+        .await?;
+
+        rows.into_iter()
+            .map(|row| {
+                let metadata_json: String = row.try_get("metadata_json")?;
+                Ok(AdminAlertRow {
+                    id: row.try_get("id")?,
+                    alert_type: row.try_get("alert_type")?,
+                    severity: row.try_get("severity")?,
+                    title: row.try_get("title")?,
+                    message: row.try_get("message")?,
+                    agent_name: row.try_get("agent_name")?,
+                    incident_id: row.try_get("incident_id")?,
+                    metadata: decode_json(&metadata_json, "admin_alerts.metadata_json")?,
+                    created_at: row.try_get("created_at")?,
+                })
+            })
             .collect()
     }
 
@@ -3119,5 +4323,150 @@ mod tests {
         assert_eq!(history.len(), 2);
         assert_eq!(history[0].state, "throttle");
         assert_eq!(history[1].state, "suspicious");
+    }
+
+    #[tokio::test]
+    async fn behavior_incidents_correlate_across_agents_and_emit_alerts() {
+        let db = Db::new(":memory:").await.expect("Failed to create test DB");
+
+        let first = db
+            .ingest_behavior_event(&NewBehaviorEvent {
+                agent_name: "agent-a".to_string(),
+                source: "ebpf_ringbuf".to_string(),
+                watched_root: "/srv/data".to_string(),
+                pid: Some(101),
+                process_name: Some("python3".to_string()),
+                exe_path: Some("/usr/bin/python3".to_string()),
+                command_line: Some("python3 encrypt.py".to_string()),
+                correlation_hits: 3,
+                file_ops: BehaviorFileOpsRow {
+                    created: 0,
+                    modified: 2,
+                    renamed: 4,
+                    deleted: 0,
+                },
+                touched_paths: vec!["/srv/data/a.txt".to_string()],
+                protected_paths_touched: Vec::new(),
+                bytes_written: 16384,
+                io_rate_bytes_per_sec: 4096,
+                score: 58,
+                reasons: vec!["rename burst x4".to_string()],
+                level: "throttle_candidate".to_string(),
+                timestamp: Some("2026-03-14T09:00:00+00:00".to_string()),
+            })
+            .await
+            .unwrap();
+
+        let second = db
+            .ingest_behavior_event(&NewBehaviorEvent {
+                agent_name: "agent-b".to_string(),
+                source: "ebpf_ringbuf".to_string(),
+                watched_root: "/srv/data".to_string(),
+                pid: Some(202),
+                process_name: Some("python3".to_string()),
+                exe_path: Some("/usr/bin/python3".to_string()),
+                command_line: Some("python3 encrypt.py".to_string()),
+                correlation_hits: 2,
+                file_ops: BehaviorFileOpsRow {
+                    created: 0,
+                    modified: 1,
+                    renamed: 6,
+                    deleted: 0,
+                },
+                touched_paths: vec!["/srv/data/b.txt".to_string()],
+                protected_paths_touched: Vec::new(),
+                bytes_written: 8192,
+                io_rate_bytes_per_sec: 2048,
+                score: 61,
+                reasons: vec!["rename burst x6".to_string()],
+                level: "throttle_candidate".to_string(),
+                timestamp: Some("2026-03-14T09:05:00+00:00".to_string()),
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(first.incident_id, second.incident_id);
+
+        let incidents = db.list_incidents(10).await.unwrap();
+        assert_eq!(incidents.len(), 1);
+        assert!(incidents[0].cross_agent);
+        assert_eq!(incidents[0].correlated_agent_count, 2);
+        assert_eq!(incidents[0].event_count, 2);
+        assert_eq!(incidents[0].title, "Cross-agent behavior incident: rename burst");
+
+        let alerts = db.list_admin_alerts(10).await.unwrap();
+        assert_eq!(alerts.len(), 1);
+        assert_eq!(alerts[0].alert_type, "cross_agent_incident");
+        assert_eq!(alerts[0].incident_id, Some(first.incident_id));
+    }
+
+    #[tokio::test]
+    async fn containment_updates_incident_timeline_and_emits_transition_alert() {
+        let db = Db::new(":memory:").await.expect("Failed to create test DB");
+
+        let behavior = db
+            .ingest_behavior_event(&NewBehaviorEvent {
+                agent_name: "agent-a".to_string(),
+                source: "ebpf_ringbuf".to_string(),
+                watched_root: "/srv/data".to_string(),
+                pid: Some(42),
+                process_name: Some("python3".to_string()),
+                exe_path: Some("/usr/bin/python3".to_string()),
+                command_line: Some("python3 encrypt.py".to_string()),
+                correlation_hits: 4,
+                file_ops: BehaviorFileOpsRow {
+                    created: 1,
+                    modified: 2,
+                    renamed: 3,
+                    deleted: 0,
+                },
+                touched_paths: vec!["/srv/data/a.txt".to_string()],
+                protected_paths_touched: vec!["/srv/data/secret.txt".to_string()],
+                bytes_written: 4096,
+                io_rate_bytes_per_sec: 2048,
+                score: 67,
+                reasons: vec!["protected path touched".to_string()],
+                level: "throttle_candidate".to_string(),
+                timestamp: Some("2026-03-14T09:00:00+00:00".to_string()),
+            })
+            .await
+            .unwrap();
+
+        db.record_containment_event(&NewContainmentEvent {
+            agent_name: "agent-a".to_string(),
+            state: "throttle".to_string(),
+            previous_state: Some("suspicious".to_string()),
+            reason: "throttle score threshold crossed".to_string(),
+            watched_root: "/srv/data".to_string(),
+            pid: Some(42),
+            score: 67,
+            actions: vec!["ApplyIoThrottle".to_string()],
+            outcomes: vec![ContainmentOutcomeRow {
+                enforcer: "cgroup".to_string(),
+                applied: false,
+                dry_run: true,
+                detail: "dry-run".to_string(),
+            }],
+            timestamp: Some("2026-03-14T09:01:00+00:00".to_string()),
+        })
+        .await
+        .unwrap();
+
+        let incident = db
+            .get_incident_detail(behavior.incident_id, 10)
+            .await
+            .unwrap()
+            .expect("incident should exist");
+        assert_eq!(incident.incident.event_count, 2);
+        assert_eq!(incident.incident.latest_state.as_deref(), Some("throttle"));
+        assert_eq!(incident.incident.alert_count, 1);
+        assert_eq!(incident.timeline.len(), 2);
+        assert_eq!(incident.timeline[0].source_type, "behavior_event");
+        assert_eq!(incident.timeline[1].source_type, "containment_event");
+
+        let alerts = db.list_admin_alerts(10).await.unwrap();
+        assert_eq!(alerts.len(), 1);
+        assert_eq!(alerts[0].alert_type, "containment_transition");
+        assert_eq!(alerts[0].incident_id, Some(behavior.incident_id));
     }
 }

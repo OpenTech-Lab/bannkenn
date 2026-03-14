@@ -1,4 +1,5 @@
 use crate::auth::AuthenticatedAgent;
+use crate::behavior_pg::{BehaviorArchiveRecord, BehaviorPgArchive};
 use crate::db::{BehaviorFileOpsRow, Db, NewBehaviorEvent};
 use axum::{
     extract::{Query, State},
@@ -11,6 +12,7 @@ use std::sync::Arc;
 
 pub struct AppState {
     pub db: Arc<Db>,
+    pub behavior_archive: Option<Arc<BehaviorPgArchive>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -59,33 +61,52 @@ pub async fn create(
         return Err(StatusCode::BAD_REQUEST);
     }
 
+    let event = NewBehaviorEvent {
+        agent_name: agent.0.clone(),
+        source: payload.source,
+        watched_root: payload.watched_root,
+        pid: payload.pid,
+        process_name: payload.process_name,
+        exe_path: payload.exe_path,
+        command_line: payload.command_line,
+        correlation_hits: payload.correlation_hits,
+        file_ops: payload.file_ops,
+        touched_paths: payload.touched_paths,
+        protected_paths_touched: payload.protected_paths_touched,
+        bytes_written: payload.bytes_written,
+        io_rate_bytes_per_sec: payload.io_rate_bytes_per_sec,
+        score: payload.score,
+        reasons: payload.reasons,
+        level,
+        timestamp: payload.timestamp,
+    };
+
     let id = state
         .db
-        .insert_behavior_event(&NewBehaviorEvent {
-            agent_name: agent.0,
-            source: payload.source,
-            watched_root: payload.watched_root,
-            pid: payload.pid,
-            process_name: payload.process_name,
-            exe_path: payload.exe_path,
-            command_line: payload.command_line,
-            correlation_hits: payload.correlation_hits,
-            file_ops: payload.file_ops,
-            touched_paths: payload.touched_paths,
-            protected_paths_touched: payload.protected_paths_touched,
-            bytes_written: payload.bytes_written,
-            io_rate_bytes_per_sec: payload.io_rate_bytes_per_sec,
-            score: payload.score,
-            reasons: payload.reasons,
-            level,
-            timestamp: payload.timestamp,
-        })
+        .ingest_behavior_event(&event)
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
+    if let Some(archive) = state.behavior_archive.as_ref() {
+        let record = BehaviorArchiveRecord::from_ingested_event(
+            id.id,
+            id.incident_id,
+            &event,
+            &id.created_at,
+        )
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        if let Err(err) = archive.archive_event(&record).await {
+            tracing::error!(
+                "failed to archive behavior event {} to postgres: {}",
+                id.id,
+                err
+            );
+        }
+    }
+
     Ok((
         StatusCode::CREATED,
-        Json(CreateBehaviorEventResponse { id }),
+        Json(CreateBehaviorEventResponse { id: id.id }),
     ))
 }
 

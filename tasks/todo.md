@@ -70,6 +70,10 @@
 - Added a first Phase 3 server slice: the server now stores structured behavior events plus containment history/current status in the existing database, exposes `POST/GET /api/v1/behavior_events` and `POST/GET /api/v1/containment`, and adds per-agent read routes for recent behavior events and containment history.
 - Wired the agent into that Phase 3 slice too: new upload payloads/outbox variants report behavior batches and containment transitions to the server so the new endpoints are immediately exercised instead of staying dead code.
 - Verified the Phase 3 slice with `cargo fmt`, `cargo test -p bannkenn-agent -p bannkenn-server`, and `git diff --check` on 2026-03-14, including new persistence tests in `server/src/db.rs` and a new outbox round-trip test in `agent/src/outbox.rs`.
+- Closed the remaining Phase 3 server work too: `server/src/db.rs` now aggregates behavior and containment activity into incident records plus chronological incident timelines, and the server exposes `GET /api/v1/incidents`, `GET /api/v1/incidents/:id`, and `GET /api/v1/alerts`.
+- Added cross-agent behavior correlation on normalized reason keys plus watched roots, so matching incidents from multiple agents collapse into one incident summary with correlated agent/root sets and a dedicated administrator alert when the incident becomes fleet-visible.
+- Added containment-transition alerts and optional PostgreSQL behavior-event archiving: `BANNKENN_BEHAVIOR_PG_URL` now enables a bootstrapped/indexed `behavior_events_archive` mirror path without replacing the primary SQLite runtime database.
+- Verified the Phase 3 completion slice with `cargo fmt`, `cargo test -p bannkenn-server`, `cargo test -p bannkenn-agent -p bannkenn-server`, and `git diff --check` on 2026-03-14, including new incident/correlation coverage in `server/src/db.rs` and PostgreSQL archive bootstrap/record tests in `server/src/behavior_pg.rs`.
 
 ## Phase 2 — Containment State Machine + Throttling
 - [x] Create `agent/src/containment.rs` — state machine (NORMAL → SUSPICIOUS → THROTTLE → FUSE)
@@ -102,10 +106,10 @@
 ## Phase 3 — Server Enhancements
 - [x] Add behavior event ingestion endpoint (POST /api/v1/behavior_events)
 - [x] Add containment status endpoint (GET/POST /api/v1/containment)
-- [ ] Add incident aggregation and timeline reconstruction
-- [ ] Cross-agent behavior correlation
-- [ ] Administrator alert system (containment level changes)
-- [ ] Store BehaviorEvents in PostgreSQL with appropriate indexes
+- [x] Add incident aggregation and timeline reconstruction
+- [x] Cross-agent behavior correlation
+- [x] Administrator alert system (containment level changes)
+- [x] Store BehaviorEvents in PostgreSQL with appropriate indexes
 
 ### Phase 3 Execution Slice — 2026-03-14
 - [x] Add server-side storage and indexes for behavior events in the existing database
@@ -115,6 +119,15 @@
 - [x] Add agent-scoped read routes for recent behavior events and containment history
 - [x] Wire the agent client/outbox/runtime to upload behavior events and containment transitions
 - [x] Add focused DB/client tests for the new Phase 3 contracts
+- [x] Verify with targeted agent/server test suites
+
+### Phase 3 Completion Slice — 2026-03-14
+- [x] Add incident aggregation tables and timeline storage for behavior/containment activity
+- [x] Add incident list/detail API routes with reconstructed timelines
+- [x] Correlate matching behavior incidents across multiple agents and surface that in incident summaries
+- [x] Add administrator alert storage/routes and emit alerts for containment transitions plus cross-agent incidents
+- [x] Add optional PostgreSQL behavior-event archive support with schema/index bootstrap
+- [x] Add focused tests for incidents, alerts, cross-agent correlation, and PostgreSQL behavior archiving glue
 - [x] Verify with targeted agent/server test suites
 
 ## Phase 4 — Dashboard Integration
