@@ -52,7 +52,7 @@ export function FleetContainmentPanel({
                   <div className="space-y-2">
                     <div className="flex flex-wrap items-center gap-2">
                       <Link
-                        href={`/agents/${summary.agent.id}`}
+                        href={`/behavior/agents/${summary.agent.id}`}
                         className="text-base font-semibold text-white transition-colors hover:text-sky-300"
                       >
                         {agentLabel(summary.agent)}

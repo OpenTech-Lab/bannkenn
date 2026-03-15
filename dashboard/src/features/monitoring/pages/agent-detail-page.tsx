@@ -128,8 +128,8 @@ export function AgentDetailPage() {
     return (
       <div className="mx-auto max-w-7xl px-4 py-10 space-y-4">
         <p className="text-sm text-red-300">{error}</p>
-        <Link href="/" className="text-sm text-sky-300 transition-colors hover:text-sky-200">
-          Back to dashboard
+        <Link href="/behavior/fleet" className="text-sm text-sky-300 transition-colors hover:text-sky-200">
+          Back to fleet
         </Link>
       </div>
     );
@@ -145,8 +145,8 @@ export function AgentDetailPage() {
     <div className="mx-auto max-w-7xl px-4 py-10 space-y-8">
       <div className="flex flex-wrap items-start justify-between gap-6">
         <div className="space-y-3">
-          <Link href="/" className="text-sm text-sky-300 transition-colors hover:text-sky-200">
-            Back to dashboard
+          <Link href="/behavior/fleet" className="text-sm text-sky-300 transition-colors hover:text-sky-200">
+            Back to fleet
           </Link>
           <div>
             <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-slate-500">

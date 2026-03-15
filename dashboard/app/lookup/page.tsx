@@ -183,7 +183,7 @@ function IpLookupPageContent() {
             and whether it exists on an ingested community list.
           </p>
         </div>
-        <Link href="/community" className="text-sm text-blue-400 hover:text-blue-300">
+        <Link href="/ip-monitor/community" className="text-sm text-blue-400 hover:text-blue-300">
           View community feeds
         </Link>
       </div>
@@ -533,7 +533,7 @@ function SourceCell({
   if (agentId !== null) {
     return (
       <>
-        <Link href={`/agents/${agentId}`} className="text-blue-400 hover:text-blue-300 hover:underline">
+        <Link href={`/behavior/agents/${agentId}`} className="text-blue-400 hover:text-blue-300 hover:underline">
           {sourceLabel}
         </Link>
         {sourceLabel !== source ? (

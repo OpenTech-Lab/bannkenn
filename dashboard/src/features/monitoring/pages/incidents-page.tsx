@@ -56,8 +56,8 @@ export function IncidentsPage() {
   return (
     <div className="mx-auto max-w-7xl px-4 py-10 space-y-8">
       <div className="space-y-4">
-        <Link href="/" className="text-sm text-sky-300 transition-colors hover:text-sky-200">
-          Back to dashboard
+        <Link href="/behavior" className="text-sm text-sky-300 transition-colors hover:text-sky-200">
+          Back to overview
         </Link>
         <div className="flex flex-wrap items-start justify-between gap-6">
           <div>

@@ -34,7 +34,7 @@ export function ThreatHeatmap({ summaries }: { summaries: FleetAgentSummary[] })
           {summaries.map((summary) => (
             <Link
               key={summary.agent.id}
-              href={`/agents/${summary.agent.id}`}
+              href={`/behavior/agents/${summary.agent.id}`}
               className={`rounded-2xl border p-4 transition-colors hover:border-sky-400/40 ${heatClasses(
                 summary.heat
               )}`}

@@ -76,8 +76,8 @@ export function IncidentDetailPage() {
     return (
       <div className="mx-auto max-w-7xl px-4 py-10 space-y-4">
         <p className="text-sm text-red-300">{error}</p>
-        <Link href="/" className="text-sm text-sky-300 transition-colors hover:text-sky-200">
-          Back to dashboard
+        <Link href="/behavior/incidents" className="text-sm text-sky-300 transition-colors hover:text-sky-200">
+          Back to incidents
         </Link>
       </div>
     );
@@ -90,8 +90,8 @@ export function IncidentDetailPage() {
   return (
     <div className="mx-auto max-w-7xl px-4 py-10 space-y-8">
       <div className="space-y-4">
-        <Link href="/" className="text-sm text-sky-300 transition-colors hover:text-sky-200">
-          Back to dashboard
+        <Link href="/behavior/incidents" className="text-sm text-sky-300 transition-colors hover:text-sky-200">
+          Back to incidents
         </Link>
         <div className="flex flex-wrap items-start justify-between gap-6">
           <div className="space-y-3">
@@ -160,7 +160,7 @@ export function IncidentDetailPage() {
                 {relatedAgents.map((agent) => (
                   <Link
                     key={agent.id}
-                    href={`/agents/${agent.id}`}
+                    href={`/behavior/agents/${agent.id}`}
                     className="rounded-full border border-white/10 px-3 py-1 text-sm text-slate-200 transition-colors hover:border-sky-400/40 hover:text-sky-200"
                   >
                     {agent.nickname?.trim() || agent.name}
