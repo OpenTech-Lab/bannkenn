@@ -25,7 +25,7 @@ import {
   formatTimestamp,
 } from '@/src/features/monitoring/utils';
 
-const POLL_INTERVAL_MS = 10_000;
+const POLL_INTERVAL_MS = 30_000;
 
 export default function BehaviorAgentDetailPage() {
   const params = useParams<{ id: string }>();
@@ -69,6 +69,10 @@ export default function BehaviorAgentDetailPage() {
   const containmentHistory = useMemo(() => snapshot?.containmentEvents.slice(0, 12) ?? [], [snapshot]);
   const actionHistory = useMemo(() => snapshot?.containmentActions.slice(0, 12) ?? [], [snapshot]);
   const behaviorEvents = useMemo(() => snapshot?.behaviorEvents.slice(0, 30) ?? [], [snapshot]);
+  const telemetryEvents = useMemo(() => snapshot?.telemetryEvents.slice(0, 50) ?? [], [snapshot]);
+  const decisionEvents = useMemo(() => snapshot?.decisions.slice(0, 50) ?? [], [snapshot]);
+  const alertTelemetry = useMemo(() => telemetryEvents.filter((e) => e.level === 'alert'), [telemetryEvents]);
+  const blockTelemetry = useMemo(() => telemetryEvents.filter((e) => e.level === 'block'), [telemetryEvents]);
 
   async function handleAction(commandKind: 'trigger_fuse' | 'release_fuse') {
     if (!snapshot) return;
@@ -99,7 +103,7 @@ export default function BehaviorAgentDetailPage() {
 
   if (loading) {
     return (
-      <div className="max-w-6xl mx-auto px-4 py-8">
+      <div className="px-6 py-8">
         <p className="text-sm text-muted-foreground">Loading agent detail...</p>
       </div>
     );
@@ -107,7 +111,7 @@ export default function BehaviorAgentDetailPage() {
 
   if (error && !snapshot) {
     return (
-      <div className="max-w-6xl mx-auto px-4 py-8 space-y-4">
+      <div className="px-6 py-8 space-y-4">
         <div className="rounded-xl border border-red-900/60 bg-red-950/40 px-4 py-3 text-sm text-red-300">
           {error}
         </div>
@@ -123,7 +127,7 @@ export default function BehaviorAgentDetailPage() {
   const state = currentContainment?.state ?? 'normal';
 
   return (
-    <div className="max-w-6xl mx-auto px-4 py-8 space-y-6">
+    <div className="px-6 py-8 space-y-6">
       {/* Header */}
       <div>
         <Link href="/behavior/fleet" className="text-sm text-blue-400 hover:text-blue-300">
@@ -379,7 +383,7 @@ export default function BehaviorAgentDetailPage() {
 
       {/* Related incidents */}
       {snapshot.relatedIncidents.length > 0 && (
-        <section className="rounded-xl border border-border bg-card p-5 space-y-4">
+        <section id="related-incidents" className="rounded-xl border border-border bg-card p-5 space-y-4">
           <h2 className="text-xs font-semibold text-muted-foreground uppercase tracking-[0.3em]">
             Related Incidents
           </h2>
@@ -416,8 +420,153 @@ export default function BehaviorAgentDetailPage() {
           </div>
         </section>
       )}
+
+      {/* IP Monitor Logs */}
+      <section id="ip-monitor-logs" className="rounded-xl border border-border bg-card p-5 space-y-4">
+        <div className="flex items-center justify-between">
+          <h2 className="text-xs font-semibold text-muted-foreground uppercase tracking-[0.3em]">
+            IP Monitor Logs
+          </h2>
+          <div className="flex gap-3 text-xs text-muted-foreground">
+            <span>{telemetryEvents.length} telemetry</span>
+            <span>{decisionEvents.length} decisions</span>
+            <span className="text-red-400">{alertTelemetry.length} alerts</span>
+            <span className="text-orange-400">{blockTelemetry.length} blocks</span>
+          </div>
+        </div>
+
+        {telemetryEvents.length === 0 && decisionEvents.length === 0 ? (
+          <p className="text-sm text-muted-foreground py-6 text-center">
+            No IP monitor logs for this agent.
+          </p>
+        ) : (
+          <div className="space-y-4">
+            {/* Telemetry events */}
+            {telemetryEvents.length > 0 && (
+              <div className="space-y-2">
+                <h3 className="text-xs font-medium text-muted-foreground">Telemetry Events</h3>
+                <div className="rounded-lg border border-border overflow-hidden">
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>IP</TableHead>
+                        <TableHead>Level</TableHead>
+                        <TableHead>Reason</TableHead>
+                        <TableHead>Source</TableHead>
+                        <TableHead>Country</TableHead>
+                        <TableHead>Log Path</TableHead>
+                        <TableHead>Timestamp</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {telemetryEvents.map((event) => (
+                        <TableRow key={event.id}>
+                          <TableCell className="font-mono text-sm">
+                            <Link
+                              href={`/ip-monitor/lookup?ip=${encodeURIComponent(event.ip)}`}
+                              className="text-blue-400 hover:text-blue-300 hover:underline"
+                            >
+                              {event.ip}
+                            </Link>
+                          </TableCell>
+                          <TableCell>
+                            <TelemetryLevelBadge level={event.level} />
+                          </TableCell>
+                          <TableCell className="text-sm text-muted-foreground max-w-xs truncate">
+                            {event.reason}
+                          </TableCell>
+                          <TableCell className="text-sm text-muted-foreground">{event.source}</TableCell>
+                          <TableCell className="text-sm text-muted-foreground">
+                            {event.country ?? '—'}
+                            {event.asn_org ? ` (${event.asn_org})` : ''}
+                          </TableCell>
+                          <TableCell className="text-xs text-muted-foreground font-mono max-w-[200px] truncate">
+                            {event.log_path ?? '—'}
+                          </TableCell>
+                          <TableCell className="text-xs text-muted-foreground whitespace-nowrap">
+                            <p>{formatTimestamp(event.created_at)}</p>
+                            <p>{formatRelativeTime(event.created_at)}</p>
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </div>
+              </div>
+            )}
+
+            {/* Decision events */}
+            {decisionEvents.length > 0 && (
+              <div className="space-y-2">
+                <h3 className="text-xs font-medium text-muted-foreground">IP Decisions</h3>
+                <div className="rounded-lg border border-border overflow-hidden">
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>IP</TableHead>
+                        <TableHead>Action</TableHead>
+                        <TableHead>Reason</TableHead>
+                        <TableHead>Source</TableHead>
+                        <TableHead>Country</TableHead>
+                        <TableHead>Expires</TableHead>
+                        <TableHead>Timestamp</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {decisionEvents.map((decision) => (
+                        <TableRow key={decision.id}>
+                          <TableCell className="font-mono text-sm">
+                            <Link
+                              href={`/ip-monitor/lookup?ip=${encodeURIComponent(decision.ip)}`}
+                              className="text-blue-400 hover:text-blue-300 hover:underline"
+                            >
+                              {decision.ip}
+                            </Link>
+                          </TableCell>
+                          <TableCell>
+                            <Badge className="bg-red-950/70 text-red-300 border border-red-900/70">
+                              {decision.action}
+                            </Badge>
+                          </TableCell>
+                          <TableCell className="text-sm text-muted-foreground max-w-xs truncate">
+                            {decision.reason}
+                          </TableCell>
+                          <TableCell className="text-sm text-muted-foreground">{decision.source}</TableCell>
+                          <TableCell className="text-sm text-muted-foreground">
+                            {decision.country ?? '—'}
+                            {decision.asn_org ? ` (${decision.asn_org})` : ''}
+                          </TableCell>
+                          <TableCell className="text-xs text-muted-foreground whitespace-nowrap">
+                            {decision.expires_at ? formatTimestamp(decision.expires_at) : 'Permanent'}
+                          </TableCell>
+                          <TableCell className="text-xs text-muted-foreground whitespace-nowrap">
+                            <p>{formatTimestamp(decision.created_at)}</p>
+                            <p>{formatRelativeTime(decision.created_at)}</p>
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+      </section>
     </div>
   );
+}
+
+function TelemetryLevelBadge({ level }: { level: string }) {
+  const cls =
+    level === 'alert'
+      ? 'bg-red-950/60 text-red-300 border border-red-700'
+      : level === 'block'
+      ? 'bg-orange-950/50 text-orange-300 border border-orange-700'
+      : level === 'listed'
+      ? 'bg-amber-950/50 text-amber-300 border border-amber-700'
+      : 'bg-gray-900/70 text-gray-200 border border-gray-700';
+  return <Badge className={cls}>{level}</Badge>;
 }
 
 function StateBadge({ state }: { state: string }) {

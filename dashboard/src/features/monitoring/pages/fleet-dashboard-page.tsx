@@ -21,7 +21,7 @@ import {
   summarizeAlertCount,
 } from '@/src/features/monitoring/utils';
 
-const POLL_INTERVAL_MS = 10_000;
+const POLL_INTERVAL_MS = 30_000;
 
 export function FleetDashboardPage() {
   const [snapshot, setSnapshot] = useState<DashboardSnapshot | null>(null);
@@ -127,7 +127,7 @@ export function FleetDashboardPage() {
   }
 
   if (loading && !snapshot) {
-    return <div className="mx-auto max-w-7xl px-4 py-10 text-sm text-slate-400">Loading dashboard…</div>;
+    return <div className="px-6 py-10 text-sm text-slate-400">Loading dashboard…</div>;
   }
 
   const health = snapshot?.health.status === 'ok' ? 'ok' : 'error';
@@ -138,7 +138,7 @@ export function FleetDashboardPage() {
   const elevatedAlertCount = snapshot ? summarizeAlertCount(snapshot.alerts) : 0;
 
   return (
-    <div className="mx-auto max-w-7xl px-4 py-10 space-y-8">
+    <div className="px-6 py-10 space-y-8">
       <div className="flex flex-wrap items-start justify-between gap-6">
         <div className="space-y-3">
           <div className="inline-flex items-center rounded-full border border-sky-500/20 bg-sky-500/10 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.28em] text-sky-300">

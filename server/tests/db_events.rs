@@ -1,5 +1,6 @@
 mod support;
 
+use chrono::{Duration as ChronoDuration, Utc};
 use support::test_db;
 
 #[tokio::test]
@@ -260,6 +261,102 @@ async fn shared_risk_profile_exposes_cross_agent_surge() {
 
     assert_eq!(category.label, "shared:surge");
     assert_eq!(category.force_threshold, None);
+}
+
+#[tokio::test]
+async fn shared_risk_profile_ignores_telemetry_outside_window() {
+    let db = test_db().await;
+    let recent = Utc::now() - ChronoDuration::seconds(30);
+    let stale = Utc::now() - ChronoDuration::minutes(30);
+
+    for idx in 0..5 {
+        let agent = if idx % 2 == 0 { "agent-a" } else { "agent-b" };
+        let ip = format!("198.51.100.{}", idx + 10);
+        db.insert_telemetry_event_with_timestamp(
+            &ip,
+            "Web SQL Injection attempt",
+            "alert",
+            agent,
+            None,
+            Some(&recent.to_rfc3339()),
+        )
+        .await
+        .unwrap();
+    }
+
+    db.insert_telemetry_event_with_timestamp(
+        "198.51.100.250",
+        "Web SQL Injection attempt",
+        "block",
+        "agent-a",
+        None,
+        Some(&stale.to_rfc3339()),
+    )
+    .await
+    .unwrap();
+
+    let profile = db.compute_shared_risk_profile(600).await.unwrap();
+    let category = profile
+        .categories
+        .iter()
+        .find(|row| row.category == "Web SQL Injection attempt")
+        .expect("surge category should exist");
+
+    assert_eq!(category.event_count, 5);
+}
+
+#[tokio::test]
+async fn detect_campaign_ips_ignores_stale_events_and_existing_decisions() {
+    let db = test_db().await;
+    let recent = Utc::now() - ChronoDuration::seconds(30);
+    let stale = Utc::now() - ChronoDuration::minutes(30);
+
+    db.insert_telemetry_event_with_timestamp(
+        "203.0.113.10",
+        "Invalid SSH user",
+        "alert",
+        "agent-a",
+        None,
+        Some(&recent.to_rfc3339()),
+    )
+    .await
+    .unwrap();
+    db.insert_telemetry_event_with_timestamp(
+        "203.0.113.11",
+        "Invalid SSH user",
+        "alert",
+        "agent-b",
+        None,
+        Some(&recent.to_rfc3339()),
+    )
+    .await
+    .unwrap();
+    db.insert_telemetry_event_with_timestamp(
+        "203.0.113.12",
+        "Invalid SSH user",
+        "alert",
+        "agent-c",
+        None,
+        Some(&stale.to_rfc3339()),
+    )
+    .await
+    .unwrap();
+    db.insert_decision_with_timestamp(
+        "203.0.113.10",
+        "Campaign auto-block: Invalid SSH user",
+        "block",
+        "campaign",
+        Some(&recent.to_rfc3339()),
+    )
+    .await
+    .unwrap()
+    .expect("decision should be inserted");
+
+    let campaigns = db.detect_campaign_ips(600, 2, 2).await.unwrap();
+    assert_eq!(
+        campaigns,
+        vec![("203.0.113.11".to_string(), "Invalid SSH user".to_string())]
+    );
 }
 
 #[tokio::test]

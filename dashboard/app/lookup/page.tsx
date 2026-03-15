@@ -173,7 +173,7 @@ function IpLookupPageContent() {
   };
 
   return (
-    <div className="max-w-6xl mx-auto px-4 py-8 space-y-6">
+    <div className="px-6 py-8 space-y-6">
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
           <p className="text-xs uppercase tracking-[0.3em] text-muted-foreground">IP Lookup</p>
@@ -448,7 +448,7 @@ function IpLookupPageContent() {
 
 function LookupPageFallback() {
   return (
-    <div className="max-w-6xl mx-auto px-4 py-8">
+    <div className="px-6 py-8">
       <EmptyState title="Loading IP lookup…" body="Preparing the lookup page." />
     </div>
   );

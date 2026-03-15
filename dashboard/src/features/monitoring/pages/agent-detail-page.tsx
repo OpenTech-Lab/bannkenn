@@ -22,7 +22,7 @@ import {
   formatTimestamp,
 } from '@/src/features/monitoring/utils';
 
-const POLL_INTERVAL_MS = 10_000;
+const POLL_INTERVAL_MS = 30_000;
 
 export function AgentDetailPage() {
   const params = useParams<{ id: string }>();
@@ -121,12 +121,12 @@ export function AgentDetailPage() {
   const behaviorEvents = useMemo(() => snapshot?.behaviorEvents.slice(0, 30) ?? [], [snapshot]);
 
   if (loading && !snapshot) {
-    return <div className="mx-auto max-w-7xl px-4 py-10 text-sm text-slate-400">Loading agent detail…</div>;
+    return <div className="px-6 py-10 text-sm text-slate-400">Loading agent detail…</div>;
   }
 
   if (error && !snapshot) {
     return (
-      <div className="mx-auto max-w-7xl px-4 py-10 space-y-4">
+      <div className="px-6 py-10 space-y-4">
         <p className="text-sm text-red-300">{error}</p>
         <Link href="/behavior/fleet" className="text-sm text-sky-300 transition-colors hover:text-sky-200">
           Back to fleet
@@ -142,7 +142,7 @@ export function AgentDetailPage() {
   const state = currentContainment?.state ?? 'normal';
 
   return (
-    <div className="mx-auto max-w-7xl px-4 py-10 space-y-8">
+    <div className="px-6 py-10 space-y-8">
       <div className="flex flex-wrap items-start justify-between gap-6">
         <div className="space-y-3">
           <Link href="/behavior/fleet" className="text-sm text-sky-300 transition-colors hover:text-sky-200">

@@ -56,7 +56,7 @@ export default function BehaviorIncidentDetailPage() {
 
   if (loading) {
     return (
-      <div className="max-w-6xl mx-auto px-4 py-8">
+      <div className="px-6 py-8">
         <p className="text-sm text-muted-foreground">Loading incident detail...</p>
       </div>
     );
@@ -64,7 +64,7 @@ export default function BehaviorIncidentDetailPage() {
 
   if (error && !snapshot) {
     return (
-      <div className="max-w-6xl mx-auto px-4 py-8 space-y-4">
+      <div className="px-6 py-8 space-y-4">
         <div className="rounded-xl border border-red-900/60 bg-red-950/40 px-4 py-3 text-sm text-red-300">
           {error}
         </div>
@@ -78,7 +78,7 @@ export default function BehaviorIncidentDetailPage() {
   if (!snapshot || !incident) return null;
 
   return (
-    <div className="max-w-6xl mx-auto px-4 py-8 space-y-6">
+    <div className="px-6 py-8 space-y-6">
       <div>
         <Link href="/behavior/incidents" className="text-sm text-blue-400 hover:text-blue-300">
           Back to incidents

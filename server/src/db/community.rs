@@ -1,4 +1,5 @@
 use super::*;
+use sqlx::QueryBuilder;
 
 impl Db {
     pub async fn list_community_ips(&self, limit: i64) -> anyhow::Result<Vec<CommunityIpRow>> {
@@ -410,15 +411,16 @@ impl Db {
         min_distinct_ips: usize,
         min_distinct_agents: usize,
     ) -> anyhow::Result<Vec<(String, String)>> {
+        let cutoff = window_cutoff(window_secs);
         let rows = sqlx::query_as::<_, (String, String, String)>(
             r#"
             SELECT ip, reason, source
             FROM telemetry_events
-            WHERE datetime(created_at) > datetime('now', '-' || ? || ' seconds')
+            WHERE created_at >= ?
               AND level IN ('alert', 'block')
             "#,
         )
-        .bind(window_secs)
+        .bind(&cutoff)
         .fetch_all(&self.0)
         .await?;
 
@@ -458,13 +460,32 @@ impl Db {
             }
         }
 
-        let already_blocked: HashSet<String> =
-            sqlx::query_as::<_, (String,)>("SELECT DISTINCT ip FROM decisions")
+        let candidate_ips = candidates
+            .iter()
+            .map(|(ip, _)| ip.clone())
+            .collect::<HashSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
+
+        let already_blocked = if candidate_ips.is_empty() {
+            HashSet::new()
+        } else {
+            let mut query =
+                QueryBuilder::<Sqlite>::new("SELECT DISTINCT ip FROM decisions WHERE ip IN (");
+            let mut separated = query.separated(", ");
+            for ip in &candidate_ips {
+                separated.push_bind(ip);
+            }
+            separated.push_unseparated(")");
+
+            query
+                .build_query_as::<(String,)>()
                 .fetch_all(&self.0)
                 .await?
                 .into_iter()
                 .map(|(ip,)| ip)
-                .collect();
+                .collect()
+        };
 
         Ok(candidates
             .into_iter()
@@ -479,15 +500,16 @@ impl Db {
         use std::collections::{HashMap, HashSet};
 
         let window_secs = window_secs.max(60);
+        let cutoff = window_cutoff(window_secs);
         let rows = sqlx::query_as::<_, (String, String, String, String)>(
             r#"
             SELECT ip, reason, level, source
             FROM telemetry_events
-            WHERE datetime(created_at) > datetime('now', '-' || ? || ' seconds')
+            WHERE created_at >= ?
               AND level IN ('alert', 'block', 'listed')
             "#,
         )
-        .bind(window_secs)
+        .bind(&cutoff)
         .fetch_all(&self.0)
         .await?;
 

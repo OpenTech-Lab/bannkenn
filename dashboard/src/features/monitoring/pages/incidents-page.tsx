@@ -50,11 +50,11 @@ export function IncidentsPage() {
   }, []);
 
   if (loading && !snapshot) {
-    return <div className="mx-auto max-w-7xl px-4 py-10 text-sm text-slate-400">Loading incidents…</div>;
+    return <div className="px-6 py-10 text-sm text-slate-400">Loading incidents…</div>;
   }
 
   return (
-    <div className="mx-auto max-w-7xl px-4 py-10 space-y-8">
+    <div className="px-6 py-10 space-y-8">
       <div className="space-y-4">
         <Link href="/behavior" className="text-sm text-sky-300 transition-colors hover:text-sky-200">
           Back to overview

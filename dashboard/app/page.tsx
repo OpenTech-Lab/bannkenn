@@ -12,6 +12,8 @@ import {
   Cell,
 } from 'recharts';
 import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
 import {
   Table,
   TableBody,
@@ -20,8 +22,31 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table';
-import { fetchDashboardSnapshot } from '@/src/features/monitoring/api';
-import { DashboardSnapshot } from '@/src/features/monitoring/types';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog';
+import { toast } from 'sonner';
+import {
+  fetchDashboardSnapshot,
+  updateAgentNickname,
+  deleteAgent,
+} from '@/src/features/monitoring/api';
+import { AgentStatus, DashboardSnapshot } from '@/src/features/monitoring/types';
 import {
   buildFleetAgentSummaries,
   formatRelativeTime,
@@ -50,7 +75,16 @@ interface Decision {
   created_at: string;
 }
 
-const POLL_INTERVAL_MS = 10_000;
+interface TelemetryLog {
+  id: number;
+  ip: string;
+  level: string;
+  source: string;
+  reason: string;
+  created_at: string;
+}
+
+const POLL_INTERVAL_MS = 30_000;
 
 const SEVERITY_COLORS: Record<string, string> = {
   low: '#64748b',
@@ -71,28 +105,31 @@ export default function HomeDashboard() {
   const [feeds, setFeeds] = useState<CommunityFeed[]>([]);
   const [whitelist, setWhitelist] = useState<WhitelistEntry[]>([]);
   const [decisions, setDecisions] = useState<Decision[]>([]);
+  const [telemetryLogs, setTelemetryLogs] = useState<TelemetryLog[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
+  const [editingAgent, setEditingAgent] = useState<AgentStatus | null>(null);
+  const [editNickname, setEditNickname] = useState('');
+  const [editSaving, setEditSaving] = useState(false);
+  const [deletingAgent, setDeletingAgent] = useState<AgentStatus | null>(null);
+  const [deleteLoading, setDeleteLoading] = useState(false);
 
-  const fetchAll = useCallback(async () => {
+  const refreshDashboard = useCallback(async () => {
     try {
-      const [snap, feedsRes, whitelistRes, decisionsRes] = await Promise.all([
+      const [snap, decisionsRes, telemetryRes] = await Promise.all([
         fetchDashboardSnapshot(),
-        fetch('/api/community/feeds'),
-        fetch('/api/whitelist'),
         fetch('/api/decisions?limit=5'),
+        fetch('/api/telemetry?limit=500'),
       ]);
 
-      const feedsData = feedsRes.ok ? await feedsRes.json() : [];
-      const whitelistData = whitelistRes.ok ? await whitelistRes.json() : [];
       const decisionsData = decisionsRes.ok ? await decisionsRes.json() : [];
+      const telemetryData = telemetryRes.ok ? await telemetryRes.json() : [];
 
       startTransition(() => {
         setSnapshot(snap);
-        setFeeds(feedsData);
-        setWhitelist(whitelistData);
         setDecisions(decisionsData);
+        setTelemetryLogs(telemetryData);
         setError(null);
         setLoading(false);
         setLastUpdated(new Date());
@@ -105,16 +142,77 @@ export default function HomeDashboard() {
     }
   }, []);
 
+  const fetchOverviewMetadata = useCallback(async () => {
+    try {
+      const [feedsRes, whitelistRes] = await Promise.all([
+        fetch('/api/community/feeds'),
+        fetch('/api/whitelist'),
+      ]);
+
+      const feedsData = feedsRes.ok ? await feedsRes.json() : [];
+      const whitelistData = whitelistRes.ok ? await whitelistRes.json() : [];
+
+      startTransition(() => {
+        setFeeds(feedsData);
+        setWhitelist(whitelistData);
+      });
+    } catch {
+      // Ignore metadata refresh failures; the live dashboard state is handled separately.
+    }
+  }, []);
+
   useEffect(() => {
-    void fetchAll();
-    const id = window.setInterval(() => void fetchAll(), POLL_INTERVAL_MS);
+    void refreshDashboard();
+    void fetchOverviewMetadata();
+    const id = window.setInterval(() => void refreshDashboard(), POLL_INTERVAL_MS);
     return () => window.clearInterval(id);
-  }, [fetchAll]);
+  }, [fetchOverviewMetadata, refreshDashboard]);
+
+  async function handleEditSave() {
+    if (!editingAgent) return;
+    setEditSaving(true);
+    try {
+      await updateAgentNickname(editingAgent.id, editNickname);
+      toast.success(`Nickname updated for ${editingAgent.name}`);
+      setEditingAgent(null);
+      void refreshDashboard();
+    } catch (cause) {
+      toast.error(cause instanceof Error ? cause.message : 'Failed to update nickname');
+    } finally {
+      setEditSaving(false);
+    }
+  }
+
+  async function handleDelete() {
+    if (!deletingAgent) return;
+    setDeleteLoading(true);
+    try {
+      await deleteAgent(deletingAgent.id);
+      toast.success(`Agent ${deletingAgent.nickname?.trim() || deletingAgent.name} deleted`);
+      setDeletingAgent(null);
+      void refreshDashboard();
+    } catch (cause) {
+      toast.error(cause instanceof Error ? cause.message : 'Failed to delete agent');
+    } finally {
+      setDeleteLoading(false);
+    }
+  }
 
   const summaries = useMemo(
     () => (snapshot ? buildFleetAgentSummaries(snapshot) : []),
     [snapshot]
   );
+
+  // Per-agent telemetry counts: sum of block/listed/alert events
+  const telemetryCountByAgent = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const log of telemetryLogs) {
+      if (log.level === 'block' || log.level === 'listed' || log.level === 'alert') {
+        counts.set(log.source, (counts.get(log.source) ?? 0) + 1);
+      }
+    }
+    return counts;
+  }, [telemetryLogs]);
 
   const onlineAgents = snapshot?.agents.filter((a) => a.status === 'online').length ?? 0;
   const activeContainment = summaries.filter((s) =>
@@ -293,8 +391,10 @@ export default function HomeDashboard() {
                   <TableHead>Status</TableHead>
                   <TableHead>Containment</TableHead>
                   <TableHead className="text-right">Heat</TableHead>
+                  <TableHead className="text-right">IP Monitor</TableHead>
                   <TableHead className="text-right">Incidents</TableHead>
                   <TableHead>Last Seen</TableHead>
+                  <TableHead className="text-right">Actions</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -336,9 +436,58 @@ export default function HomeDashboard() {
                         {s.heat}
                       </span>
                     </TableCell>
-                    <TableCell className="text-right tabular-nums">{s.incidentCount}</TableCell>
+                    <TableCell className="text-right tabular-nums">
+                      {(() => {
+                        const count = telemetryCountByAgent.get(s.agent.name) ?? 0;
+                        return count > 0 ? (
+                          <Link
+                            href={`/behavior/agents/${s.agent.id}#ip-monitor-logs`}
+                            className="text-blue-400 hover:text-blue-300 hover:underline"
+                          >
+                            {count}
+                          </Link>
+                        ) : (
+                          <span className="text-muted-foreground">0</span>
+                        );
+                      })()}
+                    </TableCell>
+                    <TableCell className="text-right tabular-nums">
+                      {s.incidentCount > 0 ? (
+                        <Link
+                          href={`/behavior/agents/${s.agent.id}#related-incidents`}
+                          className="text-blue-400 hover:text-blue-300 hover:underline"
+                        >
+                          {s.incidentCount}
+                        </Link>
+                      ) : (
+                        <span className="text-muted-foreground">0</span>
+                      )}
+                    </TableCell>
                     <TableCell className="text-xs text-muted-foreground whitespace-nowrap">
                       {s.agent.last_seen_at ? formatRelativeTime(s.agent.last_seen_at) : 'Never'}
+                    </TableCell>
+                    <TableCell className="text-right">
+                      <div className="flex justify-end gap-1">
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="h-7 px-2 text-xs"
+                          onClick={() => {
+                            setEditingAgent(s.agent);
+                            setEditNickname(s.agent.nickname ?? '');
+                          }}
+                        >
+                          Edit
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="h-7 px-2 text-xs text-red-400 border-red-900/50 hover:bg-red-950/40 hover:text-red-300"
+                          onClick={() => setDeletingAgent(s.agent)}
+                        >
+                          Delete
+                        </Button>
+                      </div>
                     </TableCell>
                   </TableRow>
                 ))}
@@ -465,6 +614,56 @@ export default function HomeDashboard() {
       <p className="text-center text-xs text-muted-foreground">
         Auto-refreshes every {POLL_INTERVAL_MS / 1000}s
       </p>
+
+      {/* Edit nickname dialog */}
+      <Dialog open={editingAgent !== null} onOpenChange={(open) => { if (!open) setEditingAgent(null); }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Edit Agent Nickname</DialogTitle>
+            <DialogDescription>
+              Change the display name for {editingAgent?.name}.
+            </DialogDescription>
+          </DialogHeader>
+          <Input
+            value={editNickname}
+            onChange={(e) => setEditNickname(e.target.value)}
+            placeholder="Enter nickname"
+            onKeyDown={(e) => { if (e.key === 'Enter') void handleEditSave(); }}
+          />
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setEditingAgent(null)}>Cancel</Button>
+            <Button onClick={() => void handleEditSave()} disabled={editSaving}>
+              {editSaving ? 'Saving...' : 'Save'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Delete confirmation dialog */}
+      <AlertDialog open={deletingAgent !== null} onOpenChange={(open) => { if (!open) setDeletingAgent(null); }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete Agent</AlertDialogTitle>
+            <AlertDialogDescription>
+              Are you sure you want to delete{' '}
+              <span className="font-semibold text-white">
+                {deletingAgent?.nickname?.trim() || deletingAgent?.name}
+              </span>
+              ? This action cannot be undone. All associated telemetry, decisions, and containment history will be removed.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={deleteLoading}>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => void handleDelete()}
+              disabled={deleteLoading}
+              className="bg-red-600 hover:bg-red-700 text-white"
+            >
+              {deleteLoading ? 'Deleting...' : 'Delete'}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

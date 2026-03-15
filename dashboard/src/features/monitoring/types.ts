@@ -173,17 +173,43 @@ export type DashboardSnapshot = {
   behaviorEvents: BehaviorEvent[];
 };
 
+export type IncidentDetailSnapshot = {
+  detail: IncidentDetail;
+  agents: AgentStatus[];
+};
+
+export type TelemetryEvent = {
+  id: number;
+  ip: string;
+  reason: string;
+  level: string;
+  source: string;
+  log_path?: string | null;
+  country?: string | null;
+  asn_org?: string | null;
+  created_at: string;
+};
+
+export type Decision = {
+  id: number;
+  ip: string;
+  reason: string;
+  action: string;
+  source: string;
+  country?: string | null;
+  asn_org?: string | null;
+  created_at: string;
+  expires_at?: string | null;
+};
+
 export type AgentDetailSnapshot = {
   agent: AgentStatus;
   behaviorEvents: BehaviorEvent[];
   containmentEvents: ContainmentEvent[];
   containmentActions: ContainmentAction[];
   relatedIncidents: Incident[];
-};
-
-export type IncidentDetailSnapshot = {
-  detail: IncidentDetail;
-  agents: AgentStatus[];
+  telemetryEvents: TelemetryEvent[];
+  decisions: Decision[];
 };
 
 export type ContainmentActionRequest = {

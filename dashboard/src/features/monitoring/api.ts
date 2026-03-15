@@ -7,11 +7,13 @@ import {
   ContainmentEvent,
   ContainmentStatus,
   DashboardSnapshot,
+  Decision,
   HealthStatus,
   Incident,
   IncidentDetail,
   IncidentDetailSnapshot,
   AdminAlert,
+  TelemetryEvent,
 } from '@/src/features/monitoring/types';
 
 async function readError(response: Response) {
@@ -59,12 +61,14 @@ export async function fetchDashboardSnapshot(): Promise<DashboardSnapshot> {
 }
 
 export async function fetchAgentDetailSnapshot(agentId: string): Promise<AgentDetailSnapshot> {
-  const [agent, behaviorEvents, containmentEvents, containmentActions, incidents] = await Promise.all([
+  const [agent, behaviorEvents, containmentEvents, containmentActions, incidents, telemetryEvents, decisions] = await Promise.all([
     readJson<AgentStatus>(`/api/agents/${agentId}`),
     readJson<BehaviorEvent[]>(`/api/agents/${agentId}/behavior-events?limit=120`),
     readJson<ContainmentEvent[]>(`/api/agents/${agentId}/containment?limit=120`),
     readJson<ContainmentAction[]>(`/api/agents/${agentId}/containment-actions?limit=120`),
     readJson<Incident[]>('/api/incidents?limit=120'),
+    readJson<TelemetryEvent[]>(`/api/agents/${agentId}/telemetry?limit=200`),
+    readJson<Decision[]>(`/api/agents/${agentId}/decisions?limit=200`),
   ]);
 
   return {
@@ -73,7 +77,33 @@ export async function fetchAgentDetailSnapshot(agentId: string): Promise<AgentDe
     containmentEvents,
     containmentActions,
     relatedIncidents: incidents.filter((incident) => incident.affected_agents.includes(agent.name)),
+    telemetryEvents,
+    decisions,
   };
+}
+
+export async function updateAgentNickname(agentId: number, nickname: string) {
+  const response = await fetch(`/api/agents/${agentId}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ nickname }),
+  });
+
+  if (!response.ok) {
+    throw new Error(await readError(response));
+  }
+
+  return (await response.json()) as AgentStatus;
+}
+
+export async function deleteAgent(agentId: number) {
+  const response = await fetch(`/api/agents/${agentId}`, {
+    method: 'DELETE',
+  });
+
+  if (!response.ok) {
+    throw new Error(await readError(response));
+  }
 }
 
 export async function fetchIncidentDetailSnapshot(

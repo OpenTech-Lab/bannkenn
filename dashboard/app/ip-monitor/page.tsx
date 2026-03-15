@@ -1,7 +1,7 @@
 'use client';
 
 import Link from 'next/link';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Badge } from '@/components/ui/badge';
 import {
   Table,
@@ -37,23 +37,53 @@ interface Decision {
   created_at: string;
 }
 
+interface TelemetryLog {
+  id: number;
+  ip: string;
+  level: string;
+  source: string;
+  reason: string;
+  created_at: string;
+}
+
+interface AgentInfo {
+  id: number;
+  name: string;
+  nickname?: string | null;
+  status: string;
+}
+
+interface AgentTelemetrySummary {
+  agent: AgentInfo;
+  blocked: number;
+  alert: number;
+  listed: number;
+  total: number;
+}
+
 export default function IpMonitorOverview() {
   const [feeds, setFeeds] = useState<CommunityFeed[]>([]);
   const [whitelist, setWhitelist] = useState<WhitelistEntry[]>([]);
   const [decisions, setDecisions] = useState<Decision[]>([]);
+  const [telemetryLogs, setTelemetryLogs] = useState<TelemetryLog[]>([]);
+  const [agents, setAgents] = useState<AgentInfo[]>([]);
   const [loading, setLoading] = useState(true);
 
   const fetchData = useCallback(async () => {
     try {
-      const [feedsRes, whitelistRes, decisionsRes] = await Promise.all([
+      const [feedsRes, whitelistRes, decisionsRes, telemetryRes, agentsRes] = await Promise.all([
         fetch('/api/community/feeds'),
         fetch('/api/whitelist'),
         fetch('/api/decisions?limit=10'),
+        fetch('/api/telemetry?limit=1000'),
+        fetch('/api/agents'),
       ]);
 
       if (feedsRes.ok) setFeeds(await feedsRes.json());
       if (whitelistRes.ok) setWhitelist(await whitelistRes.json());
       if (decisionsRes.ok) setDecisions(await decisionsRes.json());
+      if (telemetryRes.ok) setTelemetryLogs(await telemetryRes.json());
+      if (agentsRes.ok) setAgents(await agentsRes.json());
     } finally {
       setLoading(false);
     }
@@ -65,16 +95,40 @@ export default function IpMonitorOverview() {
 
   const totalCommunityIps = feeds.reduce((sum, f) => sum + f.ip_count, 0);
 
+  const agentTelemetrySummaries = useMemo<AgentTelemetrySummary[]>(() => {
+    const countsMap = new Map<string, { blocked: number; alert: number; listed: number }>();
+    for (const log of telemetryLogs) {
+      if (!countsMap.has(log.source)) {
+        countsMap.set(log.source, { blocked: 0, alert: 0, listed: 0 });
+      }
+      const counts = countsMap.get(log.source)!;
+      if (log.level === 'block') counts.blocked++;
+      else if (log.level === 'alert') counts.alert++;
+      else if (log.level === 'listed') counts.listed++;
+    }
+
+    return agents
+      .map((agent) => {
+        const counts = countsMap.get(agent.name) ?? { blocked: 0, alert: 0, listed: 0 };
+        return {
+          agent,
+          ...counts,
+          total: counts.blocked + counts.alert + counts.listed,
+        };
+      })
+      .sort((a, b) => b.total - a.total);
+  }, [telemetryLogs, agents]);
+
   if (loading) {
     return (
-      <div className="max-w-6xl mx-auto px-4 py-8">
+      <div className="px-6 py-8">
         <p className="text-sm text-muted-foreground">Loading IP Monitor overview...</p>
       </div>
     );
   }
 
   return (
-    <div className="max-w-6xl mx-auto px-4 py-8 space-y-6">
+    <div className="px-6 py-8 space-y-6">
       <div>
         <p className="text-xs uppercase tracking-[0.3em] text-muted-foreground">IP Monitor</p>
         <h1 className="text-2xl font-bold text-white mt-2">IP Activity Overview</h1>
@@ -90,6 +144,84 @@ export default function IpMonitorOverview() {
         <StatCard label="Whitelisted" value={whitelist.length} accent="green" />
         <StatCard label="Recent Blocks" value={decisions.length} accent="orange" />
       </div>
+
+      {/* Per-agent IP monitor summary */}
+      {agentTelemetrySummaries.length > 0 && (
+        <section className="rounded-xl border border-border bg-card p-5 space-y-4">
+          <h2 className="text-xs font-semibold text-muted-foreground uppercase tracking-[0.3em]">
+            Per-Agent IP Monitor Activity
+          </h2>
+          <div className="rounded-lg border border-border overflow-hidden">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Agent</TableHead>
+                  <TableHead>Status</TableHead>
+                  <TableHead className="text-right">Blocked</TableHead>
+                  <TableHead className="text-right">Alert</TableHead>
+                  <TableHead className="text-right">Listed</TableHead>
+                  <TableHead className="text-right">Total</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {agentTelemetrySummaries.map((s) => (
+                  <TableRow key={s.agent.id}>
+                    <TableCell className="font-medium">
+                      <Link
+                        href={`/behavior/agents/${s.agent.id}#ip-monitor-logs`}
+                        className="text-blue-400 hover:text-blue-300 hover:underline"
+                      >
+                        {s.agent.nickname?.trim() || s.agent.name}
+                      </Link>
+                    </TableCell>
+                    <TableCell>
+                      <Badge className={s.agent.status === 'online'
+                        ? 'bg-emerald-950/50 text-emerald-300 border border-emerald-700'
+                        : 'bg-red-950/50 text-red-300 border border-red-700'
+                      }>
+                        {s.agent.status}
+                      </Badge>
+                    </TableCell>
+                    <TableCell className="text-right tabular-nums">
+                      {s.blocked > 0 ? (
+                        <span className="text-orange-400">{s.blocked}</span>
+                      ) : (
+                        <span className="text-muted-foreground">0</span>
+                      )}
+                    </TableCell>
+                    <TableCell className="text-right tabular-nums">
+                      {s.alert > 0 ? (
+                        <span className="text-red-400">{s.alert}</span>
+                      ) : (
+                        <span className="text-muted-foreground">0</span>
+                      )}
+                    </TableCell>
+                    <TableCell className="text-right tabular-nums">
+                      {s.listed > 0 ? (
+                        <span className="text-amber-400">{s.listed}</span>
+                      ) : (
+                        <span className="text-muted-foreground">0</span>
+                      )}
+                    </TableCell>
+                    <TableCell className="text-right tabular-nums font-semibold">
+                      {s.total > 0 ? (
+                        <Link
+                          href={`/behavior/agents/${s.agent.id}#ip-monitor-logs`}
+                          className="text-white hover:text-blue-300 hover:underline"
+                        >
+                          {s.total}
+                        </Link>
+                      ) : (
+                        <span className="text-muted-foreground">0</span>
+                      )}
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </div>
+        </section>
+      )}
 
       {/* Quick navigation cards */}
       <div className="grid gap-4 sm:grid-cols-3">

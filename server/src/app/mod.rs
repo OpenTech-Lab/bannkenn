@@ -62,6 +62,27 @@ pub async fn run_server() -> anyhow::Result<()> {
     feeds::start_feed_task(db.clone()).await;
     info!("Feed task started");
 
+    if config.db_path != ":memory:" {
+        let db_for_sqlite_maintenance = db.clone();
+        tokio::spawn(async move {
+            let interval = tokio::time::Duration::from_secs(60);
+            info!("SQLite WAL maintenance task started (interval=60s)");
+
+            loop {
+                tokio::time::sleep(interval).await;
+
+                match db_for_sqlite_maintenance.maintain_wal().await {
+                    Ok(Some(stats)) => info!(
+                        "SQLite WAL truncated after growth: busy={} log_frames={} checkpointed_frames={}",
+                        stats.busy, stats.log_frames, stats.checkpointed_frames
+                    ),
+                    Ok(None) => {}
+                    Err(err) => error!("SQLite WAL maintenance failed: {}", err),
+                }
+            }
+        });
+    }
+
     let db_for_campaign = db.clone();
     tokio::spawn(async move {
         let interval = tokio::time::Duration::from_secs(60);

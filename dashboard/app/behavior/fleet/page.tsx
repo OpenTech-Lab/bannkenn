@@ -26,7 +26,7 @@ import {
 } from '@/src/features/monitoring/utils';
 import Link from 'next/link';
 
-const POLL_INTERVAL_MS = 10_000;
+const POLL_INTERVAL_MS = 30_000;
 
 export default function FleetPage() {
   const [snapshot, setSnapshot] = useState<DashboardSnapshot | null>(null);
@@ -107,14 +107,14 @@ export default function FleetPage() {
 
   if (loading) {
     return (
-      <div className="max-w-6xl mx-auto px-4 py-8">
+      <div className="px-6 py-8">
         <p className="text-sm text-muted-foreground">Loading fleet data...</p>
       </div>
     );
   }
 
   return (
-    <div className="max-w-6xl mx-auto px-4 py-8 space-y-6">
+    <div className="px-6 py-8 space-y-6">
       <div className="flex items-start justify-between gap-4">
         <div>
           <p className="text-xs uppercase tracking-[0.3em] text-muted-foreground">

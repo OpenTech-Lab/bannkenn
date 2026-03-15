@@ -1,4 +1,29 @@
+## Investigation — 2026-03-15
+- [x] Review existing project lessons for relevant workflow constraints
+- [x] Trace whether `z_wr_iss` exists literally or as a derived identifier in agent/server code
+- [x] Confirm whether any server runtime path invokes, emits, or stores it
+- [x] Add review notes with the conclusion
+
+### Review
+- `z_wr_iss` is not a BannKenn symbol. The repo contains no literal reference to that name, and the server behavior/containment routes only ingest agent payloads and queue containment commands.
+- Live process inspection on 2026-03-15 showed `z_wr_iss` as kernel threads (`[z_wr_iss]`) on a host with the `zfs` kernel module loaded and `/home` mounted from a ZFS dataset.
+- The heavier BannKenn CPU consumer was `bannkenn-server` itself, with multiple SQLite worker threads active; the likely relationship is server write load causing ZFS write-back activity rather than the server directly "calling" `z_wr_iss`.
+
 # BannKenn vNext — Implementation Plan
+
+## Server CPU / ZFS Pressure Investigation — 2026-03-15
+- [x] Capture current runtime signals: top CPU threads, accessible service logs, and likely SQLite-heavy server paths
+- [x] Trace the dominant write path in code and confirm the root cause of excess work
+- [x] Implement the minimal change that reduces CPU and ZFS write pressure without changing expected behavior
+- [x] Verify with targeted tests/runtime checks and add a review summary
+
+### Review
+- Live inspection showed the server running inside Docker with SQLite on `/data/bannkenn.db` and a write-ahead log that had grown to roughly `495 MB`, which lined up with the `z_wr_iss` ZFS write-back threads seen in `top`.
+- Server-side fixes: limited the SQLite pool to 4 connections, enabled explicit WAL maintenance with startup truncation plus a periodic maintenance task, and rewrote the time-window telemetry queries so they compare directly against RFC3339 cutoffs instead of wrapping `created_at` in `datetime(...)`, allowing the existing timestamp indexes to work.
+- The campaign-detection path no longer scans the full `decisions` table to discover already-blocked IPs; it now only looks up the candidate IPs for the current detection batch.
+- Dashboard-side fixes: reduced several 10-second polling loops to 30 seconds, slowed the dedicated community page polling to 2 minutes, removed the community-feed summary from the home page’s recurring refresh path, and added a 60-second cache in the dashboard API proxy for `/api/community/feeds`.
+- Verification: `cargo fmt --all`, `cargo test -p bannkenn-server`, and `npm run build` all succeeded. After redeploying the containers, the live WAL dropped from roughly `495 MB` to `64 MB`, and the previously repeating `community_feeds` summary query stopped spamming the server logs every ~10 seconds.
+- Residual hotspot: startup still performs a full GeoIP-backfill scan over historical `decisions`, which showed as a one-time ~5 second slow query after restart. That is now a restart-time issue rather than a steady-state polling loop.
 
 ## Decisions Made
 - **Review Mode**: EXPANSION

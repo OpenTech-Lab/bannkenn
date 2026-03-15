@@ -19,7 +19,7 @@ import {
   summarizeAlertCount,
 } from '@/src/features/monitoring/utils';
 
-const POLL_INTERVAL_MS = 10_000;
+const POLL_INTERVAL_MS = 30_000;
 
 export default function BehaviorOverview() {
   const [snapshot, setSnapshot] = useState<DashboardSnapshot | null>(null);
@@ -67,14 +67,14 @@ export default function BehaviorOverview() {
 
   if (loading) {
     return (
-      <div className="max-w-6xl mx-auto px-4 py-8">
+      <div className="px-6 py-8">
         <p className="text-sm text-muted-foreground">Loading behavior overview...</p>
       </div>
     );
   }
 
   return (
-    <div className="max-w-6xl mx-auto px-4 py-8 space-y-6">
+    <div className="px-6 py-8 space-y-6">
       <div>
         <p className="text-xs uppercase tracking-[0.3em] text-muted-foreground">
           Behavior Monitor

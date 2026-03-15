@@ -187,6 +187,11 @@ pub(super) fn incident_cutoff(created_at: &str) -> String {
         .to_rfc3339()
 }
 
+pub(super) fn window_cutoff(window_secs: i64) -> String {
+    let clamped_window = window_secs.max(1);
+    (Utc::now() - ChronoDuration::seconds(clamped_window)).to_rfc3339()
+}
+
 pub(super) fn build_behavior_incident_key(event: &NewBehaviorEvent) -> String {
     format!(
         "behavior:{}:{}",

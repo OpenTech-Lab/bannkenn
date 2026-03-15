@@ -32,7 +32,7 @@ interface WhitelistEntry {
   created_at: string;
 }
 
-const POLL_INTERVAL = 10_000;
+const POLL_INTERVAL = 30_000;
 
 export default function WhitelistPage() {
   const [whitelist, setWhitelist] = useState<WhitelistEntry[]>([]);
@@ -123,7 +123,7 @@ export default function WhitelistPage() {
   };
 
   return (
-    <div className="max-w-6xl mx-auto px-4 py-8 space-y-6">
+    <div className="px-6 py-8 space-y-6">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
         <div>
           <h1 className="text-2xl font-bold tracking-tight text-white">Whitelist</h1>

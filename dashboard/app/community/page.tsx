@@ -88,7 +88,7 @@ function getFeedMeta(feed: CommunityFeed): FeedMeta {
   return { title, description: `Community feed: ${feed.source}`, tags: ['community'] };
 }
 
-const POLL_INTERVAL = 30_000;
+const POLL_INTERVAL = 120_000;
 
 export default function CommunityPage() {
   const [feeds, setFeeds] = useState<CommunityFeed[]>([]);
@@ -138,7 +138,7 @@ export default function CommunityPage() {
   }, []);
 
   return (
-    <div className="max-w-6xl mx-auto px-4 py-8 space-y-6">
+    <div className="px-6 py-8 space-y-6">
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
