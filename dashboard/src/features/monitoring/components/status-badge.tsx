@@ -3,7 +3,7 @@ import { cn } from '@/lib/utils';
 import { formatStateLabel, normalizeSeverity } from '@/src/features/monitoring/utils';
 
 const stateClasses: Record<string, string> = {
-  normal: 'border-slate-700 bg-slate-900/70 text-slate-200',
+  normal: 'border-slate-700 bg-black/70 text-slate-200',
   suspicious: 'border-amber-700 bg-amber-950/50 text-amber-300',
   throttle: 'border-orange-700 bg-orange-950/50 text-orange-300',
   fuse: 'border-red-700 bg-red-950/60 text-red-300',
@@ -12,11 +12,11 @@ const stateClasses: Record<string, string> = {
 const agentStatusClasses: Record<string, string> = {
   online: 'border-emerald-700 bg-emerald-950/50 text-emerald-300',
   offline: 'border-red-700 bg-red-950/50 text-red-300',
-  unknown: 'border-slate-700 bg-slate-900/70 text-slate-300',
+  unknown: 'border-slate-700 bg-black/70 text-slate-300',
 };
 
 const severityClasses: Record<string, string> = {
-  low: 'border-slate-700 bg-slate-900/70 text-slate-200',
+  low: 'border-slate-700 bg-black/70 text-slate-200',
   medium: 'border-amber-700 bg-amber-950/50 text-amber-300',
   high: 'border-orange-700 bg-orange-950/50 text-orange-300',
   critical: 'border-red-700 bg-red-950/60 text-red-300',
@@ -60,7 +60,7 @@ export function ContainmentStateTrack({ state }: { state: string }) {
                 'h-2 rounded-full border',
                 isActive
                   ? stateClasses[step] ?? stateClasses.normal
-                  : 'border-slate-800 bg-slate-900/60'
+                  : 'border-slate-800 bg-black/60'
               )}
             />
             <p className="text-[10px] uppercase tracking-[0.18em] text-slate-500">

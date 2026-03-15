@@ -17,7 +17,7 @@ function heatClasses(heat: number) {
   if (heat >= 35) {
     return 'border-amber-700/70 bg-amber-950/35';
   }
-  return 'border-slate-800 bg-slate-950/70';
+  return 'border-slate-800 bg-black/70';
 }
 
 export function ThreatHeatmap({ summaries }: { summaries: FleetAgentSummary[] }) {

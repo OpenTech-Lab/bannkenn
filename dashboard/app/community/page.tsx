@@ -236,7 +236,7 @@ export default function CommunityPage() {
 
       {/* Detail dialog */}
       <Dialog open={!!selectedFeed} onOpenChange={(open) => { if (!open) setSelectedFeed(null); }}>
-        <DialogContent className="max-w-3xl max-h-[80vh] flex flex-col bg-gray-950 border-gray-800">
+        <DialogContent className="max-w-3xl max-h-[80vh] flex flex-col bg-black border-gray-800">
           <DialogHeader>
             <DialogTitle className="text-white flex items-center gap-2">
               <Globe className="h-4 w-4 text-gray-400" />

@@ -60,14 +60,14 @@ export function ActivityTimeline({ entries }: { entries: ActivityEntry[] }) {
               <Link
                 key={entry.id}
                 href={entry.href}
-                className="block rounded-2xl border border-white/10 bg-slate-950/60 p-4 transition-colors hover:border-sky-400/40"
+                className="block rounded-2xl border border-white/10 bg-black/60 p-4 transition-colors hover:border-sky-400/40"
               >
                 {content}
               </Link>
             ) : (
               <div
                 key={entry.id}
-                className="rounded-2xl border border-white/10 bg-slate-950/60 p-4"
+                className="rounded-2xl border border-white/10 bg-black/60 p-4"
               >
                 {content}
               </div>

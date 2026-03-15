@@ -46,7 +46,7 @@ export function FleetContainmentPanel({
             return (
               <article
                 key={summary.agent.id}
-                className="rounded-2xl border border-white/10 bg-slate-950/60 p-4"
+                className="rounded-2xl border border-white/10 bg-black/60 p-4"
               >
                 <div className="flex items-start justify-between gap-4">
                   <div className="space-y-2">

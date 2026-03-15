@@ -152,7 +152,7 @@ export function FleetDashboardPage() {
             </p>
           </div>
         </div>
-        <div className="rounded-2xl border border-white/10 bg-slate-950/60 px-4 py-3 text-right">
+        <div className="rounded-2xl border border-white/10 bg-black/60 px-4 py-3 text-right">
           <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-500">
             Server health
           </p>

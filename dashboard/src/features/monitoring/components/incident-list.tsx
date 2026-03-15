@@ -30,7 +30,7 @@ export function IncidentList({
             <Link
               key={incident.id}
               href={`/behavior/incidents/${incident.id}`}
-              className="block rounded-2xl border border-white/10 bg-slate-950/60 p-4 transition-colors hover:border-sky-400/40"
+              className="block rounded-2xl border border-white/10 bg-black/60 p-4 transition-colors hover:border-sky-400/40"
             >
               <div className="flex items-start justify-between gap-4">
                 <div className="space-y-2">

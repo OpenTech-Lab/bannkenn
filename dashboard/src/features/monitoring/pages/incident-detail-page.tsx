@@ -107,7 +107,7 @@ export function IncidentDetailPage() {
               ) : null}
             </div>
           </div>
-          <div className="rounded-2xl border border-white/10 bg-slate-950/60 p-4 text-sm text-slate-300">
+          <div className="rounded-2xl border border-white/10 bg-black/60 p-4 text-sm text-slate-300">
             <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-slate-500">
               Last seen
             </p>
@@ -176,7 +176,7 @@ export function IncidentDetailPage() {
                 {incident.affected_roots.map((root) => (
                   <div
                     key={root}
-                    className="rounded-2xl border border-white/10 bg-slate-950/60 px-3 py-2 text-sm text-slate-300"
+                    className="rounded-2xl border border-white/10 bg-black/60 px-3 py-2 text-sm text-slate-300"
                   >
                     {root}
                   </div>

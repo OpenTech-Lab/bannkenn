@@ -21,7 +21,7 @@ export function SectionPanel({
   return (
     <section
       className={cn(
-        'rounded-2xl border border-white/10 bg-white/[0.03] p-5 shadow-[0_18px_80px_rgba(0,0,0,0.18)]',
+        'rounded-2xl border border-white/10 bg-white/[0.02] p-5 shadow-[0_18px_80px_rgba(0,0,0,0.18)]',
         className
       )}
     >
@@ -50,7 +50,7 @@ type MetricCardProps = {
 };
 
 const accentClasses: Record<NonNullable<MetricCardProps['accent']>, string> = {
-  slate: 'border-slate-800/80 bg-slate-900/60 text-slate-100',
+  slate: 'border-slate-800/80 bg-black/60 text-slate-100',
   emerald: 'border-emerald-900/80 bg-emerald-950/40 text-emerald-100',
   amber: 'border-amber-900/80 bg-amber-950/40 text-amber-100',
   red: 'border-red-900/80 bg-red-950/40 text-red-100',

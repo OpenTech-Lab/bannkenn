@@ -165,7 +165,7 @@ export function AgentDetailPage() {
             <ContainmentStateBadge state={state} />
           </div>
         </div>
-        <div className="space-y-2 rounded-2xl border border-white/10 bg-slate-950/60 p-4">
+        <div className="space-y-2 rounded-2xl border border-white/10 bg-black/60 p-4">
           <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-slate-500">
             Manual containment
           </p>
@@ -178,7 +178,7 @@ export function AgentDetailPage() {
               {pendingActionKey === `${snapshot.agent.id}:trigger_fuse` ? 'Queuing…' : 'Trigger FUSE'}
             </button>
             <button
-              className="rounded-md border border-white/10 bg-white/[0.03] px-3 py-2 text-sm font-medium text-slate-200 transition-colors hover:bg-white/[0.07] disabled:cursor-not-allowed disabled:opacity-50"
+              className="rounded-md border border-white/10 bg-white/[0.02] px-3 py-2 text-sm font-medium text-slate-200 transition-colors hover:bg-white/[0.07] disabled:cursor-not-allowed disabled:opacity-50"
               disabled={pendingActionKey === `${snapshot.agent.id}:release_fuse` || state !== 'fuse'}
               onClick={() => void handleAction('release_fuse')}
             >
@@ -229,13 +229,13 @@ export function AgentDetailPage() {
         >
           <ContainmentStateTrack state={state} />
           <dl className="mt-4 grid gap-3 text-sm text-slate-300 md:grid-cols-2">
-            <div className="rounded-2xl border border-white/10 bg-slate-950/60 p-4">
+            <div className="rounded-2xl border border-white/10 bg-black/60 p-4">
               <dt className="text-[11px] font-semibold uppercase tracking-[0.2em] text-slate-500">
                 Watched root
               </dt>
               <dd className="mt-2">{currentContainment?.watched_root ?? 'Not available'}</dd>
             </div>
-            <div className="rounded-2xl border border-white/10 bg-slate-950/60 p-4">
+            <div className="rounded-2xl border border-white/10 bg-black/60 p-4">
               <dt className="text-[11px] font-semibold uppercase tracking-[0.2em] text-slate-500">
                 Last transition
               </dt>
@@ -258,7 +258,7 @@ export function AgentDetailPage() {
               {actionHistory.map((action) => (
                 <div
                   key={action.id}
-                  className="rounded-2xl border border-white/10 bg-slate-950/60 p-4"
+                  className="rounded-2xl border border-white/10 bg-black/60 p-4"
                 >
                   <div className="flex items-start justify-between gap-4">
                     <div className="space-y-1">
@@ -293,7 +293,7 @@ export function AgentDetailPage() {
               {containmentHistory.map((event) => (
                 <div
                   key={event.id}
-                  className="rounded-2xl border border-white/10 bg-slate-950/60 p-4"
+                  className="rounded-2xl border border-white/10 bg-black/60 p-4"
                 >
                   <div className="flex items-start justify-between gap-4">
                     <div className="space-y-2">
@@ -333,7 +333,7 @@ export function AgentDetailPage() {
               {behaviorEvents.map((event) => (
                 <div
                   key={event.id}
-                  className="rounded-2xl border border-white/10 bg-slate-950/60 p-4"
+                  className="rounded-2xl border border-white/10 bg-black/60 p-4"
                 >
                   <div className="flex items-start justify-between gap-4">
                     <div className="space-y-2">
