@@ -113,6 +113,7 @@ pub struct RawBehaviorRingEvent {
     pub process_name: [u8; RAW_BEHAVIOR_PROCESS_CAPACITY],
 }
 
+#[cfg(target_os = "linux")]
 unsafe impl aya::Pod for RawBehaviorRingEvent {}
 
 impl RawBehaviorRingEvent {

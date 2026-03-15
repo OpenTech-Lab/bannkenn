@@ -10,11 +10,13 @@ use crate::ebpf::events::{
 use crate::ebpf::lifecycle::{LifecycleEvent, ProcessLifecycleTracker};
 use crate::scorer::{CompositeBehaviorScorer, Scorer};
 use anyhow::{anyhow, Context, Result};
+#[cfg(target_os = "linux")]
 use aya::{
     maps::{Array, MapData, RingBuf},
     programs::TracePoint,
     Ebpf, EbpfLoader,
 };
+#[cfg(target_os = "linux")]
 use aya_log::EbpfLogger;
 use chrono::Utc;
 use std::collections::{BTreeSet, HashMap};
@@ -29,15 +31,21 @@ use tokio::time::{interval, Duration};
 use std::os::unix::fs::MetadataExt;
 
 const USERSPACE_SENSOR_SOURCE: &str = "userspace_polling";
+#[cfg(target_os = "linux")]
 const AYA_SENSOR_SOURCE: &str = "aya_ringbuf";
+#[cfg(target_os = "linux")]
 const AYA_WATCH_ROOTS_MAP: &str = "BK_WATCH_ROOTS";
+#[cfg(target_os = "linux")]
 const AYA_PROTECTED_ROOTS_MAP: &str = "BK_PROTECTED_ROOTS";
+#[cfg(target_os = "linux")]
 const AYA_DEFAULT_OBJECT_CANDIDATES: &[&str] = &[
     "agent/ebpf/bannkenn-containment.bpf.o",
     "/usr/lib/bannkenn/ebpf/bannkenn-containment.bpf.o",
     "/usr/local/lib/bannkenn/ebpf/bannkenn-containment.bpf.o",
 ];
+#[cfg(target_os = "linux")]
 const AYA_PATH_PREFIX_CAPACITY: u32 = 16;
+#[cfg(target_os = "linux")]
 const AYA_TRACE_ATTACHMENTS: &[(&str, &str, &str)] = &[
     ("bk_sched_exec", "sched", "sched_process_exec"),
     ("bk_sched_exit", "sched", "sched_process_exit"),
@@ -78,6 +86,7 @@ struct UserspacePollingBackend {
     roots: Vec<PollingRootState>,
 }
 
+#[cfg(target_os = "linux")]
 struct AyaSensorBackend {
     poll_interval_ms: u64,
     watch_roots: Vec<PathBuf>,
@@ -86,6 +95,7 @@ struct AyaSensorBackend {
     logger: Option<EbpfLogger>,
 }
 
+#[cfg(target_os = "linux")]
 impl std::fmt::Debug for AyaSensorBackend {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("AyaSensorBackend")
@@ -108,6 +118,7 @@ struct RawPathPrefixEntry {
     path: [u8; RAW_BEHAVIOR_PATH_CAPACITY],
 }
 
+#[cfg(target_os = "linux")]
 unsafe impl aya::Pod for RawPathPrefixEntry {}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -149,6 +160,15 @@ impl RawPathPrefixEntry {
 impl SensorManager {
     pub fn from_config(config: &ContainmentConfig) -> Option<Self> {
         if !config.enabled {
+            return None;
+        }
+
+        #[cfg(not(target_os = "linux"))]
+        {
+            tracing::warn!(
+                "Containment sensor requested on {}; filesystem containment is Linux-only and will stay disabled",
+                std::env::consts::OS
+            );
             return None;
         }
 
@@ -258,6 +278,7 @@ impl BehaviorSensorBackend for UserspacePollingBackend {
     }
 }
 
+#[cfg(target_os = "linux")]
 impl AyaSensorBackend {
     fn from_config(
         config: &ContainmentConfig,
@@ -292,6 +313,7 @@ impl AyaSensorBackend {
     }
 }
 
+#[cfg(target_os = "linux")]
 impl BehaviorSensorBackend for AyaSensorBackend {
     fn backend_name(&self) -> &'static str {
         AYA_SENSOR_SOURCE
@@ -324,14 +346,17 @@ fn build_backend(
     config: &ContainmentConfig,
     roots: Vec<PathBuf>,
 ) -> Box<dyn BehaviorSensorBackend> {
-    if let Some(object_path) = resolve_ebpf_object_path(config) {
-        match AyaSensorBackend::from_config(config, roots.clone(), &object_path) {
-            Ok(backend) => return Box::new(backend),
-            Err(error) => tracing::warn!(
-                "Failed to initialize Aya backend from {} ({}); falling back to userspace polling",
-                object_path.display(),
-                error
-            ),
+    #[cfg(target_os = "linux")]
+    {
+        if let Some(object_path) = resolve_ebpf_object_path(config) {
+            match AyaSensorBackend::from_config(config, roots.clone(), &object_path) {
+                Ok(backend) => return Box::new(backend),
+                Err(error) => tracing::warn!(
+                    "Failed to initialize Aya backend from {} ({}); falling back to userspace polling",
+                    object_path.display(),
+                    error
+                ),
+            }
         }
     }
 
@@ -347,6 +372,7 @@ fn build_backend(
     })
 }
 
+#[cfg(target_os = "linux")]
 fn attach_default_tracepoints(ebpf: &mut Ebpf) -> Result<()> {
     for (program_name, category, name) in AYA_TRACE_ATTACHMENTS {
         let program = ebpf
@@ -365,6 +391,7 @@ fn attach_default_tracepoints(ebpf: &mut Ebpf) -> Result<()> {
     Ok(())
 }
 
+#[cfg(target_os = "linux")]
 fn resolve_ebpf_object_path(config: &ContainmentConfig) -> Option<PathBuf> {
     if let Some(path) = config.ebpf_object_path.as_deref() {
         return Some(PathBuf::from(path));
@@ -376,6 +403,7 @@ fn resolve_ebpf_object_path(config: &ContainmentConfig) -> Option<PathBuf> {
         .find(|candidate| candidate.exists())
 }
 
+#[cfg(target_os = "linux")]
 fn populate_path_prefix_map(ebpf: &mut Ebpf, map_name: &str, paths: &[PathBuf]) -> Result<()> {
     let map = ebpf
         .map_mut(map_name)
@@ -425,6 +453,7 @@ fn merge_lifecycle_events(
     }
 }
 
+#[cfg(target_os = "linux")]
 fn raw_ring_event_to_lifecycle_event(raw: RawBehaviorRingEvent) -> Option<LifecycleEvent> {
     let process_name = raw.process_name_string();
     match raw.event_kind() {
@@ -441,6 +470,7 @@ fn raw_ring_event_to_lifecycle_event(raw: RawBehaviorRingEvent) -> Option<Lifecy
     }
 }
 
+#[cfg(target_os = "linux")]
 fn raw_ring_event_to_batch(
     raw: RawBehaviorRingEvent,
     watch_roots: &[PathBuf],

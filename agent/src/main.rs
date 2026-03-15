@@ -1687,13 +1687,24 @@ fn prompt_yes_no(prompt: &str) -> Result<bool> {
     Ok(matches!(answer, "y" | "Y" | "yes" | "YES" | "Yes"))
 }
 
+fn redact_fingerprint(fp: &str) -> String {
+    if fp.len() > 16 {
+        format!("{}...{}", &fp[..11], &fp[fp.len() - 5..])
+    } else {
+        "***REDACTED***".to_string()
+    }
+}
+
 async fn trust_on_first_use(config: &mut AgentConfig) -> Result<bool> {
     let cert = fetch_presented_certificate(&config.server_url).await?;
     println!(
         "Server presented an untrusted certificate for {}",
         config.server_url
     );
-    println!("SHA-256 fingerprint: {}", cert.sha256_fingerprint);
+    println!(
+        "SHA-256 fingerprint: {}",
+        redact_fingerprint(&cert.sha256_fingerprint)
+    );
 
     if !prompt_yes_no("Trust and pin this certificate for future connections? [y/N]: ")? {
         return Ok(false);

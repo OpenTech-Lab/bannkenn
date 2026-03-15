@@ -1,5 +1,6 @@
 use crate::db::Db;
 use crate::ip_pattern::canonicalize_ip_pattern;
+use crate::validation::MAX_IP_INPUT_BYTES;
 use axum::{
     extract::{Path, Query, State},
     http::StatusCode,
@@ -43,6 +44,9 @@ pub async fn create(
     Json(payload): Json<CreateWhitelistRequest>,
 ) -> Result<impl IntoResponse, StatusCode> {
     let ip = payload.ip.trim();
+    if ip.len() > MAX_IP_INPUT_BYTES {
+        return Err(StatusCode::BAD_REQUEST);
+    }
     let ip = canonicalize_ip_pattern(ip).ok_or(StatusCode::BAD_REQUEST)?;
     let note = payload
         .note

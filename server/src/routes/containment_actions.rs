@@ -1,5 +1,6 @@
 use crate::auth::AuthenticatedAgent;
 use crate::db::{ContainmentActionRow, Db, NewContainmentAction};
+use crate::validation::{cap_string, MAX_STRING_BYTES};
 use axum::{
     extract::{Path, Query, State},
     http::StatusCode,
@@ -76,10 +77,10 @@ pub async fn create(
         .create_containment_action(&NewContainmentAction {
             agent_name,
             command_kind,
-            reason: payload.reason,
+            reason: cap_string(payload.reason, MAX_STRING_BYTES),
             watched_root: payload
                 .watched_root
-                .map(|value| value.trim().to_string())
+                .map(|value| cap_string(value.trim().to_string(), MAX_STRING_BYTES))
                 .filter(|value| !value.is_empty()),
             pid: payload.pid,
             requested_by: "dashboard".to_string(),
@@ -143,14 +144,21 @@ pub async fn acknowledge(
         return Err(StatusCode::BAD_REQUEST);
     }
 
+    let resulting_state = payload
+        .resulting_state
+        .map(|s| cap_string(s, MAX_STRING_BYTES));
+    let result_message = payload
+        .result_message
+        .map(|s| cap_string(s, MAX_STRING_BYTES));
+
     let action = state
         .db
         .complete_containment_action(
             action_id,
             &agent.0,
             &status,
-            payload.resulting_state.as_deref(),
-            payload.result_message.as_deref(),
+            resulting_state.as_deref(),
+            result_message.as_deref(),
             payload.executed_at.as_deref(),
         )
         .await

@@ -17,6 +17,16 @@
 - Refactored server incident helpers to use typed payload structs instead of oversized positional parameter lists, which resolved the additional `too_many_arguments` findings without weakening lint coverage.
 - Replaced repeated long SQL row tuple spellings in `server/src/db/containment.rs` with explicit type aliases so the mapping code stays readable and passes `clippy::type_complexity`.
 
+## Windows Target Build Fix Slice — 2026-03-15
+- [x] Make Aya dependencies target-specific so Windows builds do not compile Linux-only crates
+- [x] Guard Linux-only eBPF integration points in the agent source
+- [x] Verify the release build/check path for `x86_64-pc-windows-msvc` as far as the local toolchain allows
+
+### Review
+- Moved `aya` and `aya-log` into Linux-only target dependencies so Windows builds no longer attempt to compile `aya-obj` and its `std::os::fd` usage.
+- Gated Aya-specific `Pod` impls, imports, constants, structs, and helper functions behind `target_os = "linux"`, and made `SensorManager::from_config` disable the containment sensor cleanly on non-Linux targets.
+- Verified on 2026-03-15 with `cargo fmt --all`, `cargo check -p bannkenn-agent`, `cargo clippy -p bannkenn-agent -- -D warnings`, and `cargo tree -p bannkenn-agent --target x86_64-pc-windows-msvc -e normal` (which no longer includes `aya` on the Windows dependency graph). The runner does not have the Windows stdlib installed, so a real local `--target x86_64-pc-windows-msvc` build was not possible here.
+
 ## Phase 1 — eBPF Sensor + File Activity Detection
 - [x] Add `aya` and `aya-log` to agent/Cargo.toml
 - [x] Create `agent/src/ebpf/mod.rs` — sensor management, ring buffer polling

@@ -7,3 +7,4 @@ pub mod feeds;
 pub mod geoip;
 pub mod ip_pattern;
 pub mod routes;
+pub mod validation;

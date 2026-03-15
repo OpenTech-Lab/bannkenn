@@ -214,3 +214,8 @@
 ### CI lint fixes need full workspace verification, not only the first reported warning
 - When GitHub Actions fails on an initial clippy warning, do not stop after patching the first printed lines; rerun `cargo clippy --workspace -- -D warnings` locally until the workspace is clean because later lints may be hidden behind the first failure.
 - Prefer structural fixes over `#[allow(...)]`: replace long tuple spellings with type aliases and replace long helper argument lists with typed request structs so the code gets simpler while satisfying the lint.
+
+### Cross-target Rust builds must isolate Linux-only crates and impls at both Cargo and source level
+- If the project ships a Windows target, do not add Linux-only crates like `aya` as unconditional dependencies; move them into `[target.'cfg(target_os = "linux")'.dependencies]` or a Linux-only feature boundary.
+- Mirror that split in source: gate Linux-only imports, trait impls, structs, and helper functions with `#[cfg(target_os = "linux")]`, and provide a clean non-Linux fallback path instead of relying on runtime `unreachable!()`.
+- When the local machine lacks the foreign stdlib, verify the target split with `cargo tree --target ...` in addition to native `cargo check`/`clippy` so target-specific dependency leaks are still caught before CI.

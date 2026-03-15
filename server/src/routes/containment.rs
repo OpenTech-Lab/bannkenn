@@ -1,5 +1,6 @@
 use crate::auth::AuthenticatedAgent;
 use crate::db::{ContainmentOutcomeRow, Db, NewContainmentEvent};
+use crate::validation::{cap_string, cap_vec, MAX_STRING_BYTES, MAX_VEC_ITEMS};
 use axum::{
     extract::{Query, State},
     http::StatusCode,
@@ -81,12 +82,12 @@ pub async fn create(
             agent_name: agent.0,
             state: state_name,
             previous_state,
-            reason: payload.reason,
-            watched_root: payload.watched_root,
+            reason: cap_string(payload.reason, MAX_STRING_BYTES),
+            watched_root: cap_string(payload.watched_root, MAX_STRING_BYTES),
             pid: payload.pid,
             score: payload.score,
-            actions: payload.actions,
-            outcomes: payload.outcomes,
+            actions: cap_vec(payload.actions, MAX_VEC_ITEMS),
+            outcomes: cap_vec(payload.outcomes, MAX_VEC_ITEMS),
             timestamp: payload.timestamp,
         })
         .await

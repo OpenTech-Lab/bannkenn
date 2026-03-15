@@ -1,6 +1,7 @@
 use crate::auth::AuthenticatedAgent;
 use crate::behavior_pg::{BehaviorArchiveRecord, BehaviorPgArchive};
 use crate::db::{BehaviorFileOpsRow, Db, NewBehaviorEvent};
+use crate::validation::{cap_string, cap_vec, MAX_STRING_BYTES, MAX_VEC_ITEMS};
 use axum::{
     extract::{Query, State},
     http::StatusCode,
@@ -63,20 +64,22 @@ pub async fn create(
 
     let event = NewBehaviorEvent {
         agent_name: agent.0.clone(),
-        source: payload.source,
-        watched_root: payload.watched_root,
+        source: cap_string(payload.source, MAX_STRING_BYTES),
+        watched_root: cap_string(payload.watched_root, MAX_STRING_BYTES),
         pid: payload.pid,
         process_name: payload.process_name,
         exe_path: payload.exe_path,
-        command_line: payload.command_line,
+        command_line: payload
+            .command_line
+            .map(|s| cap_string(s, MAX_STRING_BYTES)),
         correlation_hits: payload.correlation_hits,
         file_ops: payload.file_ops,
-        touched_paths: payload.touched_paths,
-        protected_paths_touched: payload.protected_paths_touched,
+        touched_paths: cap_vec(payload.touched_paths, MAX_VEC_ITEMS),
+        protected_paths_touched: cap_vec(payload.protected_paths_touched, MAX_VEC_ITEMS),
         bytes_written: payload.bytes_written,
         io_rate_bytes_per_sec: payload.io_rate_bytes_per_sec,
         score: payload.score,
-        reasons: payload.reasons,
+        reasons: cap_vec(payload.reasons, MAX_VEC_ITEMS),
         level,
         timestamp: payload.timestamp,
     };
