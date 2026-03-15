@@ -3,7 +3,9 @@ pub mod lifecycle;
 
 use crate::config::ContainmentConfig;
 use crate::correlator::ProcessCorrelator;
-use crate::ebpf::events::{BehaviorEvent, FileActivityBatch, FileOperationCounts, RAW_BEHAVIOR_PATH_CAPACITY};
+use crate::ebpf::events::{
+    BehaviorEvent, FileActivityBatch, FileOperationCounts, RAW_BEHAVIOR_PATH_CAPACITY,
+};
 #[cfg(any(target_os = "linux", test))]
 use crate::ebpf::events::{RawBehaviorEventKind, RawBehaviorRingEvent};
 use crate::ebpf::lifecycle::{LifecycleEvent, ProcessLifecycleTracker};
