@@ -31,7 +31,7 @@ impl Db {
                 build_behavior_incident_summary(
                     &primary_reason,
                     1,
-                    &[event.watched_root.clone()],
+                    std::slice::from_ref(&event.watched_root),
                     &event.watched_root,
                 ),
                 primary_reason.clone(),
@@ -44,34 +44,35 @@ impl Db {
         let event_id =
             Self::insert_behavior_event_row(&mut tx, event, &created_at, Some(incident.id)).await?;
 
-        Self::insert_incident_timeline(
-            &mut tx,
-            incident.id,
-            "behavior_event",
-            Some(event_id),
-            &event.agent_name,
-            &event.watched_root,
-            behavior_level_to_severity(&event.level),
-            &format!("{} observed on {}", primary_reason, event.watched_root),
-            &json!({
-                "source": &event.source,
-                "level": &event.level,
-                "pid": event.pid,
-                "process_name": &event.process_name,
-                "exe_path": &event.exe_path,
-                "command_line": &event.command_line,
-                "correlation_hits": event.correlation_hits,
-                "file_ops": &event.file_ops,
-                "touched_paths": &event.touched_paths,
-                "protected_paths_touched": &event.protected_paths_touched,
-                "bytes_written": event.bytes_written,
-                "io_rate_bytes_per_sec": event.io_rate_bytes_per_sec,
-                "score": event.score,
-                "reasons": &event.reasons,
-            }),
-            &created_at,
-        )
-        .await?;
+        let timeline_message = format!("{} observed on {}", primary_reason, event.watched_root);
+        let timeline_payload = json!({
+            "source": &event.source,
+            "level": &event.level,
+            "pid": event.pid,
+            "process_name": &event.process_name,
+            "exe_path": &event.exe_path,
+            "command_line": &event.command_line,
+            "correlation_hits": event.correlation_hits,
+            "file_ops": &event.file_ops,
+            "touched_paths": &event.touched_paths,
+            "protected_paths_touched": &event.protected_paths_touched,
+            "bytes_written": event.bytes_written,
+            "io_rate_bytes_per_sec": event.io_rate_bytes_per_sec,
+            "score": event.score,
+            "reasons": &event.reasons,
+        });
+        let timeline_entry = IncidentTimelineInsert {
+            incident_id: incident.id,
+            source_type: "behavior_event",
+            source_event_id: Some(event_id),
+            agent_name: &event.agent_name,
+            watched_root: &event.watched_root,
+            severity: behavior_level_to_severity(&event.level),
+            message: &timeline_message,
+            payload: &timeline_payload,
+            created_at: &created_at,
+        };
+        Self::insert_incident_timeline(&mut tx, &timeline_entry).await?;
 
         push_unique_sorted(&mut incident.affected_agents, &event.agent_name);
         push_unique_sorted(&mut incident.affected_roots, &event.watched_root);
@@ -103,24 +104,24 @@ impl Db {
                 &incident.affected_agents,
                 &watched_root,
             );
-            Self::insert_admin_alert(
-                &mut tx,
-                "cross_agent_incident",
-                "high",
-                &title,
-                &message,
-                None,
-                Some(incident.id),
-                &json!({
-                    "incident_key": &incident.incident_key,
-                    "primary_reason": &incident.primary_reason,
-                    "affected_agents": &incident.affected_agents,
-                    "affected_roots": &incident.affected_roots,
-                    "event_count": incident.event_count,
-                }),
-                &created_at,
-            )
-            .await?;
+            let alert_metadata = json!({
+                "incident_key": &incident.incident_key,
+                "primary_reason": &incident.primary_reason,
+                "affected_agents": &incident.affected_agents,
+                "affected_roots": &incident.affected_roots,
+                "event_count": incident.event_count,
+            });
+            let alert = AdminAlertInsert {
+                alert_type: "cross_agent_incident",
+                severity: "high",
+                title: &title,
+                message: &message,
+                agent_name: None,
+                incident_id: Some(incident.id),
+                metadata: &alert_metadata,
+                created_at: &created_at,
+            };
+            Self::insert_admin_alert(&mut tx, &alert).await?;
             incident.cross_agent_alerted = true;
             incident.alert_count += 1;
         }

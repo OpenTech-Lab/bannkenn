@@ -210,3 +210,7 @@
 - If a large phase adds oversized files or growing inline tests, refactor them before starting the next phase instead of treating cleanup as optional follow-up.
 - Keep server tests in `server/tests/` with shared fixtures/modules rather than expanding `#[cfg(test)]` blocks inside production files.
 - Prefer thin binaries and domain-focused modules so the next upgrade extends existing seams instead of reopening monolith files.
+
+### CI lint fixes need full workspace verification, not only the first reported warning
+- When GitHub Actions fails on an initial clippy warning, do not stop after patching the first printed lines; rerun `cargo clippy --workspace -- -D warnings` locally until the workspace is clean because later lints may be hidden behind the first failure.
+- Prefer structural fixes over `#[allow(...)]`: replace long tuple spellings with type aliases and replace long helper argument lists with typed request structs so the code gets simpler while satisfying the lint.

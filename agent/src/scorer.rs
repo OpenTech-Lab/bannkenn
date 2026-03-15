@@ -94,7 +94,7 @@ impl Scorer for CompositeBehaviorScorer {
         let level = self.classify_level(score);
 
         BehaviorEvent {
-            timestamp: batch.timestamp.clone(),
+            timestamp: batch.timestamp,
             source: batch.source.clone(),
             watched_root: batch.watched_root.clone(),
             pid: process.map(|proc_info| proc_info.pid),

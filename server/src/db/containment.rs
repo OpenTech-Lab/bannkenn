@@ -1,5 +1,32 @@
 use super::*;
 
+type ContainmentStatusDbRow = (
+    String,
+    String,
+    Option<String>,
+    String,
+    String,
+    Option<i64>,
+    i64,
+    String,
+    String,
+    String,
+);
+
+type ContainmentEventDbRow = (
+    i64,
+    String,
+    String,
+    Option<String>,
+    String,
+    String,
+    Option<i64>,
+    i64,
+    String,
+    String,
+    String,
+);
+
 impl Db {
     pub async fn record_containment_event(
         &self,
@@ -77,27 +104,28 @@ impl Db {
         .execute(&mut *tx)
         .await?;
 
-        Self::insert_incident_timeline(
-            &mut tx,
-            incident.id,
-            "containment_event",
-            Some(event_id),
-            &event.agent_name,
-            &event.watched_root,
-            containment_state_to_severity(&event.state),
-            &build_containment_alert_message(event),
-            &json!({
-                "state": &event.state,
-                "previous_state": &event.previous_state,
-                "reason": &event.reason,
-                "pid": event.pid,
-                "score": event.score,
-                "actions": &event.actions,
-                "outcomes": &event.outcomes,
-            }),
-            &created_at,
-        )
-        .await?;
+        let timeline_message = build_containment_alert_message(event);
+        let timeline_payload = json!({
+            "state": &event.state,
+            "previous_state": &event.previous_state,
+            "reason": &event.reason,
+            "pid": event.pid,
+            "score": event.score,
+            "actions": &event.actions,
+            "outcomes": &event.outcomes,
+        });
+        let timeline_entry = IncidentTimelineInsert {
+            incident_id: incident.id,
+            source_type: "containment_event",
+            source_event_id: Some(event_id),
+            agent_name: &event.agent_name,
+            watched_root: &event.watched_root,
+            severity: containment_state_to_severity(&event.state),
+            message: &timeline_message,
+            payload: &timeline_payload,
+            created_at: &created_at,
+        };
+        Self::insert_incident_timeline(&mut tx, &timeline_entry).await?;
 
         push_unique_sorted(&mut incident.affected_agents, &event.agent_name);
         push_unique_sorted(&mut incident.affected_roots, &event.watched_root);
@@ -135,26 +163,26 @@ impl Db {
 
         let alert_title = build_containment_alert_title(&event.agent_name, &event.state);
         let alert_message = build_containment_alert_message(event);
-        Self::insert_admin_alert(
-            &mut tx,
-            "containment_transition",
-            containment_state_to_severity(&event.state),
-            &alert_title,
-            &alert_message,
-            Some(&event.agent_name),
-            Some(incident.id),
-            &json!({
-                "state": &event.state,
-                "previous_state": &event.previous_state,
-                "reason": &event.reason,
-                "watched_root": &event.watched_root,
-                "score": event.score,
-                "actions": &event.actions,
-                "outcomes": &event.outcomes,
-            }),
-            &created_at,
-        )
-        .await?;
+        let alert_metadata = json!({
+            "state": &event.state,
+            "previous_state": &event.previous_state,
+            "reason": &event.reason,
+            "watched_root": &event.watched_root,
+            "score": event.score,
+            "actions": &event.actions,
+            "outcomes": &event.outcomes,
+        });
+        let alert = AdminAlertInsert {
+            alert_type: "containment_transition",
+            severity: containment_state_to_severity(&event.state),
+            title: &alert_title,
+            message: &alert_message,
+            agent_name: Some(&event.agent_name),
+            incident_id: Some(incident.id),
+            metadata: &alert_metadata,
+            created_at: &created_at,
+        };
+        Self::insert_admin_alert(&mut tx, &alert).await?;
         incident.alert_count += 1;
 
         Self::update_incident(&mut tx, &incident).await?;
@@ -210,21 +238,7 @@ impl Db {
         &self,
         limit: i64,
     ) -> anyhow::Result<Vec<ContainmentStatusRow>> {
-        let rows = sqlx::query_as::<
-            _,
-            (
-                String,
-                String,
-                Option<String>,
-                String,
-                String,
-                Option<i64>,
-                i64,
-                String,
-                String,
-                String,
-            ),
-        >(
+        let rows = sqlx::query_as::<_, ContainmentStatusDbRow>(
             r#"
             SELECT
                 agent_name,
@@ -253,22 +267,7 @@ impl Db {
         &self,
         limit: i64,
     ) -> anyhow::Result<Vec<ContainmentEventRow>> {
-        let rows = sqlx::query_as::<
-            _,
-            (
-                i64,
-                String,
-                String,
-                Option<String>,
-                String,
-                String,
-                Option<i64>,
-                i64,
-                String,
-                String,
-                String,
-            ),
-        >(
+        let rows = sqlx::query_as::<_, ContainmentEventDbRow>(
             r#"
             SELECT
                 id,
@@ -299,22 +298,7 @@ impl Db {
         agent_name: &str,
         limit: i64,
     ) -> anyhow::Result<Vec<ContainmentEventRow>> {
-        let rows = sqlx::query_as::<
-            _,
-            (
-                i64,
-                String,
-                String,
-                Option<String>,
-                String,
-                String,
-                Option<i64>,
-                i64,
-                String,
-                String,
-                String,
-            ),
-        >(
+        let rows = sqlx::query_as::<_, ContainmentEventDbRow>(
             r#"
             SELECT
                 id,
@@ -355,18 +339,7 @@ fn map_containment_status_row(
         actions_json,
         outcomes_json,
         updated_at,
-    ): (
-        String,
-        String,
-        Option<String>,
-        String,
-        String,
-        Option<i64>,
-        i64,
-        String,
-        String,
-        String,
-    ),
+    ): ContainmentStatusDbRow,
 ) -> anyhow::Result<ContainmentStatusRow> {
     Ok(ContainmentStatusRow {
         agent_name,
@@ -395,19 +368,7 @@ fn map_containment_event_row(
         actions_json,
         outcomes_json,
         created_at,
-    ): (
-        i64,
-        String,
-        String,
-        Option<String>,
-        String,
-        String,
-        Option<i64>,
-        i64,
-        String,
-        String,
-        String,
-    ),
+    ): ContainmentEventDbRow,
 ) -> anyhow::Result<ContainmentEventRow> {
     Ok(ContainmentEventRow {
         id,

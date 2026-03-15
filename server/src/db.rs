@@ -22,6 +22,7 @@ mod types;
 mod whitelist;
 
 use helpers::*;
+pub(crate) use incidents::{AdminAlertInsert, IncidentTimelineInsert};
 pub use types::*;
 
 #[derive(Debug, Clone)]

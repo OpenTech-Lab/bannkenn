@@ -22,6 +22,29 @@ pub(crate) struct IncidentState {
     pub(crate) alert_count: u32,
 }
 
+pub(crate) struct IncidentTimelineInsert<'a> {
+    pub(crate) incident_id: i64,
+    pub(crate) source_type: &'a str,
+    pub(crate) source_event_id: Option<i64>,
+    pub(crate) agent_name: &'a str,
+    pub(crate) watched_root: &'a str,
+    pub(crate) severity: &'a str,
+    pub(crate) message: &'a str,
+    pub(crate) payload: &'a Value,
+    pub(crate) created_at: &'a str,
+}
+
+pub(crate) struct AdminAlertInsert<'a> {
+    pub(crate) alert_type: &'a str,
+    pub(crate) severity: &'a str,
+    pub(crate) title: &'a str,
+    pub(crate) message: &'a str,
+    pub(crate) agent_name: Option<&'a str>,
+    pub(crate) incident_id: Option<i64>,
+    pub(crate) metadata: &'a Value,
+    pub(crate) created_at: &'a str,
+}
+
 impl Db {
     pub(crate) async fn create_incident(
         tx: &mut Transaction<'_, Sqlite>,
@@ -324,15 +347,7 @@ impl Db {
 
     pub(crate) async fn insert_incident_timeline(
         tx: &mut Transaction<'_, Sqlite>,
-        incident_id: i64,
-        source_type: &str,
-        source_event_id: Option<i64>,
-        agent_name: &str,
-        watched_root: &str,
-        severity: &str,
-        message: &str,
-        payload: &Value,
-        created_at: &str,
+        entry: &IncidentTimelineInsert<'_>,
     ) -> anyhow::Result<i64> {
         let result = sqlx::query(
             r#"
@@ -350,15 +365,15 @@ impl Db {
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             "#,
         )
-        .bind(incident_id)
-        .bind(source_type)
-        .bind(source_event_id)
-        .bind(agent_name)
-        .bind(watched_root)
-        .bind(severity)
-        .bind(message)
-        .bind(encode_json(payload)?)
-        .bind(created_at)
+        .bind(entry.incident_id)
+        .bind(entry.source_type)
+        .bind(entry.source_event_id)
+        .bind(entry.agent_name)
+        .bind(entry.watched_root)
+        .bind(entry.severity)
+        .bind(entry.message)
+        .bind(encode_json(entry.payload)?)
+        .bind(entry.created_at)
         .execute(&mut **tx)
         .await?;
 
@@ -367,14 +382,7 @@ impl Db {
 
     pub(crate) async fn insert_admin_alert(
         tx: &mut Transaction<'_, Sqlite>,
-        alert_type: &str,
-        severity: &str,
-        title: &str,
-        message: &str,
-        agent_name: Option<&str>,
-        incident_id: Option<i64>,
-        metadata: &Value,
-        created_at: &str,
+        alert: &AdminAlertInsert<'_>,
     ) -> anyhow::Result<i64> {
         let result = sqlx::query(
             r#"
@@ -391,14 +399,14 @@ impl Db {
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             "#,
         )
-        .bind(alert_type)
-        .bind(severity)
-        .bind(title)
-        .bind(message)
-        .bind(agent_name)
-        .bind(incident_id)
-        .bind(encode_json(metadata)?)
-        .bind(created_at)
+        .bind(alert.alert_type)
+        .bind(alert.severity)
+        .bind(alert.title)
+        .bind(alert.message)
+        .bind(alert.agent_name)
+        .bind(alert.incident_id)
+        .bind(encode_json(alert.metadata)?)
+        .bind(alert.created_at)
         .execute(&mut **tx)
         .await?;
 

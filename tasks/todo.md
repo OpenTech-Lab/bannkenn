@@ -7,6 +7,16 @@
 - **PID Safety**: eBPF-based PID lifecycle tracking (sched_process_exec/exit hooks)
 - **Feature Flags**: `[containment]` config section with enabled, dry_run, throttle_enabled, fuse_enabled, auto_fuse_release_min
 
+## CI Clippy Fix Slice — 2026-03-15
+- [x] Remove `clone()` on `Copy` values in the agent scorer path
+- [x] Replace cloned single-element slice construction in server behavior ingestion
+- [x] Verify `cargo clippy --workspace -- -D warnings`
+
+### Review
+- Fixed the originally reported clippy failures in `agent/src/scorer.rs` and `server/src/db/behavior.rs`, then continued through the full workspace lint pass until `cargo clippy --workspace -- -D warnings` succeeded on 2026-03-15.
+- Refactored server incident helpers to use typed payload structs instead of oversized positional parameter lists, which resolved the additional `too_many_arguments` findings without weakening lint coverage.
+- Replaced repeated long SQL row tuple spellings in `server/src/db/containment.rs` with explicit type aliases so the mapping code stays readable and passes `clippy::type_complexity`.
+
 ## Phase 1 — eBPF Sensor + File Activity Detection
 - [x] Add `aya` and `aya-log` to agent/Cargo.toml
 - [x] Create `agent/src/ebpf/mod.rs` — sensor management, ring buffer polling
