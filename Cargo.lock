@@ -257,7 +257,7 @@ dependencies = [
 
 [[package]]
 name = "bannkenn-agent"
-version = "1.3.35"
+version = "1.4.0"
 dependencies = [
  "anyhow",
  "aya",
@@ -284,7 +284,7 @@ dependencies = [
 
 [[package]]
 name = "bannkenn-server"
-version = "1.3.35"
+version = "1.4.0"
 dependencies = [
  "anyhow",
  "axum",
