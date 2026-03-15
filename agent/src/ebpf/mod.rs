@@ -3,13 +3,14 @@ pub mod lifecycle;
 
 use crate::config::ContainmentConfig;
 use crate::correlator::ProcessCorrelator;
-use crate::ebpf::events::{
-    BehaviorEvent, FileActivityBatch, FileOperationCounts, RawBehaviorEventKind,
-    RawBehaviorRingEvent, RAW_BEHAVIOR_PATH_CAPACITY,
-};
+use crate::ebpf::events::{BehaviorEvent, FileActivityBatch, FileOperationCounts, RAW_BEHAVIOR_PATH_CAPACITY};
+#[cfg(any(target_os = "linux", test))]
+use crate::ebpf::events::{RawBehaviorEventKind, RawBehaviorRingEvent};
 use crate::ebpf::lifecycle::{LifecycleEvent, ProcessLifecycleTracker};
 use crate::scorer::{CompositeBehaviorScorer, Scorer};
-use anyhow::{anyhow, Context, Result};
+#[cfg(target_os = "linux")]
+use anyhow::anyhow;
+use anyhow::{Context, Result};
 #[cfg(target_os = "linux")]
 use aya::{
     maps::{Array, MapData, RingBuf},
@@ -158,6 +159,7 @@ impl RawPathPrefixEntry {
 }
 
 impl SensorManager {
+    #[allow(unreachable_code)]
     pub fn from_config(config: &ContainmentConfig) -> Option<Self> {
         if !config.enabled {
             return None;

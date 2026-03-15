@@ -1,6 +1,7 @@
 use crate::config::ContainmentConfig;
 use crate::enforcement::{EnforcementAction, EnforcementFuture, EnforcementOutcome, Enforcer};
 use anyhow::{anyhow, Context, Result};
+#[cfg(unix)]
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use tokio::fs;
@@ -253,11 +254,20 @@ fn upsert_io_limit(existing: &str, device_key: &str, io_limit_entry: &str) -> St
     lines.join("\n")
 }
 
+#[cfg(unix)]
 fn device_major_minor(path: &Path) -> Result<(u32, u32)> {
     let metadata = std::fs::metadata(path)
         .with_context(|| format!("failed to stat watched_root {}", path.display()))?;
     let dev = metadata.dev();
     Ok((linux_major(dev), linux_minor(dev)))
+}
+
+#[cfg(not(unix))]
+fn device_major_minor(path: &Path) -> Result<(u32, u32)> {
+    Err(anyhow!(
+        "cgroup I/O throttle is not supported on this platform ({})",
+        path.display()
+    ))
 }
 
 fn linux_major(dev: u64) -> u32 {
