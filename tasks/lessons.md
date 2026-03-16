@@ -233,3 +233,11 @@
 ### Self-update must target the managed service binary, not just the currently running executable
 - If a systemd unit prefers `/usr/local/bin/bannkenn-agent`, `sudo bannkenn-agent update` must resolve and replace that managed path even when the invoking shell found a different copy on `PATH`.
 - Refresh the systemd unit during self-update before restart so the background service stays pinned to the same binary/config path used by `init` and `connect`; otherwise manual diagnostics can succeed while heartbeats from the service stay offline.
+
+### Resource-install answers must state the scope first
+- When an operator asks whether a support file like `bannkenn-containment.bpf.o` belongs "on the server", answer the deployment scope first: it is needed only on hosts that run `bannkenn-agent`, not on server/dashboard-only machines.
+- Give the exact installed paths in the same answer so the operator can verify quickly without inferring where the file should live.
+
+### Optional packaging paths must match the user's real deployment model
+- Do not assume an optional Docker packaging path is valuable when the actual operator workflow is "download GitHub Release assets, then run `sudo bannkenn-agent init` on the host."
+- If a TODO mentions an optional packaging path, call out clearly that it is optional and confirm whether the user wants it kept before treating it as part of the preferred deployment story.

@@ -55,6 +55,7 @@ use crate::outbox::{flush_pending, Outbox, OutboxPayload};
 use crate::service::{install_systemd_unit, uninstall_systemd_unit, SERVICE_UNIT_PATH};
 use crate::shared_risk::SharedRiskSnapshot;
 use crate::tofu::{fetch_presented_certificate, save_presented_certificate};
+use crate::updater::LinuxEbpfAssetStatus;
 use crate::watcher::{watch, BlockOutcome, SecurityEvent};
 
 const OPERATOR_ACTION_POLL_INTERVAL_SECS: u64 = 10;
@@ -1192,6 +1193,28 @@ async fn init() -> Result<()> {
     };
 
     config.save()?;
+
+    match updater::ensure_linux_ebpf_asset_for_current_release().await {
+        Ok(LinuxEbpfAssetStatus::Installed(path)) => {
+            println!("Installed containment BPF object at {}.", path.display());
+        }
+        Ok(LinuxEbpfAssetStatus::AlreadyPresent(path)) => {
+            println!(
+                "Containment BPF object already present at {}.",
+                path.display()
+            );
+        }
+        Ok(LinuxEbpfAssetStatus::NotSupported) => {}
+        Err(err) => {
+            eprintln!(
+                "Warning: could not ensure the containment BPF object automatically: {}",
+                err
+            );
+            eprintln!(
+                "The agent can still start and will fall back to userspace polling until the matching .bpf.o is installed."
+            );
+        }
+    }
 
     match install_systemd_unit(&std::env::current_exe()?) {
         Ok(true) => {

@@ -147,13 +147,19 @@ cat >> "$CHANGELOG_FILE" <<EOF
 **Linux x64:**
 \`\`\`bash
 curl -Lo bannkenn-agent https://github.com/OpenTech-Lab/bannkenn/releases/download/${TAG}/bannkenn-agent-linux-x64
-chmod +x bannkenn-agent && sudo mv bannkenn-agent /usr/local/bin/
+curl -Lo bannkenn-containment.bpf.o https://github.com/OpenTech-Lab/bannkenn/releases/download/${TAG}/bannkenn-containment-linux-x64.bpf.o
+sudo install -m 755 bannkenn-agent /usr/local/bin/bannkenn-agent
+sudo install -d /usr/lib/bannkenn/ebpf
+sudo install -m 644 bannkenn-containment.bpf.o /usr/lib/bannkenn/ebpf/bannkenn-containment.bpf.o
 \`\`\`
 
 **Linux ARM64:**
 \`\`\`bash
 curl -Lo bannkenn-agent https://github.com/OpenTech-Lab/bannkenn/releases/download/${TAG}/bannkenn-agent-linux-arm64
-chmod +x bannkenn-agent && sudo mv bannkenn-agent /usr/local/bin/
+curl -Lo bannkenn-containment.bpf.o https://github.com/OpenTech-Lab/bannkenn/releases/download/${TAG}/bannkenn-containment-linux-arm64.bpf.o
+sudo install -m 755 bannkenn-agent /usr/local/bin/bannkenn-agent
+sudo install -d /usr/lib/bannkenn/ebpf
+sudo install -m 644 bannkenn-containment.bpf.o /usr/lib/bannkenn/ebpf/bannkenn-containment.bpf.o
 \`\`\`
 
 **Windows (PowerShell):**

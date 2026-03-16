@@ -354,7 +354,13 @@ fn build_backend(
     {
         if let Some(object_path) = resolve_ebpf_object_path(config) {
             match AyaSensorBackend::from_config(config, roots.clone(), &object_path) {
-                Ok(backend) => return Box::new(backend),
+                Ok(backend) => {
+                    tracing::info!(
+                        "Containment Aya backend initialized from {}",
+                        object_path.display()
+                    );
+                    return Box::new(backend);
+                }
                 Err(error) => tracing::warn!(
                     "Failed to initialize Aya backend from {} ({}); falling back to userspace polling",
                     object_path.display(),
@@ -364,6 +370,7 @@ fn build_backend(
         }
     }
 
+    tracing::info!("Containment userspace polling backend active");
     Box::new(UserspacePollingBackend {
         poll_interval_ms: config.poll_interval_ms.max(100),
         roots: roots
