@@ -31,6 +31,9 @@ Thumbs.db
 *.swp
 *.swo
 
+# GeoLite2 databases (download separately, see server/data/README.md)
+*.mmdb
+
 # Docker
 docker/data/
 

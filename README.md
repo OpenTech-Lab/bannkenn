@@ -106,5 +106,32 @@ If you want to manage certificates yourself, use `scripts/generate-ip-cert.sh` b
 /etc/passwd,/etc/shadow,/etc/sudoers,/etc/sudoers.d/,/etc/pam.d/,/root/.ssh/authorized_keys,/bin/,/sbin/,/usr/bin/,/usr/sbin/,/usr/local/bin/,/lib/modules/,/etc/systemd/system/,/usr/lib/systemd/system/,/etc/init.d/,/etc/crontab/,/etc/cron.d/,/etc/rc.local,/etc/ld.so.preload,/etc/profile.d/,/etc/bashrc,/etc/hosts,/tmp/,/var/tmp/,/dev/shm/
 </pre>
 
+## GeoLite2 Databases
+
+IP geolocation (country, city, ASN) requires three MaxMind GeoLite2 databases placed in `server/data/`.
+These files are **not bundled** with the repository — you must download them separately.
+
+1. Create a free account at <https://www.maxmind.com/en/geolite2/signup>
+2. Generate a licence key under **My Account → Manage Licence Keys**
+3. Run the following commands from the repo root (replace `YOUR_LICENCE_KEY`):
+
+```bash
+mkdir -p server/data
+
+curl -sL "https://download.maxmind.com/app/geoip_download?edition_id=GeoLite2-Country&license_key=YOUR_LICENCE_KEY&suffix=tar.gz" \
+  | tar -xzO --wildcards "*/GeoLite2-Country.mmdb" > server/data/GeoLite2-Country.mmdb
+
+curl -sL "https://download.maxmind.com/app/geoip_download?edition_id=GeoLite2-City&license_key=YOUR_LICENCE_KEY&suffix=tar.gz" \
+  | tar -xzO --wildcards "*/GeoLite2-City.mmdb" > server/data/GeoLite2-City.mmdb
+
+curl -sL "https://download.maxmind.com/app/geoip_download?edition_id=GeoLite2-ASN&license_key=YOUR_LICENCE_KEY&suffix=tar.gz" \
+  | tar -xzO --wildcards "*/GeoLite2-ASN.mmdb" > server/data/GeoLite2-ASN.mmdb
+```
+
+Alternatively, use the official [geoipupdate](https://github.com/maxmind/geoipupdate) tool to keep them automatically up to date.
+
+> GeoLite2 data is created by MaxMind and licensed under [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/).
+> See `server/data/LICENSE` for the full attribution notice.
+
 ## License
 MIT
