@@ -241,3 +241,7 @@
 ### Optional packaging paths must match the user's real deployment model
 - Do not assume an optional Docker packaging path is valuable when the actual operator workflow is "download GitHub Release assets, then run `sudo bannkenn-agent init` on the host."
 - If a TODO mentions an optional packaging path, call out clearly that it is optional and confirm whether the user wants it kept before treating it as part of the preferred deployment story.
+
+### Mixed lib/bin crates should keep CLI-only modules out of `lib.rs`
+- In a package that builds both a library and a binary from the same `src/` tree, exporting a CLI-only module from `lib.rs` creates a second compiled copy that can trip `dead_code` even when the binary uses it.
+- If a module is only used by `main.rs` command paths, keep it behind `mod ...;` in the binary and do not re-export it from the library unless another crate or library code truly needs it.

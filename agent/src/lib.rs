@@ -18,5 +18,4 @@ pub mod scorer;
 pub mod service;
 pub mod shared_risk;
 pub mod tofu;
-pub mod updater;
 pub mod watcher;
