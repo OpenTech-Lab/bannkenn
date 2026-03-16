@@ -14,6 +14,7 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import {
   fetchAgentDetailSnapshot,
   requestContainmentAction,
@@ -300,85 +301,139 @@ export function AgentDetailPage() {
         </section>
       </div>
 
-      {/* Containment history + behavior events */}
-      <div className="grid gap-6 lg:grid-cols-2">
-        <section className="space-y-0">
-          <h2 className="text-xs font-semibold text-muted-foreground uppercase tracking-[0.3em] pb-3">
-            Containment History
-          </h2>
-          {containmentHistory.length === 0 ? (
-            <p className="text-sm text-muted-foreground">No containment events have been reported yet.</p>
-          ) : (
-            <div className="space-y-3">
-              {containmentHistory.map((event) => (
-                <div
-                  key={event.id}
-                  className="rounded-xl border border-gray-800 bg-gray-900/40 p-4"
-                >
-                  <div className="flex items-start justify-between gap-4">
-                    <div className="space-y-2">
-                      <div className="flex flex-wrap items-center gap-2">
-                        <ContainmentStateBadge state={event.state} />
-                        {event.previous_state && (
-                          <span className="text-xs text-muted-foreground">
-                            from {event.previous_state}
-                          </span>
-                        )}
-                      </div>
-                      <p className="text-sm text-muted-foreground">{event.reason}</p>
-                      <p className="text-xs text-gray-500">
-                        Root {event.watched_root} · score {event.score}
-                      </p>
-                    </div>
-                    <div className="text-right text-xs text-muted-foreground shrink-0">
-                      <p>{formatTimestamp(event.created_at)}</p>
-                      <p>{formatRelativeTime(event.created_at)}</p>
-                    </div>
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-        </section>
+      {/* Behavior Events + Containment History tabs */}
+      <section className="space-y-0">
+        <Tabs defaultValue="behavior">
+          <div className="flex items-center justify-between pb-3">
+            <h2 className="text-xs font-semibold text-muted-foreground uppercase tracking-[0.3em]">
+              Events
+            </h2>
+            <TabsList>
+              <TabsTrigger value="behavior">
+                Behavior Events
+                <span className="ml-1.5 rounded-full bg-white/10 px-1.5 py-0.5 text-[10px] tabular-nums">
+                  {behaviorEvents.length}
+                </span>
+              </TabsTrigger>
+              <TabsTrigger value="containment">
+                Containment History
+                <span className="ml-1.5 rounded-full bg-white/10 px-1.5 py-0.5 text-[10px] tabular-nums">
+                  {containmentHistory.length}
+                </span>
+              </TabsTrigger>
+            </TabsList>
+          </div>
+          <div className="border-t border-border" />
 
-        <section className="space-y-0">
-          <h2 className="text-xs font-semibold text-muted-foreground uppercase tracking-[0.3em] pb-3">
-            Behavior Events
-          </h2>
-          
-          {behaviorEvents.length === 0 ? (
-            <p className="text-sm text-muted-foreground">No behavior events have been uploaded yet.</p>
-          ) : (
-            <div className="space-y-3">
-              {behaviorEvents.map((event) => (
-                <div
-                  key={event.id}
-                  className="rounded-xl border border-gray-800 bg-gray-900/40 p-4"
-                >
-                  <div className="flex items-start justify-between gap-4">
-                    <div className="space-y-2">
-                      <p className="font-medium text-white text-sm">
-                        {event.process_name ?? event.exe_path ?? 'unknown process'}
-                      </p>
-                      <p className="text-sm text-muted-foreground">
-                        {event.reasons.join(', ') || event.level}
-                      </p>
-                      <p className="text-xs text-gray-500">
-                        Root {event.watched_root} · score {event.score}
-                        {event.pid != null && ` · pid ${event.pid}`}
-                      </p>
-                    </div>
-                    <div className="text-right text-xs text-muted-foreground shrink-0">
-                      <p>{formatTimestamp(event.created_at)}</p>
-                      <p>{formatRelativeTime(event.created_at)}</p>
-                    </div>
-                  </div>
+          <TabsContent value="behavior" className="mt-0">
+            <div className="rounded-b-xl border-x border-b border-border overflow-hidden">
+              {behaviorEvents.length === 0 ? (
+                <div className="px-4 py-6 text-sm text-muted-foreground">
+                  No behavior events have been uploaded yet.
                 </div>
-              ))}
+              ) : (
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Process</TableHead>
+                      <TableHead>Level</TableHead>
+                      <TableHead>Reasons</TableHead>
+                      <TableHead>Root</TableHead>
+                      <TableHead className="text-right">Score</TableHead>
+                      <TableHead>PID</TableHead>
+                      <TableHead>Time</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {behaviorEvents.map((event) => (
+                      <TableRow key={event.id}>
+                        <TableCell className="font-medium text-white max-w-[160px] truncate">
+                          {event.process_name ?? event.exe_path ?? 'unknown'}
+                        </TableCell>
+                        <TableCell>
+                          <Badge
+                            className={
+                              event.level === 'critical'
+                                ? 'bg-red-950/60 text-red-300 border border-red-700'
+                                : event.level === 'high'
+                                ? 'bg-orange-950/50 text-orange-300 border border-orange-700'
+                                : event.level === 'suspicious'
+                                ? 'bg-amber-950/50 text-amber-300 border border-amber-700'
+                                : 'bg-gray-900/70 text-gray-200 border border-gray-700'
+                            }
+                          >
+                            {event.level}
+                          </Badge>
+                        </TableCell>
+                        <TableCell className="text-sm text-muted-foreground max-w-[200px] truncate">
+                          {event.reasons.join(', ') || '—'}
+                        </TableCell>
+                        <TableCell className="text-sm text-muted-foreground font-mono max-w-[160px] truncate">
+                          {event.watched_root}
+                        </TableCell>
+                        <TableCell className="text-right tabular-nums">{event.score}</TableCell>
+                        <TableCell className="text-sm text-muted-foreground tabular-nums">
+                          {event.pid ?? '—'}
+                        </TableCell>
+                        <TableCell className="text-xs text-muted-foreground whitespace-nowrap">
+                          <p>{formatTimestamp(event.created_at)}</p>
+                          <p>{formatRelativeTime(event.created_at)}</p>
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              )}
             </div>
-          )}
-        </section>
-      </div>
+          </TabsContent>
+
+          <TabsContent value="containment" className="mt-0">
+            <div className="rounded-b-xl border-x border-b border-border overflow-hidden">
+              {containmentHistory.length === 0 ? (
+                <div className="px-4 py-6 text-sm text-muted-foreground">
+                  No containment events have been reported yet.
+                </div>
+              ) : (
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>State</TableHead>
+                      <TableHead>Previous</TableHead>
+                      <TableHead>Reason</TableHead>
+                      <TableHead>Root</TableHead>
+                      <TableHead className="text-right">Score</TableHead>
+                      <TableHead>Time</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {containmentHistory.map((event) => (
+                      <TableRow key={event.id}>
+                        <TableCell>
+                          <ContainmentStateBadge state={event.state} />
+                        </TableCell>
+                        <TableCell className="text-sm text-muted-foreground">
+                          {event.previous_state ?? '—'}
+                        </TableCell>
+                        <TableCell className="text-sm text-muted-foreground max-w-xs truncate">
+                          {event.reason}
+                        </TableCell>
+                        <TableCell className="text-sm text-muted-foreground font-mono max-w-[160px] truncate">
+                          {event.watched_root}
+                        </TableCell>
+                        <TableCell className="text-right tabular-nums">{event.score}</TableCell>
+                        <TableCell className="text-xs text-muted-foreground whitespace-nowrap">
+                          <p>{formatTimestamp(event.created_at)}</p>
+                          <p>{formatRelativeTime(event.created_at)}</p>
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              )}
+            </div>
+          </TabsContent>
+        </Tabs>
+      </section>
 
       {/* Related incidents */}
       {snapshot.relatedIncidents.length > 0 && (
