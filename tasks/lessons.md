@@ -249,3 +249,7 @@
 ### No-op self-updates must still repair required sidecar assets
 - If a release ships a managed sidecar asset such as `bannkenn-containment.bpf.o`, `bannkenn-agent update` should not stop at "already up to date" before checking whether that asset is missing.
 - A same-version update should be able to self-heal the sidecar asset and restart the running service only when the repair actually changed on-disk state.
+
+### Verifier-backed eBPF load failures need full error-chain logging
+- Wrapping Aya `ProgramError::LoadError` in `anyhow` context and then logging it with plain `{}` can hide the kernel verifier output, leaving only a useless top-level line like `failed to load bk_file_openat`.
+- For startup fallback paths, log the full chain with `{:#}` and enable verbose verifier logs in `EbpfLoader` so operators can diagnose rejected programs directly from `journalctl`.

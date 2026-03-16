@@ -17,7 +17,7 @@ use anyhow::{Context, Result};
 use aya::{
     maps::{Array, MapData, RingBuf},
     programs::TracePoint,
-    Ebpf, EbpfLoader,
+    Ebpf, EbpfLoader, VerifierLogLevel,
 };
 #[cfg(target_os = "linux")]
 use aya_log::EbpfLogger;
@@ -290,6 +290,7 @@ impl AyaSensorBackend {
         object_path: &Path,
     ) -> Result<Self> {
         let mut ebpf = EbpfLoader::new()
+            .verifier_log_level(VerifierLogLevel::VERBOSE | VerifierLogLevel::STATS)
             .load_file(object_path)
             .with_context(|| format!("failed to load eBPF object {}", object_path.display()))?;
         populate_path_prefix_map(&mut ebpf, AYA_WATCH_ROOTS_MAP, &watch_roots)?;
@@ -362,7 +363,7 @@ fn build_backend(
                     return Box::new(backend);
                 }
                 Err(error) => tracing::warn!(
-                    "Failed to initialize Aya backend from {} ({}); falling back to userspace polling",
+                    "Failed to initialize Aya backend from {} ({:#}); falling back to userspace polling",
                     object_path.display(),
                     error
                 ),
