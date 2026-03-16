@@ -26,9 +26,9 @@ usage() {
     echo "  cp .env.example .env && edit .env" >&2
     echo "  $0" >&2
     echo "  $0 192.0.2.10" >&2
-    echo "  $0 192.0.2.10 /etc/nginx/ssl" >&2
-    echo "  $0 --out-dir /etc/nginx/ssl 192.0.2.10 198.51.100.24" >&2
-    echo "  $0 --out-dir /etc/nginx/ssl 192.0.2.10 example.internal" >&2
+    echo "  $0 192.0.2.10 /etc/bannkenn/tls" >&2
+    echo "  $0 --out-dir /etc/bannkenn/tls 192.0.2.10 198.51.100.24" >&2
+    echo "  $0 --out-dir /etc/bannkenn/tls 192.0.2.10 example.internal" >&2
 }
 
 is_ip_san() {
@@ -36,7 +36,7 @@ is_ip_san() {
     [[ "$value" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ || "$value" == *:* ]]
 }
 
-output_dir="${BANNKENN_TLS_DIR:-/etc/nginx/ssl}"
+output_dir="${BANNKENN_TLS_DIR:-/etc/bannkenn/tls}"
 declare -a san_entries=()
 
 while [[ $# -gt 0 ]]; do
