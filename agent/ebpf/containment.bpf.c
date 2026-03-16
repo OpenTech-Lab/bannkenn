@@ -133,7 +133,6 @@ static __always_inline __u32 cstr_len(const char *value, __u32 capacity)
 {
     __u32 len = 0;
 
-#pragma unroll
     for (int i = 0; i < BK_PROCESS_CAPACITY; i++) {
         if ((__u32)i >= capacity || value[i] == '\0') {
             break;
@@ -146,7 +145,6 @@ static __always_inline __u32 cstr_len(const char *value, __u32 capacity)
 
 static __always_inline void copy_path(char *dst, const char *src, __u32 len)
 {
-#pragma unroll
     for (int i = 0; i < BK_PATH_CAPACITY; i++) {
         if ((__u32)i < len) {
             dst[i] = src[i];
@@ -162,7 +160,6 @@ static __always_inline int prefix_matches(const char *path, const struct root_pa
         return 0;
     }
 
-#pragma unroll
     for (int i = 0; i < BK_PATH_CAPACITY; i++) {
         if ((__u32)(i + 1) == prefix->len) {
             if (path[i] != prefix->path[i]) {
@@ -184,7 +181,6 @@ static __always_inline int prefix_matches(const char *path, const struct root_pa
 
 static __always_inline int is_path_in_map(const char *path, void *map, __u32 max_entries)
 {
-#pragma unroll
     for (int i = 0; i < BK_MAX_WATCH_ROOTS; i++) {
         __u32 index = i;
         struct root_path_entry *entry;
