@@ -245,3 +245,7 @@
 ### Mixed lib/bin crates should keep CLI-only modules out of `lib.rs`
 - In a package that builds both a library and a binary from the same `src/` tree, exporting a CLI-only module from `lib.rs` creates a second compiled copy that can trip `dead_code` even when the binary uses it.
 - If a module is only used by `main.rs` command paths, keep it behind `mod ...;` in the binary and do not re-export it from the library unless another crate or library code truly needs it.
+
+### No-op self-updates must still repair required sidecar assets
+- If a release ships a managed sidecar asset such as `bannkenn-containment.bpf.o`, `bannkenn-agent update` should not stop at "already up to date" before checking whether that asset is missing.
+- A same-version update should be able to self-heal the sidecar asset and restart the running service only when the repair actually changed on-disk state.

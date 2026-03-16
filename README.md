@@ -91,7 +91,7 @@ sudo systemctl status bannkenn-agent --no-pager
 sudo bannkenn-agent update
 ```
 
-On Linux, this now refreshes both the released agent binary and the matching containment BPF object.
+On Linux, this now refreshes both the released agent binary and the matching containment BPF object. If the binary is already current but the containment object is missing, `sudo bannkenn-agent update` will repair the missing `.bpf.o` and restart the service when needed.
 
 If you want to manage certificates yourself, use `scripts/generate-ip-cert.sh` before the native-TLS install. Otherwise, `scripts/install.sh dashboard-native-tls` can generate the cert files from `.env`.
 

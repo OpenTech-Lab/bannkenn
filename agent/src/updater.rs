@@ -38,8 +38,25 @@ pub async fn update(version: Option<&str>) -> Result<()> {
     let current_version = env!("CARGO_PKG_VERSION");
     let assets = release_asset_names()?;
     let target_version = resolve_target_version(version, assets.binary).await?;
+    let client = Client::new();
     if same_release_version(current_version, &target_version) {
+        let bpf_status =
+            ensure_linux_ebpf_asset_for_version_with_client(&client, &target_version, false)
+                .await?;
+        let restarted = if should_restart_service_after_ebpf_repair(&bpf_status) {
+            restart_service_if_active().await?
+        } else {
+            false
+        };
         println!("bannkenn-agent is already up to date ({})", current_version);
+        if let LinuxEbpfAssetStatus::Installed(path) = &bpf_status {
+            println!("Installed containment BPF object: {}", path.display());
+        }
+        if restarted {
+            println!("Restarted systemd service: bannkenn-agent");
+        } else if should_restart_service_after_ebpf_repair(&bpf_status) {
+            println!("Systemd service not active; skipped restart");
+        }
         return Ok(());
     }
 
@@ -52,7 +69,6 @@ pub async fn update(version: Option<&str>) -> Result<()> {
         download_url
     );
 
-    let client = Client::new();
     let bytes = download_release_asset(&client, &download_url).await?;
 
     install_binary(&target_path, &bytes).await?;
@@ -269,6 +285,10 @@ async fn ensure_linux_ebpf_asset_for_version_with_client(
     Ok(LinuxEbpfAssetStatus::Installed(target_path))
 }
 
+fn should_restart_service_after_ebpf_repair(status: &LinuxEbpfAssetStatus) -> bool {
+    matches!(status, LinuxEbpfAssetStatus::Installed(_))
+}
+
 fn resolve_linux_ebpf_object_install_path() -> PathBuf {
     let env_override = env::var_os(LINUX_EBPF_INSTALL_DIR_ENV)
         .filter(|value| !value.is_empty())
@@ -471,5 +491,18 @@ mod tests {
     fn ebpf_install_path_defaults_to_usr_lib() {
         let path = resolve_linux_ebpf_object_install_path_for(None, &[]);
         assert_eq!(path, PathBuf::from(DEFAULT_LINUX_EBPF_OBJECT_PATH));
+    }
+
+    #[test]
+    fn repaired_ebpf_asset_requires_service_restart() {
+        assert!(should_restart_service_after_ebpf_repair(
+            &LinuxEbpfAssetStatus::Installed(PathBuf::from(DEFAULT_LINUX_EBPF_OBJECT_PATH))
+        ));
+        assert!(!should_restart_service_after_ebpf_repair(
+            &LinuxEbpfAssetStatus::AlreadyPresent(PathBuf::from(DEFAULT_LINUX_EBPF_OBJECT_PATH))
+        ));
+        assert!(!should_restart_service_after_ebpf_repair(
+            &LinuxEbpfAssetStatus::NotSupported
+        ));
     }
 }

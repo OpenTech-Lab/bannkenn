@@ -53,6 +53,7 @@ On Linux, `bannkenn-agent update` installs both:
 - the matching `bannkenn-containment-*.bpf.o` release asset into the default containment object path
 
 `bannkenn-agent init` also checks for the Linux containment object and installs the matching release asset automatically if it is missing.
+If the binary is already up to date but the containment object is missing, `sudo bannkenn-agent update` repairs the missing `.bpf.o` and restarts the service when it had to install the asset.
 
 If you are doing a manual release install instead of using the updater, install both files together:
 
