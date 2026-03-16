@@ -14,6 +14,7 @@ import {
   AgentStatusBadge,
   ContainmentStateBadge,
   ContainmentStateTrack,
+  EbpfSensorBadge,
 } from '@/src/features/monitoring/components/status-badge';
 import { AgentDetailSnapshot } from '@/src/features/monitoring/types';
 import {
@@ -163,6 +164,7 @@ export function AgentDetailPage() {
           <div className="flex flex-wrap gap-2">
             <AgentStatusBadge status={snapshot.agent.status} />
             <ContainmentStateBadge state={state} />
+            <EbpfSensorBadge sensor={snapshot.agent.containment_sensor} />
           </div>
         </div>
         <div className="space-y-2 rounded-2xl border border-white/10 bg-black/60 p-4">

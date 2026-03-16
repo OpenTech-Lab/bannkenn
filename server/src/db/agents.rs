@@ -80,6 +80,7 @@ impl Db {
                 String,
                 Option<String>,
                 Option<i64>,
+                Option<String>,
             ),
         >(
             r#"
@@ -90,7 +91,8 @@ impl Db {
                 a.nickname,
                 a.created_at,
                 h.last_heartbeat_at as last_seen_at,
-                h.butterfly_shield_enabled
+                h.butterfly_shield_enabled,
+                h.containment_sensor
             FROM agents a
             LEFT JOIN agent_heartbeats h ON h.agent_name = a.name
             WHERE a.id = ?
@@ -101,7 +103,7 @@ impl Db {
         .await?;
 
         Ok(row.map(
-            |(id, name, uuid, nickname, created_at, last_seen_at, butterfly_shield_enabled)| {
+            |(id, name, uuid, nickname, created_at, last_seen_at, butterfly_shield_enabled, containment_sensor)| {
                 AgentStatusRow {
                     id,
                     name,
@@ -110,6 +112,7 @@ impl Db {
                     created_at,
                     last_seen_at,
                     butterfly_shield_enabled: butterfly_shield_enabled.map(|v| v != 0),
+                    containment_sensor,
                 }
             },
         ))
@@ -145,6 +148,7 @@ impl Db {
                 String,
                 Option<String>,
                 Option<i64>,
+                Option<String>,
             ),
         >(
             r#"
@@ -155,7 +159,8 @@ impl Db {
                 a.nickname,
                 a.created_at,
                 h.last_heartbeat_at as last_seen_at,
-                h.butterfly_shield_enabled
+                h.butterfly_shield_enabled,
+                h.containment_sensor
             FROM agents a
             LEFT JOIN agent_heartbeats h ON h.agent_name = a.name
             ORDER BY a.created_at DESC
@@ -169,7 +174,7 @@ impl Db {
         Ok(rows
             .into_iter()
             .map(
-                |(id, name, uuid, nickname, created_at, last_seen_at, butterfly_shield_enabled)| {
+                |(id, name, uuid, nickname, created_at, last_seen_at, butterfly_shield_enabled, containment_sensor)| {
                     AgentStatusRow {
                         id,
                         name,
@@ -178,6 +183,7 @@ impl Db {
                         created_at,
                         last_seen_at,
                         butterfly_shield_enabled: butterfly_shield_enabled.map(|v| v != 0),
+                        containment_sensor,
                     }
                 },
             )
@@ -188,21 +194,24 @@ impl Db {
         &self,
         agent_name: &str,
         butterfly_shield_enabled: Option<bool>,
+        containment_sensor: Option<String>,
     ) -> anyhow::Result<()> {
         let now = Utc::now().to_rfc3339();
         let flag: Option<i64> = butterfly_shield_enabled.map(|value| value as i64);
         sqlx::query(
             r#"
-            INSERT INTO agent_heartbeats (agent_name, last_heartbeat_at, butterfly_shield_enabled)
-            VALUES (?, ?, ?)
+            INSERT INTO agent_heartbeats (agent_name, last_heartbeat_at, butterfly_shield_enabled, containment_sensor)
+            VALUES (?, ?, ?, ?)
             ON CONFLICT(agent_name) DO UPDATE SET
                 last_heartbeat_at = excluded.last_heartbeat_at,
-                butterfly_shield_enabled = excluded.butterfly_shield_enabled
+                butterfly_shield_enabled = excluded.butterfly_shield_enabled,
+                containment_sensor = COALESCE(excluded.containment_sensor, agent_heartbeats.containment_sensor)
             "#,
         )
         .bind(agent_name)
         .bind(now)
         .bind(flag)
+        .bind(containment_sensor)
         .execute(&self.0)
         .await?;
 

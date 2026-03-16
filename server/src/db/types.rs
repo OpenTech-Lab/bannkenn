@@ -233,6 +233,7 @@ pub struct AgentStatusRow {
     pub created_at: String,
     pub last_seen_at: Option<String>,
     pub butterfly_shield_enabled: Option<bool>,
+    pub containment_sensor: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

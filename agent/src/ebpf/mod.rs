@@ -199,6 +199,10 @@ impl SensorManager {
         })
     }
 
+    pub fn backend_name(&self) -> &'static str {
+        self.backend.backend_name()
+    }
+
     pub async fn run(mut self, tx: mpsc::Sender<BehaviorEvent>) -> Result<()> {
         let mut ticker = interval(self.poll_interval);
         ticker.tick().await;

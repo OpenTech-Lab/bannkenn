@@ -365,11 +365,18 @@ impl ApiClient {
     }
 
     /// Send heartbeat so server can mark this agent as online.
-    /// Optionally reports ButterflyShield status.
-    pub async fn send_heartbeat(&self, butterfly_shield_enabled: Option<bool>) -> Result<()> {
+    /// Optionally reports ButterflyShield status and the active containment sensor backend.
+    pub async fn send_heartbeat(
+        &self,
+        butterfly_shield_enabled: Option<bool>,
+        containment_sensor: Option<String>,
+    ) -> Result<()> {
         let url = format!("{}/api/v1/agents/heartbeat", self.base_url);
 
-        let body = json!({ "butterfly_shield_enabled": butterfly_shield_enabled });
+        let body = json!({
+            "butterfly_shield_enabled": butterfly_shield_enabled,
+            "containment_sensor": containment_sensor,
+        });
 
         let response = self
             .http

@@ -45,6 +45,24 @@ export function SeverityBadge({ severity }: { severity: string }) {
   );
 }
 
+export function EbpfSensorBadge({ sensor }: { sensor?: string | null }) {
+  if (!sensor) {
+    return null;
+  }
+  const isEbpf = sensor === 'aya_ringbuf';
+  return (
+    <Badge
+      className={cn(
+        isEbpf
+          ? 'border-sky-700 bg-sky-950/50 text-sky-300'
+          : 'border-slate-700 bg-black/70 text-slate-400'
+      )}
+    >
+      {isEbpf ? 'eBPF' : 'userspace'}
+    </Badge>
+  );
+}
+
 export function ContainmentStateTrack({ state }: { state: string }) {
   const states = ['normal', 'suspicious', 'throttle', 'fuse'];
   const activeIndex = Math.max(states.indexOf(state), 0);

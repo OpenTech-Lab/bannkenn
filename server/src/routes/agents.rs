@@ -40,11 +40,13 @@ pub struct AgentStatusResponse {
     pub last_seen_at: Option<String>,
     pub status: String,
     pub butterfly_shield_enabled: Option<bool>,
+    pub containment_sensor: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Default)]
 pub struct HeartbeatRequest {
     pub butterfly_shield_enabled: Option<bool>,
+    pub containment_sensor: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -158,10 +160,11 @@ pub async fn heartbeat(
     agent: AuthenticatedAgent,
     payload: Option<Json<HeartbeatRequest>>,
 ) -> Result<impl IntoResponse, StatusCode> {
-    let butterfly_shield_enabled = payload.and_then(|p| p.butterfly_shield_enabled);
+    let butterfly_shield_enabled = payload.as_ref().and_then(|p| p.butterfly_shield_enabled);
+    let containment_sensor = payload.and_then(|p| p.containment_sensor.clone());
     state
         .db
-        .upsert_agent_heartbeat(&agent.0, butterfly_shield_enabled)
+        .upsert_agent_heartbeat(&agent.0, butterfly_shield_enabled, containment_sensor)
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
@@ -368,5 +371,6 @@ fn map_agent_status(row: crate::db::AgentStatusRow, now: DateTime<Utc>) -> Agent
         last_seen_at: row.last_seen_at,
         status,
         butterfly_shield_enabled: row.butterfly_shield_enabled,
+        containment_sensor: row.containment_sensor,
     }
 }

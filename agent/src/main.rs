@@ -326,12 +326,15 @@ async fn run() -> Result<()> {
         config.ca_cert_path.clone(),
     )?;
     let butterfly_enabled = config.butterfly_shield.as_ref().map(|c| c.enabled);
+    let containment_sensor_name: Arc<RwLock<Option<String>>> = Arc::new(RwLock::new(None));
+    let sensor_name_for_heartbeat = Arc::clone(&containment_sensor_name);
     let heartbeat_handle = tokio::spawn(async move {
         let mut ticker = interval(Duration::from_secs(30));
         ticker.tick().await;
 
         loop {
-            match heartbeat_client.send_heartbeat(butterfly_enabled).await {
+            let sensor = sensor_name_for_heartbeat.read().await.clone();
+            match heartbeat_client.send_heartbeat(butterfly_enabled, sensor).await {
                 Ok(_) => tracing::debug!("Heartbeat sent"),
                 Err(e) => tracing::warn!("Failed to send heartbeat: {}", e),
             }
@@ -530,6 +533,7 @@ async fn run() -> Result<()> {
         .as_ref()
         .and_then(SensorManager::from_config)
     {
+        *containment_sensor_name.write().await = Some(manager.backend_name().to_string());
         Some(tokio::spawn(async move {
             if let Err(e) = manager.run(behavior_tx).await {
                 tracing::error!("Behavior sensor error: {}", e);

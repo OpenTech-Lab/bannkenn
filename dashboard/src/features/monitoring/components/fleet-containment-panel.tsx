@@ -6,6 +6,7 @@ import {
   AgentStatusBadge,
   ContainmentStateBadge,
   ContainmentStateTrack,
+  EbpfSensorBadge,
 } from '@/src/features/monitoring/components/status-badge';
 import {
   agentLabel,
@@ -59,6 +60,7 @@ export function FleetContainmentPanel({
                       </Link>
                       <AgentStatusBadge status={summary.agent.status} />
                       <ContainmentStateBadge state={state} />
+                      <EbpfSensorBadge sensor={summary.agent.containment_sensor} />
                     </div>
                     <p className="text-sm text-slate-400">
                       {summary.containment?.reason ?? 'No containment transition has been recorded.'}

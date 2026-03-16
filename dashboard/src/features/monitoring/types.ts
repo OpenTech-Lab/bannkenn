@@ -11,6 +11,7 @@ export type AgentStatus = {
   last_seen_at: string | null;
   status: 'online' | 'offline' | 'unknown';
   butterfly_shield_enabled?: boolean | null;
+  containment_sensor?: string | null;
 };
 
 export type BehaviorFileOps = {

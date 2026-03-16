@@ -406,6 +406,9 @@ pub(crate) async fn migrate(pool: &SqlitePool) -> anyhow::Result<()> {
     let _ = sqlx::query("ALTER TABLE agent_heartbeats ADD COLUMN butterfly_shield_enabled INTEGER")
         .execute(pool)
         .await;
+    let _ = sqlx::query("ALTER TABLE agent_heartbeats ADD COLUMN containment_sensor TEXT")
+        .execute(pool)
+        .await;
 
     sqlx::query(
         r#"
