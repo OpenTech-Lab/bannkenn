@@ -1,5 +1,11 @@
 GeoLite2 End User License Agreement
 
+Use of this MaxMind product is governed by MaxMind's GeoLite End User License Agreement, which can be viewed at https://www.maxmind.com/en/geolite/eula.
+
+This database incorporates GeoNames [https://www.geonames.org] geographical data, which is made available under the Creative Commons Attribution 4.0 License. To view a copy of this license, visit https://creativecommons.org/licenses/by/4.0/.
+
+---
+
 The GeoLite2 databases are distributed under the Creative Commons Attribution-ShareAlike 4.0
 International License. The full license text is available at:
 
@@ -22,3 +28,4 @@ Attribution notice required when using or redistributing GeoLite2 data:
 
 For the MaxMind GeoLite2 End User License Agreement, see:
   https://www.maxmind.com/en/geolite2/eula
+

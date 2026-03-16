@@ -112,20 +112,15 @@ IP geolocation (country, city, ASN) requires three MaxMind GeoLite2 databases pl
 These files are **not bundled** with the repository — you must download them separately.
 
 1. Create a free account at <https://www.maxmind.com/en/geolite2/signup>
-2. Generate a licence key under **My Account → Manage Licence Keys**
+2. Generate a licence key under **My Account → GeoIP / GeoLite -> Download files**
 3. Run the following commands from the repo root (replace `YOUR_LICENCE_KEY`):
 
 ```bash
 mkdir -p server/data
 
-curl -sL "https://download.maxmind.com/app/geoip_download?edition_id=GeoLite2-Country&license_key=YOUR_LICENCE_KEY&suffix=tar.gz" \
-  | tar -xzO --wildcards "*/GeoLite2-Country.mmdb" > server/data/GeoLite2-Country.mmdb
-
-curl -sL "https://download.maxmind.com/app/geoip_download?edition_id=GeoLite2-City&license_key=YOUR_LICENCE_KEY&suffix=tar.gz" \
-  | tar -xzO --wildcards "*/GeoLite2-City.mmdb" > server/data/GeoLite2-City.mmdb
-
-curl -sL "https://download.maxmind.com/app/geoip_download?edition_id=GeoLite2-ASN&license_key=YOUR_LICENCE_KEY&suffix=tar.gz" \
-  | tar -xzO --wildcards "*/GeoLite2-ASN.mmdb" > server/data/GeoLite2-ASN.mmdb
+GeoLite2-Country.mmdb > server/data/GeoLite2-Country.mmdb
+GeoLite2-City.mmdb > server/data/GeoLite2-City.mmdb
+GeoLite2-ASN.mmdb > server/data/GeoLite2-ASN.mmdb
 ```
 
 Alternatively, use the official [geoipupdate](https://github.com/maxmind/geoipupdate) tool to keep them automatically up to date.
