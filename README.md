@@ -113,7 +113,6 @@ These files are **not bundled** with the repository — you must download them s
 
 1. Create a free account at <https://www.maxmind.com/en/geolite2/signup>
 2. Generate a licence key under **My Account → GeoIP / GeoLite -> Download files**
-3. Run the following commands from the repo root (replace `YOUR_LICENCE_KEY`):
 
 ```bash
 mkdir -p server/data
