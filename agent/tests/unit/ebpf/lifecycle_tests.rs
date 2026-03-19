@@ -79,13 +79,22 @@ fn container_context_detects_runtime_and_id_from_cgroup_lines() {
 #[test]
 fn container_context_detects_kubernetes_containerd_paths() {
     let (runtime, id) = read_container_context_from_str(
-            "0::/kubepods/besteffort/pod1234/0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n",
-        );
+        "0::/kubepods/besteffort/pod1234/0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n",
+    );
     assert_eq!(runtime.as_deref(), Some("kubernetes"));
     assert_eq!(
         id.as_deref(),
         Some("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
     );
+}
+
+#[test]
+fn container_context_detects_crio_runtime_from_scope_prefix() {
+    let (runtime, id) = read_container_context_from_str(
+        "0::/kubepods.slice/kubepods-burstable.slice/kubepods-burstable-pod1234.slice/crio-0123456789abcdef0123456789abcdef.scope\n",
+    );
+    assert_eq!(runtime.as_deref(), Some("crio"));
+    assert_eq!(id.as_deref(), Some("0123456789abcdef0123456789abcdef"));
 }
 
 fn read_container_context_from_str(content: &str) -> (Option<String>, Option<String>) {

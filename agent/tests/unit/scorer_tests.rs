@@ -192,6 +192,51 @@ fn trusted_containerized_service_temp_activity_is_downgraded() {
 }
 
 #[test]
+fn overlapping_benign_contexts_do_not_double_subtract_the_same_components() {
+    let scorer = CompositeBehaviorScorer::from_config(&ContainmentConfig::default());
+    let batch = batch_with_ops(
+        FileOperationCounts {
+            renamed: 2,
+            modified: 5,
+            deleted: 3,
+            ..Default::default()
+        },
+        vec!["/tmp/depmod-cache"],
+        2 * 1_048_576,
+    );
+    let mut proc = process(84, "depmod", "/usr/sbin/depmod", "/usr/sbin/depmod -a");
+    proc.parent_process_name = Some("systemd".to_string());
+    proc.parent_command_line = Some("systemd".to_string());
+    proc.container_runtime = Some("docker".to_string());
+    proc.container_id = Some("0123456789abcdef0123456789abcdef".to_string());
+
+    let adjustment = scorer.context_adjustment(
+        &batch,
+        Some(&proc),
+        batch.file_ops.renamed.saturating_mul(scorer.rename_score),
+        batch.file_ops.modified.saturating_mul(scorer.write_score),
+        batch.file_ops.deleted.saturating_mul(scorer.delete_score),
+        (batch.bytes_written / scorer.bytes_per_score).min(u64::from(u32::MAX)) as u32,
+    );
+
+    assert_eq!(
+        adjustment.penalty,
+        batch.file_ops.renamed.saturating_mul(scorer.rename_score)
+            + batch.file_ops.modified.saturating_mul(scorer.write_score)
+            + batch.file_ops.deleted.saturating_mul(scorer.delete_score)
+            + (batch.bytes_written / scorer.bytes_per_score).min(u64::from(u32::MAX)) as u32
+    );
+    assert!(adjustment
+        .reasons
+        .iter()
+        .any(|reason| reason == "package-manager helper activity"));
+    assert!(adjustment
+        .reasons
+        .iter()
+        .any(|reason| reason == "containerized service temp activity"));
+}
+
+#[test]
 fn temp_path_executable_gets_extra_suspicion() {
     let scorer = CompositeBehaviorScorer::from_config(&ContainmentConfig::default());
     let batch = batch_with_ops(

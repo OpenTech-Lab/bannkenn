@@ -116,36 +116,47 @@ impl CompositeBehaviorScorer {
         let containerized_service_temp_activity =
             is_containerized_service_temp_activity(process, batch);
         let process_name_mismatch = has_process_name_mismatch(process);
+        let suppress_rename =
+            package_manager_helper_activity || containerized_service_temp_activity;
+        let suppress_write = known_java_temp_extraction
+            || package_manager_helper_activity
+            || containerized_service_temp_activity;
+        let suppress_delete = known_java_temp_extraction
+            || package_manager_helper_activity
+            || containerized_service_temp_activity;
+        let suppress_throughput = known_java_temp_extraction
+            || package_manager_helper_activity
+            || containerized_service_temp_activity;
+
+        if suppress_rename {
+            adjustment.penalty = adjustment.penalty.saturating_add(rename_component);
+        }
+
+        if suppress_write {
+            adjustment.penalty = adjustment.penalty.saturating_add(write_component);
+        }
+
+        if suppress_delete {
+            adjustment.penalty = adjustment.penalty.saturating_add(delete_component);
+        }
+
+        if suppress_throughput {
+            adjustment.penalty = adjustment.penalty.saturating_add(throughput_component);
+        }
 
         if known_java_temp_extraction {
-            adjustment.penalty = adjustment
-                .penalty
-                .saturating_add(write_component.saturating_add(delete_component))
-                .saturating_add(throughput_component);
             adjustment
                 .reasons
                 .push("known JVM temp extraction pattern".to_string());
         }
 
         if package_manager_helper_activity {
-            adjustment.penalty = adjustment
-                .penalty
-                .saturating_add(rename_component)
-                .saturating_add(write_component)
-                .saturating_add(delete_component)
-                .saturating_add(throughput_component);
             adjustment
                 .reasons
                 .push("package-manager helper activity".to_string());
         }
 
         if containerized_service_temp_activity {
-            adjustment.penalty = adjustment
-                .penalty
-                .saturating_add(rename_component)
-                .saturating_add(write_component)
-                .saturating_add(delete_component)
-                .saturating_add(throughput_component);
             adjustment
                 .reasons
                 .push("containerized service temp activity".to_string());

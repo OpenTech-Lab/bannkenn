@@ -1,5 +1,37 @@
 # tasks
 
+## Done: Prevent overlapping benign scorer suppressions from double-counting
+
+### Scope
+- [x] Fix the scorer so overlapping benign contexts only suppress each burst component once
+- [x] Add regression coverage for overlapping package-helper and containerized-service matches
+- [x] Re-run formatter, targeted tests, and workspace clippy
+
+### Notes
+- Review correction: benign suppressors were accumulated independently, so one process could remove the same rename/write/delete/throughput contribution multiple times.
+
+### Review
+- Updated [agent/src/scorer.rs](/home/toyofumi/Project/Bannkenn/agent/src/scorer.rs) to aggregate suppression by score component instead of adding each benign-context penalty independently.
+- Added overlapping-context coverage in [agent/tests/unit/scorer_tests.rs](/home/toyofumi/Project/Bannkenn/agent/tests/unit/scorer_tests.rs).
+- Verification: `cargo test --workspace overlapping_benign_contexts_do_not_double_subtract_the_same_components` passed.
+- Verification: `cargo clippy --workspace -- -D warnings` passed.
+
+## Done: Align CRI-O runtime detection with container ID parsing
+
+### Scope
+- [x] Fix CRI-O runtime detection in the lifecycle container-context parser
+- [x] Add regression coverage for CRI-O cgroup scope paths
+- [x] Re-run verification for the updated parser
+
+### Notes
+- Review correction: the parser already recognized `crio-<id>` container IDs, but runtime inference never emitted `container_runtime = "crio"`.
+
+### Review
+- Updated [agent/src/ebpf/lifecycle.rs](/home/toyofumi/Project/Bannkenn/agent/src/ebpf/lifecycle.rs) so `read_container_context` tags CRI-O lines as `crio` before the generic `kubepods` fallback.
+- Added CRI-O coverage in [agent/tests/unit/ebpf/lifecycle_tests.rs](/home/toyofumi/Project/Bannkenn/agent/tests/unit/ebpf/lifecycle_tests.rs).
+- Verification: `cargo test --workspace container_context_detects_` passed.
+- Verification: `cargo clippy --workspace -- -D warnings` passed.
+
 ## Done: Fix formatter regressions in relocated `agent` test files
 
 ### Scope

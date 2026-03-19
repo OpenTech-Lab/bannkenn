@@ -244,6 +244,16 @@
 - After moving or generating Rust test files, run `cargo fmt --all -- --check` explicitly and fix any remaining diffs before closing the task.
 - Treat formatter verification as separate from test and clippy verification in `tasks/todo.md`.
 
+### Runtime classifiers and ID parsers must evolve together
+- If one parser recognizes a platform-specific marker like `crio-<id>`, audit the paired metadata inference path so it emits the matching runtime label as well.
+- For container context in this repo, keep `container_runtime` and `container_id` extraction aligned across Docker, containerd, Podman, CRI-O, and Kubernetes cgroup variants.
+- Add a regression test for the exact cgroup shape reported in review whenever a new runtime prefix is supported.
+
+### Overlapping score suppressors must aggregate by component, not by reason bucket
+- If multiple benign contexts suppress the same rename/write/delete/throughput burst, compute suppression once per component and then attach all matching reasons.
+- Do not let independent "known benign" branches each subtract the full component set, or one process can be downgraded more than intended just because contexts overlap.
+- Add a regression test for at least one realistic overlap case whenever a new benign-context suppressor is introduced.
+
 ### CI lint fixes need full workspace verification, not only the first reported warning
 - When GitHub Actions fails on an initial clippy warning, do not stop after patching the first printed lines; rerun `cargo clippy --workspace -- -D warnings` locally until the workspace is clean because later lints may be hidden behind the first failure.
 - Prefer structural fixes over `#[allow(...)]`: replace long tuple spellings with type aliases and replace long helper argument lists with typed request structs so the code gets simpler while satisfying the lint.

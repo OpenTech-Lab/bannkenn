@@ -309,6 +309,8 @@ fn read_container_context(path: PathBuf) -> (Option<String>, Option<String>) {
                 Some("docker".to_string())
             } else if lower.contains("containerd") || lower.contains("cri-containerd") {
                 Some("containerd".to_string())
+            } else if lower.contains("crio") {
+                Some("crio".to_string())
             } else if lower.contains("kubepods") {
                 Some("kubernetes".to_string())
             } else if lower.contains("libpod") || lower.contains("podman") {
