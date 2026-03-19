@@ -32,6 +32,51 @@ const KNOWN_JAVA_RUNTIME_MARKERS: &[&str] =
     &["opensearch", "wazuh-indexer", "org.opensearch", "solr"];
 const SHELL_LIKE_PARENT_PATTERNS: &[&str] = &["sh", "bash", "dash", "zsh", "ash", "busybox"];
 const TRUSTED_EXEC_PREFIXES: &[&str] = &["/usr/", "/bin/", "/sbin/", "/lib/", "/nix/store/"];
+const TRUSTED_MAINTENANCE_PATTERNS: &[&str] = &[
+    "apt",
+    "apt-get",
+    "aptitude",
+    "dpkg",
+    "dpkg-preconfigure",
+    "dpkg-deb",
+    "unattended-upgrade",
+    "unattended-upgrade-shutdown",
+    "systemd",
+    "systemctl",
+    "systemd-tmpfiles",
+    "systemd-sysusers",
+    "systemd-sysctl",
+    "systemd-udevd",
+    "fwupd",
+    "fwupdmgr",
+    "snap",
+    "snapd",
+    "packagekitd",
+];
+const MAINTENANCE_PATH_PREFIXES: &[&str] = &[
+    "/usr",
+    "/etc",
+    "/lib",
+    "/boot",
+    "/run/systemd",
+    "/var/lib/dpkg",
+    "/var/lib/apt",
+    "/var/cache/apt",
+    "/var/lib/snapd",
+    "/var/lib/fwupd",
+    "/snap",
+];
+const AGENT_INTERNAL_PATTERNS: &[&str] = &["bannkenn-agent"];
+const AGENT_INTERNAL_PATH_PREFIXES: &[&str] = &[
+    "/etc/bannkenn",
+    "/var/lib/bannkenn",
+    "/usr/lib/bannkenn",
+    "/usr/local/lib/bannkenn",
+    "/opt/bannkenn",
+    "/.config/bannkenn",
+];
+const RENAME_BURST_GRACE: u32 = 3;
+const DELETE_BURST_GRACE: u32 = 2;
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 struct ScoreAdjustment {
@@ -102,6 +147,7 @@ impl CompositeBehaviorScorer {
         &self,
         batch: &FileActivityBatch,
         process: Option<&ProcessInfo>,
+        protected_path_component: u32,
         rename_component: u32,
         write_component: u32,
         delete_component: u32,
@@ -114,20 +160,29 @@ impl CompositeBehaviorScorer {
         let mut adjustment = ScoreAdjustment::default();
         let known_java_temp_extraction = is_known_java_temp_extraction(process, batch);
         let package_manager_helper_activity = is_package_manager_helper_activity(process, batch);
+        let trusted_maintenance_activity = is_trusted_maintenance_activity(process, batch);
         let containerized_service_temp_activity =
             is_containerized_service_temp_activity(process, batch);
+        let agent_internal_activity = is_agent_internal_activity(process, batch);
         let process_name_mismatch = has_process_name_mismatch(process);
-        let suppress_rename =
-            package_manager_helper_activity || containerized_service_temp_activity;
+        let suppress_rename = package_manager_helper_activity
+            || trusted_maintenance_activity
+            || containerized_service_temp_activity
+            || agent_internal_activity;
         let suppress_write = known_java_temp_extraction
             || package_manager_helper_activity
+            || trusted_maintenance_activity
             || containerized_service_temp_activity;
         let suppress_delete = known_java_temp_extraction
             || package_manager_helper_activity
-            || containerized_service_temp_activity;
+            || trusted_maintenance_activity
+            || containerized_service_temp_activity
+            || agent_internal_activity;
         let suppress_throughput = known_java_temp_extraction
             || package_manager_helper_activity
+            || trusted_maintenance_activity
             || containerized_service_temp_activity;
+        let suppress_protected_path = trusted_maintenance_activity || agent_internal_activity;
 
         if suppress_rename {
             adjustment.penalty = adjustment.penalty.saturating_add(rename_component);
@@ -145,6 +200,10 @@ impl CompositeBehaviorScorer {
             adjustment.penalty = adjustment.penalty.saturating_add(throughput_component);
         }
 
+        if suppress_protected_path {
+            adjustment.penalty = adjustment.penalty.saturating_add(protected_path_component);
+        }
+
         if known_java_temp_extraction {
             adjustment
                 .reasons
@@ -157,16 +216,30 @@ impl CompositeBehaviorScorer {
                 .push("package-manager helper activity".to_string());
         }
 
+        if trusted_maintenance_activity {
+            adjustment
+                .reasons
+                .push("trusted maintenance activity".to_string());
+        }
+
         if containerized_service_temp_activity {
             adjustment
                 .reasons
                 .push("containerized service temp activity".to_string());
         }
 
+        if agent_internal_activity {
+            adjustment
+                .reasons
+                .push("agent internal activity".to_string());
+        }
+
         if is_temp_path(&process.exe_path)
             && !known_java_temp_extraction
             && !package_manager_helper_activity
+            && !trusted_maintenance_activity
             && !containerized_service_temp_activity
+            && !agent_internal_activity
         {
             adjustment.bonus = adjustment
                 .bonus
@@ -214,6 +287,8 @@ impl CompositeBehaviorScorer {
             process_name: process.map(|proc_info| proc_info.process_name.clone()),
             exe_path: process.map(|proc_info| proc_info.exe_path.clone()),
             command_line: process.map(|proc_info| proc_info.command_line.clone()),
+            parent_process_name: process.and_then(|proc_info| proc_info.parent_process_name.clone()),
+            parent_command_line: process.and_then(|proc_info| proc_info.parent_command_line.clone()),
             correlation_hits: process
                 .map(|proc_info| proc_info.correlation_hits)
                 .unwrap_or(0),
@@ -234,7 +309,11 @@ impl Scorer for CompositeBehaviorScorer {
         let mut score = 0u32;
         let mut reasons = Vec::new();
 
-        let rename_component = batch.file_ops.renamed.saturating_mul(self.rename_score);
+        let rename_component = effective_burst_score(
+            batch.file_ops.renamed,
+            RENAME_BURST_GRACE,
+            self.rename_score,
+        );
         if batch.file_ops.renamed > 0 {
             score = score.saturating_add(rename_component);
             reasons.push(format!("rename burst x{}", batch.file_ops.renamed));
@@ -246,14 +325,23 @@ impl Scorer for CompositeBehaviorScorer {
             reasons.push(format!("write burst x{}", batch.file_ops.modified));
         }
 
-        let delete_component = batch.file_ops.deleted.saturating_mul(self.delete_score);
+        let delete_component = effective_burst_score(
+            batch.file_ops.deleted,
+            DELETE_BURST_GRACE,
+            self.delete_score,
+        );
         if batch.file_ops.deleted > 0 {
             score = score.saturating_add(delete_component);
             reasons.push(format!("delete burst x{}", batch.file_ops.deleted));
         }
 
+        let protected_path_component = if batch.protected_paths_touched.is_empty() {
+            0
+        } else {
+            self.protected_path_bonus
+        };
         if !batch.protected_paths_touched.is_empty() {
-            score = score.saturating_add(self.protected_path_bonus);
+            score = score.saturating_add(protected_path_component);
             reasons.push("protected path touched".to_string());
         }
 
@@ -277,6 +365,7 @@ impl Scorer for CompositeBehaviorScorer {
         let adjustment = self.context_adjustment(
             batch,
             process,
+            protected_path_component,
             rename_component,
             write_component,
             delete_component,
@@ -296,6 +385,8 @@ impl Scorer for CompositeBehaviorScorer {
             process_name: process.map(|proc_info| proc_info.process_name.clone()),
             exe_path: process.map(|proc_info| proc_info.exe_path.clone()),
             command_line: process.map(|proc_info| proc_info.command_line.clone()),
+            parent_process_name: process.and_then(|proc_info| proc_info.parent_process_name.clone()),
+            parent_command_line: process.and_then(|proc_info| proc_info.parent_command_line.clone()),
             correlation_hits: process
                 .map(|proc_info| proc_info.correlation_hits)
                 .unwrap_or(0),
@@ -339,6 +430,27 @@ fn batch_touches_only_temp_paths(batch: &FileActivityBatch) -> bool {
     }
 }
 
+fn batch_touches_only_paths(batch: &FileActivityBatch, prefixes: &[&str]) -> bool {
+    let mut saw_path = false;
+
+    for path in batch
+        .touched_paths
+        .iter()
+        .chain(batch.protected_paths_touched.iter())
+    {
+        saw_path = true;
+        if !path_matches_any_prefix(path, prefixes) && !is_temp_path(path) {
+            return false;
+        }
+    }
+
+    if saw_path {
+        true
+    } else {
+        path_matches_any_prefix(&batch.watched_root, prefixes) || is_temp_path(&batch.watched_root)
+    }
+}
+
 fn process_matches_any_command_name(process: &ProcessInfo, patterns: &[&str]) -> bool {
     matches_any_command_name(
         [
@@ -373,6 +485,19 @@ fn is_package_manager_helper_activity(process: &ProcessInfo, batch: &FileActivit
         && process_matches_any_command_name(process, PACKAGE_HELPER_PATTERNS)
 }
 
+fn is_trusted_maintenance_activity(process: &ProcessInfo, batch: &FileActivityBatch) -> bool {
+    batch_touches_only_paths(batch, MAINTENANCE_PATH_PREFIXES)
+        && process_matches_any_command_name(process, TRUSTED_MAINTENANCE_PATTERNS)
+        && is_trusted_system_executable(&process.exe_path)
+        && !is_temp_path(&process.exe_path)
+        && !has_shell_like_parent(process)
+}
+
+fn is_agent_internal_activity(process: &ProcessInfo, batch: &FileActivityBatch) -> bool {
+    process_matches_any_command_name(process, AGENT_INTERNAL_PATTERNS)
+        || batch_touches_only_paths(batch, AGENT_INTERNAL_PATH_PREFIXES)
+}
+
 fn is_containerized_service_temp_activity(
     process: &ProcessInfo,
     batch: &FileActivityBatch,
@@ -404,6 +529,16 @@ fn is_trusted_system_executable(path: &str) -> bool {
     TRUSTED_EXEC_PREFIXES
         .iter()
         .any(|prefix| path.starts_with(prefix))
+}
+
+fn path_matches_any_prefix(path: &str, prefixes: &[&str]) -> bool {
+    prefixes.iter().any(|prefix| {
+        if *prefix == "/.config/bannkenn" {
+            path.contains(prefix)
+        } else {
+            path == *prefix || path.starts_with(&format!("{prefix}/"))
+        }
+    })
 }
 
 fn matches_any_command_name<'a>(
@@ -508,6 +643,10 @@ fn normalize_process_name(value: &str) -> String {
         .filter(|ch| ch.is_ascii_alphanumeric())
         .flat_map(char::to_lowercase)
         .collect()
+}
+
+fn effective_burst_score(count: u32, grace: u32, score_per_event: u32) -> u32 {
+    count.saturating_sub(grace).saturating_mul(score_per_event)
 }
 
 #[cfg(test)]

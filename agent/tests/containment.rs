@@ -16,6 +16,8 @@ fn event(level: BehaviorLevel, score: u32, pid: Option<u32>) -> BehaviorEvent {
         process_name: Some("python3".to_string()),
         exe_path: Some("/usr/bin/python3".to_string()),
         command_line: Some("python3 encrypt.py".to_string()),
+        parent_process_name: Some("systemd".to_string()),
+        parent_command_line: Some("systemd".to_string()),
         correlation_hits: 10,
         file_ops: FileOperationCounts {
             modified: 1,

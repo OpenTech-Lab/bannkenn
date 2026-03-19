@@ -44,7 +44,7 @@ fn mass_rename_scores_as_suspicious() {
         watched_root: "/srv/data".to_string(),
         poll_interval_ms: 1000,
         file_ops: FileOperationCounts {
-            renamed: 7,
+            renamed: 11,
             ..Default::default()
         },
         touched_paths: vec!["/srv/data/a".to_string()],
@@ -70,6 +70,37 @@ fn mass_rename_scores_as_suspicious() {
     let event = scorer.score(&batch, &correlation);
     assert_eq!(event.level, BehaviorLevel::Suspicious);
     assert!(event.score > 30);
+}
+
+#[test]
+fn small_rename_burst_stays_observed() {
+    let scorer = CompositeBehaviorScorer::from_config(&ContainmentConfig::default());
+    let batch = batch_with_ops(
+        FileOperationCounts {
+            renamed: 3,
+            ..Default::default()
+        },
+        vec!["/srv/data/report.docx"],
+        0,
+    );
+    let correlation = CorrelationResult {
+        process: Some(process(
+            77,
+            "python3",
+            "/usr/bin/python3",
+            "python3 rename.py /srv/data",
+        )),
+        protected_hits: 0,
+    };
+
+    let event = scorer.score(&batch, &correlation);
+
+    assert_eq!(event.level, BehaviorLevel::Observed);
+    assert_eq!(event.score, 0);
+    assert!(event
+        .reasons
+        .iter()
+        .any(|reason| reason == "rename burst x3"));
 }
 
 #[test]
@@ -185,6 +216,45 @@ fn package_manager_detection_does_not_match_unrelated_substrings() {
 }
 
 #[test]
+fn trusted_maintenance_activity_is_downgraded() {
+    let scorer = CompositeBehaviorScorer::from_config(&ContainmentConfig::default());
+    let batch = FileActivityBatch {
+        timestamp: Utc::now(),
+        source: "userspace_polling".to_string(),
+        watched_root: "/usr/lib/firmware".to_string(),
+        poll_interval_ms: 1000,
+        file_ops: FileOperationCounts {
+            modified: 4,
+            ..Default::default()
+        },
+        touched_paths: vec!["/usr/lib/firmware/vendor.bin".to_string()],
+        protected_paths_touched: vec!["/usr/lib/firmware/vendor.bin".to_string()],
+        bytes_written: 2 * 1_048_576,
+        io_rate_bytes_per_sec: 2 * 1_048_576,
+    };
+    let mut proc = process(
+        101,
+        "fwupd",
+        "/usr/libexec/fwupd/fwupd",
+        "/usr/libexec/fwupd/fwupd --daemon",
+    );
+    proc.parent_process_name = Some("systemd".to_string());
+    proc.parent_command_line = Some("systemd".to_string());
+    let correlation = CorrelationResult {
+        process: Some(proc),
+        protected_hits: 1,
+    };
+
+    let event = scorer.score(&batch, &correlation);
+
+    assert_eq!(event.level, BehaviorLevel::Observed);
+    assert!(event
+        .reasons
+        .iter()
+        .any(|reason| reason == "trusted maintenance activity"));
+}
+
+#[test]
 fn trusted_containerized_service_temp_activity_is_downgraded() {
     let scorer = CompositeBehaviorScorer::from_config(&ContainmentConfig::default());
     let batch = batch_with_ops(
@@ -218,6 +288,43 @@ fn trusted_containerized_service_temp_activity_is_downgraded() {
         .reasons
         .iter()
         .any(|reason| reason == "containerized service temp activity"));
+}
+
+#[test]
+fn agent_internal_activity_is_downgraded() {
+    let scorer = CompositeBehaviorScorer::from_config(&ContainmentConfig::default());
+    let batch = FileActivityBatch {
+        timestamp: Utc::now(),
+        source: "userspace_polling".to_string(),
+        watched_root: "/var/lib/bannkenn".to_string(),
+        poll_interval_ms: 1000,
+        file_ops: FileOperationCounts {
+            renamed: 5,
+            deleted: 3,
+            ..Default::default()
+        },
+        touched_paths: vec!["/var/lib/bannkenn/policy/state.json".to_string()],
+        protected_paths_touched: vec!["/etc/bannkenn/agent.toml".to_string()],
+        bytes_written: 0,
+        io_rate_bytes_per_sec: 0,
+    };
+    let correlation = CorrelationResult {
+        process: Some(process(
+            202,
+            "bannkenn-agent",
+            "/usr/bin/bannkenn-agent",
+            "/usr/bin/bannkenn-agent run",
+        )),
+        protected_hits: 1,
+    };
+
+    let event = scorer.score(&batch, &correlation);
+
+    assert_eq!(event.level, BehaviorLevel::Observed);
+    assert!(event
+        .reasons
+        .iter()
+        .any(|reason| reason == "agent internal activity"));
 }
 
 #[test]
@@ -313,17 +420,22 @@ fn overlapping_benign_contexts_do_not_double_subtract_the_same_components() {
     let adjustment = scorer.context_adjustment(
         &batch,
         Some(&proc),
-        batch.file_ops.renamed.saturating_mul(scorer.rename_score),
+        0,
+        effective_burst_score(batch.file_ops.renamed, RENAME_BURST_GRACE, scorer.rename_score),
         batch.file_ops.modified.saturating_mul(scorer.write_score),
-        batch.file_ops.deleted.saturating_mul(scorer.delete_score),
+        effective_burst_score(batch.file_ops.deleted, DELETE_BURST_GRACE, scorer.delete_score),
         (batch.bytes_written / scorer.bytes_per_score).min(u64::from(u32::MAX)) as u32,
     );
 
     assert_eq!(
         adjustment.penalty,
-        batch.file_ops.renamed.saturating_mul(scorer.rename_score)
+        effective_burst_score(batch.file_ops.renamed, RENAME_BURST_GRACE, scorer.rename_score)
             + batch.file_ops.modified.saturating_mul(scorer.write_score)
-            + batch.file_ops.deleted.saturating_mul(scorer.delete_score)
+            + effective_burst_score(
+                batch.file_ops.deleted,
+                DELETE_BURST_GRACE,
+                scorer.delete_score
+            )
             + (batch.bytes_written / scorer.bytes_per_score).min(u64::from(u32::MAX)) as u32
     );
     assert!(adjustment

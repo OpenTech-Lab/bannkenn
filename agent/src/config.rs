@@ -206,7 +206,7 @@ fn default_fuse_score() -> u32 {
 }
 
 fn default_rename_score() -> u32 {
-    5
+    4
 }
 
 fn default_write_score() -> u32 {
@@ -214,7 +214,7 @@ fn default_write_score() -> u32 {
 }
 
 fn default_delete_score() -> u32 {
-    4
+    3
 }
 
 fn default_protected_path_bonus() -> u32 {

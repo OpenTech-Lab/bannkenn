@@ -94,6 +94,8 @@ fn outbox_round_trips_behavior_and_containment_reports() {
                 process_name: Some("python3".to_string()),
                 exe_path: Some("/usr/bin/python3".to_string()),
                 command_line: Some("python3 encrypt.py".to_string()),
+                parent_process_name: Some("systemd".to_string()),
+                parent_command_line: Some("systemd --user".to_string()),
                 correlation_hits: 3,
                 file_ops: crate::ebpf::events::FileOperationCounts {
                     modified: 5,
@@ -138,6 +140,7 @@ fn outbox_round_trips_behavior_and_containment_reports() {
         OutboxPayload::BehaviorEvent { report } => {
             assert_eq!(report.source, "ebpf_ringbuf");
             assert_eq!(report.level, "throttle_candidate");
+            assert_eq!(report.parent_process_name.as_deref(), Some("systemd"));
         }
         payload => panic!("expected behavior event payload, got {payload:?}"),
     }

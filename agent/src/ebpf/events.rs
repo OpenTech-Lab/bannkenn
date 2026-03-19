@@ -93,6 +93,8 @@ pub struct BehaviorEvent {
     pub process_name: Option<String>,
     pub exe_path: Option<String>,
     pub command_line: Option<String>,
+    pub parent_process_name: Option<String>,
+    pub parent_command_line: Option<String>,
     pub correlation_hits: u32,
     pub file_ops: FileOperationCounts,
     pub touched_paths: Vec<String>,
