@@ -2,8 +2,6 @@
 version: "1.0"
 
 reviews:
-  # Set this to false to stop automatic reviews on every push/PR
-  enable_review: false 
   # High-level summary of changes
   request_review_summary: true
   # Profile can be 'assertive', 'chill', or 'comprehensive'
@@ -15,6 +13,10 @@ reviews:
     - "!**/dist/**"
     - "!**/*.lock"
     - "!**/vendor/**"
+
+auto_review:
+  # Disable automatic reviews on every push/PR
+  enabled: false
 
 chat:
   # Keeps the chat feature enabled so you can still talk to the bot

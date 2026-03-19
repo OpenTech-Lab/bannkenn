@@ -1,5 +1,20 @@
 # tasks
 
+## Done: Fix invalid CodeRabbit auto-review config key
+
+### Scope
+- [x] Replace the unsupported `reviews.enable_review` field in `.coderabbit.yaml`
+- [x] Use the documented `auto_review.enabled: false` structure instead
+- [x] Verify the final YAML contents and record the correction
+
+### Notes
+- Review correction: CodeRabbit rejected `.coderabbit.yaml` because `enable_review` is not part of the supported schema.
+
+### Review
+- Updated [.coderabbit.yaml](/home/toyofumi/Project/Bannkenn/.coderabbit.yaml) to move automatic-review disablement from the invalid `reviews.enable_review` key to `auto_review.enabled: false`.
+- Kept the existing review summary, profile, path filter, chat, and instructions settings unchanged.
+- Verification: inspected the final YAML and confirmed the invalid field is gone.
+
 ## Done: Fix agent rename response handling and display original agent names
 
 ### Scope
