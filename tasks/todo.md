@@ -1,23 +1,28 @@
 # tasks
 
-## Done: Finish `docs/05_Technical Investigation Report.md`
+## Done: Recreate follow-up tasks from `docs/05_Technical Investigation Report.md`
 
-### Spec
-- [x] Create a dedicated branch for the documentation pass
-- [x] Confirm the report has a clear investigation framing, methodology, and scope
-- [x] Add an evidence-oriented summary so each alert case maps to observed facts, interpretation, and disposition
-- [x] Make confidence, limitations, and residual risk explicit so the report reads like an investigation artifact rather than only a narrative
-- [x] Tighten the BannKenn engineering follow-up into concrete detection and triage improvements
-- [x] Review the final markdown for structure, consistency, and readability
+### Investigation-driven upgrade backlog
+- [x] Recreate task inventory after manual cleanup of the old notes
+- [x] Ship a concrete Detection v2 upgrade in the old containment scorer instead of leaving the report as documentation only
+- [x] Reduce false positives for known benign temp-file activity described in the investigation report
+- [x] Preserve genuinely suspicious temp-path behavior so the containment pipeline still escalates high-signal events
+- [x] Add regression tests for the upgraded scorer behavior
+- [x] Verify the agent crate still passes targeted tests after the scoring change
 
-### Notes
-- Branch: `docs-finish-technical-investigation-report`
-- Goal: finish the existing report without changing its core conclusion unless the document evidence requires it
-- Constraints: keep the report grounded in the evidence already described in the repo; avoid inventing host facts that are not supported by the investigation narrative
+### Candidate follow-up tasks from the report
+- [x] Package-manager awareness for `dpkg`/`apt` helper processes such as `depmod`, `cryptroot`, `update-initramfs`, and `ldconfig`
+- [x] Known-runtime temp extraction downgrade for Java/OpenSearch/Solr JNI extraction patterns
+- [x] Improve handling of `unknown process activity` so incomplete attribution is not treated as strong suspicion by itself
+- [x] Add stronger malware-specific triggers such as temp-path executable or path/name mismatch weighting
+- [ ] Evaluate future container-aware lineage enrichment beyond the current process snapshot model
+
+### Current implementation target
+- Upgrade the containment scorer to apply benign-context downgrades for package-maintenance helpers and known Java temp extraction patterns, and make `unknown process activity` require supporting suspicious signals before adding score.
 
 ### Review
-- Added investigation method and decision criteria so the report explains how alerts were evaluated, not just what the conclusion was.
-- Added a case disposition summary, explicit negative findings, and confidence/limitations framing to make analyst reasoning reviewable.
-- Refined the BannKenn follow-up with a prioritized Detection v2 rollout and linked it to the existing vNext RFC.
-- Verification: `git diff --check -- 'docs/05_Technical Investigation Report.md' tasks/todo.md` passed.
-- Note: `markdownlint` is not installed in this environment, so lint verification was limited to manual read-through plus `git diff --check`.
+- Implemented the upgrade in `agent/src/scorer.rs` rather than changing thresholds globally.
+- Added temp-only benign-context downgrades for package-manager helpers and known Java/OpenSearch/Solr temp extraction behavior.
+- Tightened `unknown process activity` so write-only unknown events no longer cross the suspicious threshold by bonus alone.
+- Added a new high-signal boost for processes executing from `/tmp` or `/var/tmp`.
+- Verification: `cargo test -p bannkenn-agent` passed after the change.

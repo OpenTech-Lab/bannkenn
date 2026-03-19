@@ -1,6 +1,37 @@
 use crate::config::ContainmentConfig;
 use crate::correlator::CorrelationResult;
-use crate::ebpf::events::{BehaviorEvent, BehaviorLevel, FileActivityBatch};
+use crate::ebpf::events::{BehaviorEvent, BehaviorLevel, FileActivityBatch, ProcessInfo};
+
+const TEMP_ROOTS: &[&str] = &["/tmp", "/var/tmp"];
+const PACKAGE_HELPER_PATTERNS: &[&str] = &[
+    "apt",
+    "apt-get",
+    "aptitude",
+    "dpkg",
+    "dpkg-preconfigure",
+    "dpkg-deb",
+    "unattended-upgrade",
+    "depmod",
+    "cryptroot",
+    "update-initramfs",
+    "mkinitramfs",
+    "ldconfig",
+    "dracut",
+    "rpm",
+    "dnf",
+    "yum",
+    "apk",
+    "pacman",
+];
+const KNOWN_JAVA_RUNTIME_MARKERS: &[&str] =
+    &["opensearch", "wazuh-indexer", "org.opensearch", "solr"];
+
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+struct ScoreAdjustment {
+    penalty: u32,
+    bonus: u32,
+    reasons: Vec<String>,
+}
 
 pub trait Scorer {
     fn score(&self, batch: &FileActivityBatch, correlation: &CorrelationResult) -> BehaviorEvent;
@@ -45,6 +76,73 @@ impl CompositeBehaviorScorer {
             BehaviorLevel::Observed
         }
     }
+
+    fn should_add_unknown_process_bonus(
+        &self,
+        batch: &FileActivityBatch,
+        throughput_score: u32,
+        correlation: &CorrelationResult,
+    ) -> bool {
+        correlation.process.is_none()
+            && !batch.file_ops.is_empty()
+            && (batch.file_ops.renamed > 0
+                || batch.file_ops.deleted > 0
+                || !batch.protected_paths_touched.is_empty()
+                || throughput_score > 0)
+    }
+
+    fn context_adjustment(
+        &self,
+        batch: &FileActivityBatch,
+        process: Option<&ProcessInfo>,
+        rename_component: u32,
+        write_component: u32,
+        delete_component: u32,
+        throughput_component: u32,
+    ) -> ScoreAdjustment {
+        let Some(process) = process else {
+            return ScoreAdjustment::default();
+        };
+
+        let mut adjustment = ScoreAdjustment::default();
+        let known_java_temp_extraction = is_known_java_temp_extraction(process, batch);
+        let package_manager_helper_activity = is_package_manager_helper_activity(process, batch);
+
+        if known_java_temp_extraction {
+            adjustment.penalty = adjustment
+                .penalty
+                .saturating_add(write_component.saturating_add(delete_component))
+                .saturating_add(throughput_component);
+            adjustment
+                .reasons
+                .push("known JVM temp extraction pattern".to_string());
+        }
+
+        if package_manager_helper_activity {
+            adjustment.penalty = adjustment
+                .penalty
+                .saturating_add(rename_component)
+                .saturating_add(write_component)
+                .saturating_add(delete_component)
+                .saturating_add(throughput_component);
+            adjustment
+                .reasons
+                .push("package-manager helper activity".to_string());
+        }
+
+        if is_temp_path(&process.exe_path)
+            && !known_java_temp_extraction
+            && !package_manager_helper_activity
+        {
+            adjustment.bonus = adjustment
+                .bonus
+                .saturating_add(self.protected_path_bonus)
+                .saturating_add(self.unknown_process_bonus);
+            adjustment.reasons.push("temp-path executable".to_string());
+        }
+
+        adjustment
+    }
 }
 
 impl Scorer for CompositeBehaviorScorer {
@@ -52,21 +150,21 @@ impl Scorer for CompositeBehaviorScorer {
         let mut score = 0u32;
         let mut reasons = Vec::new();
 
+        let rename_component = batch.file_ops.renamed.saturating_mul(self.rename_score);
         if batch.file_ops.renamed > 0 {
-            let rename_score = batch.file_ops.renamed.saturating_mul(self.rename_score);
-            score = score.saturating_add(rename_score);
+            score = score.saturating_add(rename_component);
             reasons.push(format!("rename burst x{}", batch.file_ops.renamed));
         }
 
+        let write_component = batch.file_ops.modified.saturating_mul(self.write_score);
         if batch.file_ops.modified > 0 {
-            let write_score = batch.file_ops.modified.saturating_mul(self.write_score);
-            score = score.saturating_add(write_score);
+            score = score.saturating_add(write_component);
             reasons.push(format!("write burst x{}", batch.file_ops.modified));
         }
 
+        let delete_component = batch.file_ops.deleted.saturating_mul(self.delete_score);
         if batch.file_ops.deleted > 0 {
-            let delete_score = batch.file_ops.deleted.saturating_mul(self.delete_score);
-            score = score.saturating_add(delete_score);
+            score = score.saturating_add(delete_component);
             reasons.push(format!("delete burst x{}", batch.file_ops.deleted));
         }
 
@@ -75,15 +173,16 @@ impl Scorer for CompositeBehaviorScorer {
             reasons.push("protected path touched".to_string());
         }
 
-        if correlation.process.is_none() && !batch.file_ops.is_empty() {
+        let throughput_component =
+            (batch.bytes_written / self.bytes_per_score).min(u64::from(u32::MAX)) as u32;
+
+        if self.should_add_unknown_process_bonus(batch, throughput_component, correlation) {
             score = score.saturating_add(self.unknown_process_bonus);
             reasons.push("unknown process activity".to_string());
         }
 
-        let throughput_score =
-            (batch.bytes_written / self.bytes_per_score).min(u64::from(u32::MAX)) as u32;
-        if throughput_score > 0 {
-            score = score.saturating_add(throughput_score);
+        if throughput_component > 0 {
+            score = score.saturating_add(throughput_component);
             reasons.push(format!(
                 "write throughput {}B/s",
                 batch.io_rate_bytes_per_sec
@@ -91,6 +190,18 @@ impl Scorer for CompositeBehaviorScorer {
         }
 
         let process = correlation.process.as_ref();
+        let adjustment = self.context_adjustment(
+            batch,
+            process,
+            rename_component,
+            write_component,
+            delete_component,
+            throughput_component,
+        );
+        score = score
+            .saturating_sub(adjustment.penalty)
+            .saturating_add(adjustment.bonus);
+        reasons.extend(adjustment.reasons);
         let level = self.classify_level(score);
 
         BehaviorEvent {
@@ -116,12 +227,93 @@ impl Scorer for CompositeBehaviorScorer {
     }
 }
 
+fn is_temp_path(path: &str) -> bool {
+    let trimmed = path.trim();
+    TEMP_ROOTS
+        .iter()
+        .any(|root| trimmed == *root || trimmed.starts_with(&format!("{root}/")))
+}
+
+fn batch_touches_only_temp_paths(batch: &FileActivityBatch) -> bool {
+    let mut saw_path = false;
+
+    for path in batch
+        .touched_paths
+        .iter()
+        .chain(batch.protected_paths_touched.iter())
+    {
+        saw_path = true;
+        if !is_temp_path(path) {
+            return false;
+        }
+    }
+
+    if saw_path {
+        true
+    } else {
+        is_temp_path(&batch.watched_root)
+    }
+}
+
+fn process_matches_any_pattern(process: &ProcessInfo, patterns: &[&str]) -> bool {
+    let process_name = process.process_name.to_ascii_lowercase();
+    let exe_path = process.exe_path.to_ascii_lowercase();
+    let command_line = process.command_line.to_ascii_lowercase();
+
+    patterns.iter().any(|pattern| {
+        process_name.contains(pattern)
+            || exe_path.contains(pattern)
+            || command_line.contains(pattern)
+    })
+}
+
+fn is_known_java_temp_extraction(process: &ProcessInfo, batch: &FileActivityBatch) -> bool {
+    batch_touches_only_temp_paths(batch)
+        && batch.file_ops.modified > 0
+        && batch.file_ops.deleted > 0
+        && process_matches_any_pattern(process, &["java"])
+        && process_matches_any_pattern(process, KNOWN_JAVA_RUNTIME_MARKERS)
+}
+
+fn is_package_manager_helper_activity(process: &ProcessInfo, batch: &FileActivityBatch) -> bool {
+    batch_touches_only_temp_paths(batch)
+        && process_matches_any_pattern(process, PACKAGE_HELPER_PATTERNS)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::config::ContainmentConfig;
     use crate::ebpf::events::{FileActivityBatch, FileOperationCounts, ProcessInfo};
     use chrono::Utc;
+
+    fn batch_with_ops(
+        file_ops: FileOperationCounts,
+        touched_paths: Vec<&str>,
+        bytes_written: u64,
+    ) -> FileActivityBatch {
+        FileActivityBatch {
+            timestamp: Utc::now(),
+            source: "userspace_polling".to_string(),
+            watched_root: "/tmp".to_string(),
+            poll_interval_ms: 1000,
+            file_ops,
+            touched_paths: touched_paths.into_iter().map(str::to_string).collect(),
+            protected_paths_touched: Vec::new(),
+            bytes_written,
+            io_rate_bytes_per_sec: bytes_written,
+        }
+    }
+
+    fn process(pid: u32, process_name: &str, exe_path: &str, command_line: &str) -> ProcessInfo {
+        ProcessInfo {
+            pid,
+            process_name: process_name.to_string(),
+            exe_path: exe_path.to_string(),
+            command_line: command_line.to_string(),
+            correlation_hits: 20,
+        }
+    }
 
     #[test]
     fn mass_rename_scores_as_suspicious() {
@@ -154,5 +346,120 @@ mod tests {
         let event = scorer.score(&batch, &correlation);
         assert_eq!(event.level, BehaviorLevel::Suspicious);
         assert!(event.score > 30);
+    }
+
+    #[test]
+    fn unknown_process_write_only_no_longer_crosses_suspicious_threshold_by_itself() {
+        let scorer = CompositeBehaviorScorer::from_config(&ContainmentConfig::default());
+        let batch = batch_with_ops(
+            FileOperationCounts {
+                modified: 8,
+                ..Default::default()
+            },
+            vec!["/tmp/write-only.tmp"],
+            0,
+        );
+        let correlation = CorrelationResult::default();
+
+        let event = scorer.score(&batch, &correlation);
+
+        assert_eq!(event.level, BehaviorLevel::Observed);
+        assert!(!event
+            .reasons
+            .iter()
+            .any(|reason| reason == "unknown process activity"));
+    }
+
+    #[test]
+    fn known_java_temp_extraction_is_downgraded() {
+        let scorer = CompositeBehaviorScorer::from_config(&ContainmentConfig::default());
+        let batch = batch_with_ops(
+            FileOperationCounts {
+                modified: 5,
+                deleted: 5,
+                ..Default::default()
+            },
+            vec!["/tmp/opensearch-123/libzstd-jni.so"],
+            2 * 1_048_576,
+        );
+        let correlation = CorrelationResult {
+            process: Some(process(
+                4242,
+                "java",
+                "/usr/share/wazuh-indexer/jdk/bin/java",
+                "/usr/share/wazuh-indexer/jdk/bin/java -Djava.io.tmpdir=/tmp/opensearch-123 -cp /usr/share/wazuh-indexer/lib/* org.opensearch.bootstrap.OpenSearch",
+            )),
+            protected_hits: 0,
+        };
+
+        let event = scorer.score(&batch, &correlation);
+
+        assert_eq!(event.level, BehaviorLevel::Observed);
+        assert!(event
+            .reasons
+            .iter()
+            .any(|reason| reason == "known JVM temp extraction pattern"));
+    }
+
+    #[test]
+    fn package_manager_helper_temp_activity_is_downgraded() {
+        let scorer = CompositeBehaviorScorer::from_config(&ContainmentConfig::default());
+        let batch = batch_with_ops(
+            FileOperationCounts {
+                modified: 10,
+                ..Default::default()
+            },
+            vec!["/var/tmp/dpkg-unpack"],
+            3 * 1_048_576,
+        );
+        let correlation = CorrelationResult {
+            process: Some(process(
+                84,
+                "depmod",
+                "/usr/sbin/depmod",
+                "/usr/sbin/depmod -a",
+            )),
+            protected_hits: 0,
+        };
+
+        let event = scorer.score(&batch, &correlation);
+
+        assert_eq!(event.level, BehaviorLevel::Observed);
+        assert!(event
+            .reasons
+            .iter()
+            .any(|reason| reason == "package-manager helper activity"));
+    }
+
+    #[test]
+    fn temp_path_executable_gets_extra_suspicion() {
+        let scorer = CompositeBehaviorScorer::from_config(&ContainmentConfig::default());
+        let batch = batch_with_ops(
+            FileOperationCounts {
+                modified: 3,
+                deleted: 2,
+                ..Default::default()
+            },
+            vec!["/tmp/ransom/payload"],
+            0,
+        );
+        let correlation = CorrelationResult {
+            process: Some(process(
+                99,
+                "ransom",
+                "/tmp/ransom/payload",
+                "/tmp/ransom/payload --encrypt /srv/data",
+            )),
+            protected_hits: 0,
+        };
+
+        let event = scorer.score(&batch, &correlation);
+
+        assert_eq!(event.level, BehaviorLevel::Suspicious);
+        assert!(event
+            .reasons
+            .iter()
+            .any(|reason| reason == "temp-path executable"));
+        assert!(event.score >= 30);
     }
 }

@@ -59,7 +59,10 @@ async fn fetch_firehol_feed(db: Arc<Db>, url: &str, source: &str) -> anyhow::Res
         }
         match db.insert_decision(&trimmed, source, "block", source).await {
             Ok(Some(_)) => {}
-            Ok(None) => info!("Skipping whitelisted entry from {} feed: {}", source, trimmed),
+            Ok(None) => info!(
+                "Skipping whitelisted entry from {} feed: {}",
+                source, trimmed
+            ),
             Err(e) => {
                 error!("Failed to insert decision for {}: {}", trimmed, e);
             }
