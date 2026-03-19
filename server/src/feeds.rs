@@ -13,7 +13,7 @@ pub async fn fetch_ipsum_feed(db: Arc<Db>) -> anyhow::Result<()> {
         reqwest::get("https://raw.githubusercontent.com/stamparm/ipsum/master/ipsum.txt").await?;
     let stream = response
         .bytes_stream()
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e));
+        .map_err(std::io::Error::other);
     let mut lines = BufReader::new(StreamReader::new(stream)).lines();
 
     while let Some(line) = lines.next_line().await? {
@@ -49,7 +49,7 @@ async fn fetch_firehol_feed(db: Arc<Db>, url: &str, source: &str) -> anyhow::Res
     let response = reqwest::get(url).await?;
     let stream = response
         .bytes_stream()
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e));
+        .map_err(std::io::Error::other);
     let mut lines = BufReader::new(StreamReader::new(stream)).lines();
 
     while let Some(line) = lines.next_line().await? {

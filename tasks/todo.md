@@ -1,5 +1,19 @@
 # tasks
 
+## Done: Workspace clippy hardening
+
+### Scope
+- [x] Run `cargo clippy --workspace -- -D warnings`
+- [x] Fix every clippy warning without regressing behavior
+- [x] Re-run clippy until it passes cleanly
+- [x] Re-run relevant tests after the fixes
+
+### Review
+- Fixed the only workspace clippy failures in `server/src/feeds.rs` by switching stream error mapping to `std::io::Error::other`.
+- Verification: `cargo clippy --workspace -- -D warnings` passed.
+- Verification: `cargo test --workspace` passed.
+- Note: Cargo reported a future-incompatibility notice for `sqlx-postgres v0.7.4`, but it does not fail clippy or tests today.
+
 ## Done: Container-aware detection follow-up from report review
 
 ### Scope
