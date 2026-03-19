@@ -1,5 +1,25 @@
 # tasks
 
+## Done: Wire relocated `agent/tests/unit` files into Cargo test binaries
+
+### Scope
+- [x] Record the review correction about orphaned relocated tests
+- [x] Add top-level `agent/tests/unit.rs` and `agent/tests/main_unit.rs` manifests for the relocated library and binary test trees
+- [x] Verify Cargo discovers and runs the new test binaries cleanly
+- [x] Re-run workspace tests after the wiring change
+
+### Notes
+- Review correction: moving test source files under `agent/tests/unit/**` was not sufficient by itself; Cargo still needed a top-level integration-test entrypoint to discover that tree directly.
+- Keep the relocated test files in place and add explicit test-binary wiring instead of moving them back into `agent/src`.
+
+### Review
+- Added [agent/tests/unit.rs](/home/toyofumi/Project/Bannkenn/agent/tests/unit.rs) to compile the relocated library-side test tree under the same crate shape as `src/lib.rs`.
+- Added [agent/tests/main_unit.rs](/home/toyofumi/Project/Bannkenn/agent/tests/main_unit.rs) to do the same for the binary-side test tree rooted at `src/main.rs`.
+- Direct verification: `cargo test -p bannkenn-agent --test unit` passed.
+- Direct verification: `cargo test -p bannkenn-agent --test main_unit` passed.
+- Workspace verification: `cargo clippy --workspace -- -D warnings` passed.
+- Workspace verification: `cargo test --workspace` passed.
+
 ## Done: Move `agent` test code under `agent/tests`
 
 ### Scope

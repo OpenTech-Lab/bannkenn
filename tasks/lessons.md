@@ -234,6 +234,11 @@
 - Keep server tests in `server/tests/` with shared fixtures/modules rather than expanding `#[cfg(test)]` blocks inside production files.
 - Prefer thin binaries and domain-focused modules so the next upgrade extends existing seams instead of reopening monolith files.
 
+### Relocating Rust tests under `tests/` needs a real Cargo entrypoint, not only source-file `#[path]` hooks
+- Moving test bodies out of `src/` is only half the refactor; Cargo discovers integration tests from top-level files like `tests/unit.rs`, not from nested directories alone.
+- When externalizing a large Rust test tree, add the manifest test file in the same change and verify `cargo test --test <name>` runs it directly before calling the relocation complete.
+- If the goal is "tests live under `tests/`", prove the new files are wired as a discovered test binary instead of assuming `#[cfg(test)] #[path = ...] mod tests;` inside production modules is sufficient.
+
 ### CI lint fixes need full workspace verification, not only the first reported warning
 - When GitHub Actions fails on an initial clippy warning, do not stop after patching the first printed lines; rerun `cargo clippy --workspace -- -D warnings` locally until the workspace is clean because later lints may be hidden behind the first failure.
 - Prefer structural fixes over `#[allow(...)]`: replace long tuple spellings with type aliases and replace long helper argument lists with typed request structs so the code gets simpler while satisfying the lint.
