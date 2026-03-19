@@ -1,5 +1,18 @@
 # tasks
 
+## Done: Container-aware detection follow-up from report review
+
+### Scope
+- [x] Extend tracked process metadata with container context and lightweight lineage hints
+- [x] Use container context in the containment scorer to downgrade trusted containerized service temp activity
+- [x] Add regression coverage for the `mariadbd`-inside-container style false-positive case
+- [x] Re-review which report sections are still partial after the code change
+
+### Notes
+- Review correction: sections 15.5 and most of 15.6 were still missing; 15.2 and 15.4 were only partial.
+- Goal: close the highest-priority gap called out in review without pretending Phase 2/3 work is complete.
+- Remaining partial work after this patch: masquerade detection, exec-chain tracking, and network correlation are still not implemented.
+
 ## Done: Recreate follow-up tasks from `docs/05_Technical Investigation Report.md`
 
 ### Investigation-driven upgrade backlog
@@ -14,7 +27,8 @@
 - [x] Package-manager awareness for `dpkg`/`apt` helper processes such as `depmod`, `cryptroot`, `update-initramfs`, and `ldconfig`
 - [x] Known-runtime temp extraction downgrade for Java/OpenSearch/Solr JNI extraction patterns
 - [x] Improve handling of `unknown process activity` so incomplete attribution is not treated as strong suspicion by itself
-- [x] Add stronger malware-specific triggers such as temp-path executable or path/name mismatch weighting
+- [x] Add stronger malware-specific temp-path executable weighting
+- [ ] Add process-name / executable-path mismatch weighting for masquerade detection
 - [ ] Evaluate future container-aware lineage enrichment beyond the current process snapshot model
 
 ### Current implementation target

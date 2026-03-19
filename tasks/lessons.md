@@ -218,6 +218,11 @@
 ### Top-level `How to use` sections should stay short
 - If the user asks for a quick usage section, keep it as a compact operator checklist rather than repeating the full README.
 - For this repo, the top-level `How to use` section should stay under 100 lines and focus on `.env`, `scripts/install.sh`, and `scripts/update-server.sh`.
+
+### Do not mark report recommendations complete when the implementation only covers part of the capability
+- If a report item depends on missing runtime metadata such as container lineage, exec-chain context, or masquerade checks, keep the task explicitly partial until that metadata exists in code.
+- Before closing a recommendation as "done", map each sub-capability in the report to the exact code path and test that proves it.
+- Prefer leaving a smaller set of completed checkboxes and a sharper backlog over overstating coverage in `tasks/todo.md` or handoff text.
 - If one setup mode is preferred, say that directly in the quick-start instead of making users infer it.
 
 ### Before starting the next phase, do the maintainability pass while the context is still fresh

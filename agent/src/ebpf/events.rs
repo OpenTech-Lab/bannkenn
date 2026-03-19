@@ -54,6 +54,14 @@ pub struct ProcessInfo {
     pub exe_path: String,
     pub command_line: String,
     pub correlation_hits: u32,
+    #[serde(default)]
+    pub parent_process_name: Option<String>,
+    #[serde(default)]
+    pub parent_command_line: Option<String>,
+    #[serde(default)]
+    pub container_runtime: Option<String>,
+    #[serde(default)]
+    pub container_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]

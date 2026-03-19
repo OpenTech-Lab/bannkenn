@@ -52,6 +52,10 @@ impl ProcessCorrelator {
                     exe_path: proc_info.exe_path.clone(),
                     command_line: proc_info.command_line.clone(),
                     correlation_hits,
+                    parent_process_name: proc_info.parent_process_name.clone(),
+                    parent_command_line: proc_info.parent_command_line.clone(),
+                    container_runtime: proc_info.container_runtime.clone(),
+                    container_id: proc_info.container_id.clone(),
                 });
             }
         }
@@ -115,6 +119,10 @@ mod tests {
                     process_name: "systemd".to_string(),
                     exe_path: "/usr/lib/systemd/systemd".to_string(),
                     command_line: "systemd".to_string(),
+                    parent_process_name: None,
+                    parent_command_line: None,
+                    container_runtime: None,
+                    container_id: None,
                     open_paths: HashSet::from(["/srv/data/file-a".to_string()]),
                     protected: true,
                 },
@@ -123,6 +131,10 @@ mod tests {
                     process_name: "python3".to_string(),
                     exe_path: "/usr/bin/python3".to_string(),
                     command_line: "python3 encrypt.py".to_string(),
+                    parent_process_name: Some("systemd".to_string()),
+                    parent_command_line: Some("systemd".to_string()),
+                    container_runtime: None,
+                    container_id: None,
                     open_paths: HashSet::from([
                         "/srv/data/file-a".to_string(),
                         "/srv/data/file-b".to_string(),

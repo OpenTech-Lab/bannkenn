@@ -25,6 +25,8 @@ const PACKAGE_HELPER_PATTERNS: &[&str] = &[
 ];
 const KNOWN_JAVA_RUNTIME_MARKERS: &[&str] =
     &["opensearch", "wazuh-indexer", "org.opensearch", "solr"];
+const SHELL_LIKE_PARENT_PATTERNS: &[&str] = &["sh", "bash", "dash", "zsh", "ash", "busybox"];
+const TRUSTED_EXEC_PREFIXES: &[&str] = &["/usr/", "/bin/", "/sbin/", "/lib/", "/nix/store/"];
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 struct ScoreAdjustment {
@@ -107,6 +109,8 @@ impl CompositeBehaviorScorer {
         let mut adjustment = ScoreAdjustment::default();
         let known_java_temp_extraction = is_known_java_temp_extraction(process, batch);
         let package_manager_helper_activity = is_package_manager_helper_activity(process, batch);
+        let containerized_service_temp_activity =
+            is_containerized_service_temp_activity(process, batch);
 
         if known_java_temp_extraction {
             adjustment.penalty = adjustment
@@ -130,9 +134,22 @@ impl CompositeBehaviorScorer {
                 .push("package-manager helper activity".to_string());
         }
 
+        if containerized_service_temp_activity {
+            adjustment.penalty = adjustment
+                .penalty
+                .saturating_add(rename_component)
+                .saturating_add(write_component)
+                .saturating_add(delete_component)
+                .saturating_add(throughput_component);
+            adjustment
+                .reasons
+                .push("containerized service temp activity".to_string());
+        }
+
         if is_temp_path(&process.exe_path)
             && !known_java_temp_extraction
             && !package_manager_helper_activity
+            && !containerized_service_temp_activity
         {
             adjustment.bonus = adjustment
                 .bonus
@@ -280,6 +297,42 @@ fn is_package_manager_helper_activity(process: &ProcessInfo, batch: &FileActivit
         && process_matches_any_pattern(process, PACKAGE_HELPER_PATTERNS)
 }
 
+fn is_containerized_service_temp_activity(
+    process: &ProcessInfo,
+    batch: &FileActivityBatch,
+) -> bool {
+    batch_touches_only_temp_paths(batch)
+        && process.container_id.is_some()
+        && process.container_runtime.is_some()
+        && is_trusted_system_executable(&process.exe_path)
+        && !is_temp_path(&process.exe_path)
+        && !has_shell_like_parent(process)
+}
+
+fn has_shell_like_parent(process: &ProcessInfo) -> bool {
+    process
+        .parent_process_name
+        .as_deref()
+        .map(|name| contains_any_ascii_case_insensitive(name, SHELL_LIKE_PARENT_PATTERNS))
+        .unwrap_or(false)
+        || process
+            .parent_command_line
+            .as_deref()
+            .map(|cmd| contains_any_ascii_case_insensitive(cmd, SHELL_LIKE_PARENT_PATTERNS))
+            .unwrap_or(false)
+}
+
+fn is_trusted_system_executable(path: &str) -> bool {
+    TRUSTED_EXEC_PREFIXES
+        .iter()
+        .any(|prefix| path.starts_with(prefix))
+}
+
+fn contains_any_ascii_case_insensitive(value: &str, patterns: &[&str]) -> bool {
+    let lower = value.to_ascii_lowercase();
+    patterns.iter().any(|pattern| lower.contains(pattern))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -312,6 +365,10 @@ mod tests {
             exe_path: exe_path.to_string(),
             command_line: command_line.to_string(),
             correlation_hits: 20,
+            parent_process_name: None,
+            parent_command_line: None,
+            container_runtime: None,
+            container_id: None,
         }
     }
 
@@ -339,6 +396,10 @@ mod tests {
                 exe_path: "/usr/bin/python3".to_string(),
                 command_line: "python3 encrypt.py".to_string(),
                 correlation_hits: 20,
+                parent_process_name: Some("systemd".to_string()),
+                parent_command_line: Some("systemd".to_string()),
+                container_runtime: None,
+                container_id: None,
             }),
             protected_hits: 0,
         };
@@ -429,6 +490,42 @@ mod tests {
             .reasons
             .iter()
             .any(|reason| reason == "package-manager helper activity"));
+    }
+
+    #[test]
+    fn trusted_containerized_service_temp_activity_is_downgraded() {
+        let scorer = CompositeBehaviorScorer::from_config(&ContainmentConfig::default());
+        let batch = batch_with_ops(
+            FileOperationCounts {
+                modified: 5,
+                deleted: 5,
+                ..Default::default()
+            },
+            vec!["/tmp/#sql-temptable"],
+            2 * 1_048_576,
+        );
+        let mut proc = process(
+            55,
+            "mariadbd",
+            "/usr/sbin/mariadbd",
+            "mariadbd --user=node --datadir=/app/data/mariadb --socket=/app/data/run/mariadb.sock",
+        );
+        proc.parent_process_name = Some("node".to_string());
+        proc.parent_command_line = Some("node server/server.js".to_string());
+        proc.container_runtime = Some("docker".to_string());
+        proc.container_id = Some("0123456789abcdef0123456789abcdef".to_string());
+        let correlation = CorrelationResult {
+            process: Some(proc),
+            protected_hits: 0,
+        };
+
+        let event = scorer.score(&batch, &correlation);
+
+        assert_eq!(event.level, BehaviorLevel::Observed);
+        assert!(event
+            .reasons
+            .iter()
+            .any(|reason| reason == "containerized service temp activity"));
     }
 
     #[test]
