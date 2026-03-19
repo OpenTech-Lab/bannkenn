@@ -20,7 +20,7 @@ Most alerts were caused by legitimate software performing temporary file operati
 
 The core issue identified is not a host compromise, but a detection-tuning problem. BannKenn is successfully capturing low-level behavior, but it currently lacks enough execution context to distinguish benign temporary file patterns from actual malicious staging or fileless execution.
 
-## 3. Investigation Scope
+## 3. Investigation Scope and Method
 
 The investigation covered the following areas:
 
@@ -33,6 +33,16 @@ The investigation covered the following areas:
 - Docker container attribution
 - Temporary file inspection under `/tmp` and `/var/tmp`
 - Package installation timeline analysis using `dpkg.log`
+
+The working question for each alert was whether the observed behavior met the threshold for a likely compromise, rather than whether it merely looked unusual in isolation. An alert was only treated as a high-confidence malicious candidate if the investigation could support at least one of the following:
+
+- execution of a temp-written payload
+- unexpected outbound connectivity following temp staging
+- persistence creation
+- process-name and executable-path mismatch
+- untrusted lineage with no legitimate package, service, or container explanation
+
+This matters because low-level file bursts, rapid deletes, and short-lived helper processes are common in both malicious and benign Linux activity. The investigation therefore emphasized corroborating context and negative findings, not just anomaly labels.
 
 ## 4. Initial Alert Themes
 
@@ -51,9 +61,17 @@ Several alerts had similar characteristics:
 
 At first glance, this pattern resembled loader behavior, miner staging, or short-lived fileless malware. However, deeper analysis showed that these patterns were also produced by normal applications and system maintenance operations.
 
-## 5. Findings by Case
+## 5. Case Disposition Summary
 
-### 5.1 Java Process on `/tmp`: Wazuh Indexer / OpenSearch
+| Alert case | Key validation points | Disposition | Confidence |
+| --- | --- | --- | --- |
+| `java` write/delete bursts under `/tmp` | OpenSearch command line, expected temp dir, JNI `.so` extraction, deleted-but-open files | Legitimate Wazuh/OpenSearch runtime behavior | High |
+| `mariadbd` on a host where MariaDB was not expected | Legitimate `/usr/sbin/mariadbd`, Docker/container lineage, Uptime Kuma attribution | Legitimate embedded container dependency | High |
+| `depmod`, `cryptroot`, `cp`, and `unknown` temp activity | `dpkg.log` timing, maintenance tooling, no suspicious temp payloads recovered | Legitimate package-management or maintenance activity | Moderate to high |
+
+## 6. Findings by Case
+
+### 6.1 Java Process on `/tmp`: Wazuh Indexer / OpenSearch
 
 One host generated alerts involving `java` with repeated write/delete activity under `/tmp`.
 
@@ -90,7 +108,7 @@ This creates exactly the type of sequence that EDR systems often flag:
 **Conclusion**  
 This was legitimate Wazuh/OpenSearch runtime behavior and not an intrusion.
 
-### 5.2 `mariadbd` Detected on a Host Where MariaDB Was Not Expected
+### 6.2 `mariadbd` Detected on a Host Where MariaDB Was Not Expected
 
 A separate host generated alerts involving `mariadbd` touching `/tmp`. At first this appeared highly suspicious because only PostgreSQL was expected on that host.
 
@@ -124,7 +142,7 @@ The MariaDB process was not part of the user’s Sync Server project. It was lau
 **Conclusion**  
 This was not malware and not related to the user’s own application stack. It was a legitimate service process inside the Uptime Kuma container.
 
-### 5.3 Alerts Involving `depmod`, `cryptroot`, `cp`, and `unknown`
+### 6.3 Alerts Involving `depmod`, `cryptroot`, `cp`, and `unknown`
 
 Another alert set involved:
 
@@ -163,7 +181,7 @@ This alert group is best explained by package installation and post-install beha
 **Conclusion**  
 These alerts were consistent with package management and system maintenance activity, not malicious execution.
 
-## 6. Shell History Review
+## 7. Shell History Review
 
 Shell history was examined for suspicious commands such as:
 
@@ -186,7 +204,7 @@ Instead, most of the history reflected:
 
 This means shell history alone did not support a compromise conclusion.
 
-## 7. Persistence Review
+## 8. Persistence Review
 
 Persistence mechanisms were reviewed through:
 
@@ -200,7 +218,7 @@ No malicious persistence mechanism was found.
 
 Only expected services were present, including BannKenn and standard Ubuntu services.
 
-## 8. Temporary Path Review
+## 9. Temporary Path Review
 
 Repeated alerts targeted `/tmp` and `/var/tmp`, but direct file inspection did not reveal suspicious staged binaries.
 
@@ -219,7 +237,7 @@ Repeated alerts targeted `/tmp` and `/var/tmp`, but direct file inspection did n
 - no obvious malicious `.so` outside expected runtime behavior
 - no residual staging artifacts consistent with compromise
 
-## 9. Resource Usage Review
+## 10. Resource Usage Review
 
 Resource usage analysis showed:
 
@@ -236,7 +254,35 @@ This indicates the agent binary was x86_64 and was being emulated on a different
 **Conclusion**  
 The top CPU consumer was the monitoring agent, not a malicious process.
 
-## 10. Root Cause
+## 11. Negative Findings That Weighed Against Compromise
+
+Across the reviewed systems, the investigation did not find the kinds of corroborating signals that would normally elevate these alerts into a likely incident:
+
+- no recovered executable payload from `/tmp` or `/var/tmp`
+- no observed `execve` chain from a temp-staged binary
+- no persistence mechanism added through cron, systemd, or user autostart paths
+- no process masquerading evidence where the process name and executable path materially disagreed
+- no miner-like sustained CPU consumer besides the emulated BannKenn Agent itself
+- no residual staging artifacts, hidden ELF payloads, or suspicious standalone `.so` files outside known runtime behavior
+
+These absences do not prove a system can never be compromised, but they materially weaken the malware or cryptominer hypothesis for the specific alerts under review.
+
+## 12. Confidence, Limitations, and Residual Risk
+
+The confidence level is not identical across all cases.
+
+- High confidence benign: the OpenSearch Java case and the containerized `mariadbd` case, because process identity, lineage, and execution context were directly validated
+- Moderate-to-high confidence benign: the `depmod` / `cryptroot` / `cp` / `unknown` case, because timing and system-maintenance evidence lined up well, but some short-lived helper attribution remained incomplete
+
+The report is also bounded by the evidence available at investigation time. In particular:
+
+- very short-lived processes may exit before full eBPF attribution is captured
+- deleted temp artifacts may no longer be recoverable after the fact
+- this review relied on host inspection and operating-system telemetry, not full memory forensics or disk imaging
+
+Residual risk therefore remains low but non-zero. The more accurate conclusion is not "nothing suspicious happened," but rather "the available evidence supports benign explanations more strongly than compromise."
+
+## 13. Root Cause
 
 The root cause of the observed alerts is an over-sensitive behavior-based detection model operating without sufficient runtime context.
 
@@ -259,7 +305,7 @@ However, these patterns also occur during normal operation of:
 
 Without process lineage awareness, package-manager context, container context, and executable/path validation, these benign events are scored too aggressively.
 
-## 11. Security Assessment
+## 14. Security Assessment
 
 ### Confirmed
 
@@ -278,9 +324,9 @@ Without process lineage awareness, package-manager context, container context, a
 
 The systems investigated appear clean based on currently available evidence. The primary problem is false positives caused by context-poor detection logic.
 
-## 12. Recommended Improvements for BannKenn
+## 15. Recommended Improvements for BannKenn
 
-### 12.1 Add Context-Aware Scoring
+### 15.1 Add Context-Aware Scoring
 
 A simple rule such as:
 
@@ -296,7 +342,7 @@ should be replaced with context-aware logic such as:
 
 Only when multiple suspicious dimensions overlap should severity be elevated.
 
-### 12.2 Add Executable and Lineage Validation
+### 15.2 Add Executable and Lineage Validation
 
 Examples of useful validation:
 
@@ -310,7 +356,7 @@ Examples of useful validation:
   - file activity is limited to expected temp directories
   - opened files are JNI `.so` libraries
 
-### 12.3 Add Package-Manager Awareness
+### 15.3 Add Package-Manager Awareness
 
 Alerts during active package installation should be downgraded or grouped differently.
 
@@ -324,7 +370,7 @@ Signals to use:
   - `update-initramfs`
   - `ldconfig`
 
-### 12.4 Improve Unknown Process Resolution
+### 15.4 Improve Unknown Process Resolution
 
 `unknown process activity` should not immediately imply suspicion. It should be treated as incomplete attribution until correlated with:
 
@@ -336,7 +382,7 @@ Signals to use:
 
 Unknown events without supporting malicious context should default to lower severity.
 
-### 12.5 Add Container-Aware Detection
+### 15.5 Add Container-Aware Detection
 
 Container lineage should be incorporated into scoring. For example:
 
@@ -346,7 +392,7 @@ Container lineage should be incorporated into scoring. For example:
 
 This reduces noise from self-contained application stacks.
 
-### 12.6 Add Stronger Malware-Specific Triggers
+### 15.6 Add Stronger Malware-Specific Triggers
 
 Instead of relying primarily on temp-file burst patterns, prioritize signals such as:
 
@@ -360,7 +406,17 @@ Instead of relying primarily on temp-file burst patterns, prioritize signals suc
   - shell spawned from temp path
 - miner-like command lines, pools, or stratum connections
 
-## 13. Suggested Rule Direction
+### 15.7 Prioritize the Detection v2 Rollout
+
+The implementation order matters. The fastest path to materially better triage is:
+
+1. Add trusted lineage, executable-path validation, and package-manager windows so obviously benign activity stops escalating immediately.
+2. Improve attribution for `unknown` and containerized processes so analysts get better context with the existing telemetry.
+3. Reserve high-severity scoring for strong malicious combinations such as temp-write-plus-exec, temp-write-plus-network, persistence creation, or path/name mismatch.
+
+This keeps BannKenn useful during the transition: false positives fall first, while truly high-signal detections become easier to trust.
+
+## 16. Suggested Rule Direction
 
 A stronger high-confidence detection model would look like this:
 
@@ -381,13 +437,13 @@ Downgrade or suppress when:
 - database temp-file activity matches expected execution path
 - system maintenance tools are involved
 
-## 14. Final Conclusion
+## 17. Final Conclusion
 
 The investigation did not reveal a compromise. The alerts were generated because BannKenn is already effective at observing low-level file and process behavior, but it currently interprets many legitimate runtime patterns as suspicious.
 
 In practical terms, this is a tuning problem, not an incident response failure. The agent is capturing useful telemetry. The next step is to improve scoring and attribution so that normal Java, database, package, and container workflows do not generate unnecessary alerts, while truly malicious staging and fileless execution still stand out clearly.
 
-## 15. Recommended Next Step
+## 18. Recommended Next Step
 
 The recommended next phase is to design BannKenn Detection v2 with:
 
@@ -398,4 +454,4 @@ The recommended next phase is to design BannKenn Detection v2 with:
 - unknown-process correlation
 - stronger malware-specific triggers instead of temp-path behavior alone
 
-This would move the system from broad anomaly detection toward production-grade Linux EDR triage.
+This would move the system from broad anomaly detection toward production-grade Linux EDR triage. It also aligns the investigation findings with the broader scoring and correlation direction already outlined in [BannKenn vNext Upgrade Proposal](02_RFC-vNext.md).
