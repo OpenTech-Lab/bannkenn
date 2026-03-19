@@ -14,6 +14,7 @@ import {
 import { fetchDashboardSnapshot } from '@/src/features/monitoring/api';
 import { DashboardSnapshot } from '@/src/features/monitoring/types';
 import {
+  agentLabel,
   buildFleetAgentSummaries,
   formatRelativeTime,
   summarizeAlertCount,
@@ -152,7 +153,7 @@ export default function BehaviorOverview() {
                         href={`/agents/${s.agent.id}`}
                         className="text-blue-400 hover:text-blue-300 hover:underline"
                       >
-                        {s.agent.nickname?.trim() || s.agent.name}
+                        {agentLabel(s.agent)}
                       </Link>
                     </TableCell>
                     <TableCell>

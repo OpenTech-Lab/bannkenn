@@ -11,6 +11,7 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table';
+import { agentLabel } from '@/src/features/monitoring/utils';
 
 interface CommunityFeed {
   source: string;
@@ -171,7 +172,7 @@ export default function IpMonitorOverview() {
                         href={`/agents/${s.agent.id}#ip-monitor-logs`}
                         className="text-blue-400 hover:text-blue-300 hover:underline"
                       >
-                        {s.agent.nickname?.trim() || s.agent.name}
+                        {agentLabel(s.agent)}
                       </Link>
                     </TableCell>
                     <TableCell>

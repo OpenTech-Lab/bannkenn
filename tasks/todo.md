@@ -1,5 +1,28 @@
 # tasks
 
+## Done: Fix agent rename response handling and display original agent names
+
+### Scope
+- [x] Return an updated agent payload from the rename API while keeping the dashboard client compatible with older empty-body responses
+- [x] Format renamed agents as `nickname(original-name)` via the shared label helper
+- [x] Replace remaining direct nickname/name renderers with the shared label helper where this display is user-visible
+- [x] Verify the dashboard path after the rename/display changes
+
+### Notes
+- Bug report: saving a renamed agent could throw `JSON.parse: unexpected end of data` because the dashboard expected JSON from `PATCH /api/agents/:id` while the server returned `204 No Content`.
+- UX request: when an agent has a nickname, continue showing its original registered name in parentheses, for example `new-cloud-server(instance-20260319-1436)`.
+
+### Review
+- Updated [server/src/routes/agents.rs](/home/toyofumi/Project/Bannkenn/server/src/routes/agents.rs) so `PATCH /api/agents/:id` returns the refreshed agent record instead of an empty `204` response.
+- Updated [dashboard/src/features/monitoring/api.ts](/home/toyofumi/Project/Bannkenn/dashboard/src/features/monitoring/api.ts) so the rename client tolerates older empty-body responses and falls back to refetching the agent.
+- Updated [dashboard/src/features/monitoring/utils.ts](/home/toyofumi/Project/Bannkenn/dashboard/src/features/monitoring/utils.ts) to render renamed agents as `nickname(original-name)` unless the nickname is blank or identical to the original name.
+- Replaced remaining user-visible direct nickname/name renderers with `agentLabel(...)` across the dashboard pages and toast messages.
+- Verification: `cargo fmt --all -- --check` passed.
+- Verification: `cargo clippy --workspace -- -D warnings` passed.
+- Verification: `cargo test --workspace` passed.
+- Verification: `npm run build` passed in `dashboard/`.
+- Note: `npm run build` still reports Next.js's existing multiple-lockfile workspace-root warning, but the production build completed successfully.
+
 ## Done: Replace raw substring scorer matching with exact command-name checks
 
 ### Scope

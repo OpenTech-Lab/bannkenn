@@ -38,6 +38,24 @@ async function readJson<T>(path: string) {
   return (await response.json()) as T;
 }
 
+async function readJsonBodyIfPresent<T>(response: Response): Promise<T | null> {
+  if (response.status === 204) {
+    return null;
+  }
+
+  const contentType = response.headers.get('Content-Type') ?? '';
+  if (!contentType.includes('application/json')) {
+    return null;
+  }
+
+  const body = await response.text();
+  if (!body.trim()) {
+    return null;
+  }
+
+  return JSON.parse(body) as T;
+}
+
 export async function fetchDashboardSnapshot(): Promise<DashboardSnapshot> {
   const [health, agents, containmentStatuses, containmentEvents, incidents, alerts, behaviorEvents] =
     await Promise.all([
@@ -141,7 +159,7 @@ export async function fetchAgentDecisionsPage(
   );
 }
 
-export async function updateAgentNickname(agentId: number, nickname: string) {
+export async function updateAgentNickname(agentId: number, nickname: string): Promise<AgentStatus> {
   const response = await fetch(`/api/agents/${agentId}`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
@@ -152,7 +170,12 @@ export async function updateAgentNickname(agentId: number, nickname: string) {
     throw new Error(await readError(response));
   }
 
-  return (await response.json()) as AgentStatus;
+  const updatedAgent = await readJsonBodyIfPresent<AgentStatus>(response);
+  if (updatedAgent) {
+    return updatedAgent;
+  }
+
+  return readJson<AgentStatus>(`/api/agents/${agentId}`);
 }
 
 export async function deleteAgent(agentId: number) {

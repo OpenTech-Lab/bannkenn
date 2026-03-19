@@ -14,6 +14,7 @@ import { MetricCard } from '@/src/features/monitoring/components/panel';
 import { ThreatHeatmap } from '@/src/features/monitoring/components/threat-heatmap';
 import { DashboardSnapshot, FleetAgentSummary } from '@/src/features/monitoring/types';
 import {
+  agentLabel,
   buildActivityEntries,
   buildFleetAgentSummaries,
   formatRelativeTime,
@@ -109,8 +110,8 @@ export function FleetDashboardPage() {
       });
       toast.success(
         commandKind === 'trigger_fuse'
-          ? `FUSE queued for ${summary.agent.nickname ?? summary.agent.name}`
-          : `FUSE release queued for ${summary.agent.nickname ?? summary.agent.name}`
+          ? `FUSE queued for ${agentLabel(summary.agent)}`
+          : `FUSE release queued for ${agentLabel(summary.agent)}`
       );
 
       const next = await fetchDashboardSnapshot();

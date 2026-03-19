@@ -11,7 +11,12 @@ import {
 } from '@/src/features/monitoring/types';
 
 export function agentLabel(agent: Pick<AgentStatus, 'name' | 'nickname'>) {
-  return agent.nickname?.trim() || agent.name;
+  const nickname = agent.nickname?.trim();
+  if (nickname && nickname !== agent.name) {
+    return `${nickname}(${agent.name})`;
+  }
+
+  return agent.name;
 }
 
 export function formatTimestamp(value: string | null | undefined) {

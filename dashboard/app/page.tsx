@@ -48,6 +48,7 @@ import {
 } from '@/src/features/monitoring/api';
 import { AgentStatus, DashboardSnapshot } from '@/src/features/monitoring/types';
 import {
+  agentLabel,
   buildFleetAgentSummaries,
   formatRelativeTime,
   isActiveContainmentState,
@@ -172,8 +173,8 @@ export default function HomeDashboard() {
     if (!editingAgent) return;
     setEditSaving(true);
     try {
-      await updateAgentNickname(editingAgent.id, editNickname);
-      toast.success(`Nickname updated for ${editingAgent.name}`);
+      const updatedAgent = await updateAgentNickname(editingAgent.id, editNickname);
+      toast.success(`Display name updated for ${agentLabel(updatedAgent)}`);
       setEditingAgent(null);
       void refreshDashboard();
     } catch (cause) {
@@ -188,7 +189,7 @@ export default function HomeDashboard() {
     setDeleteLoading(true);
     try {
       await deleteAgent(deletingAgent.id);
-      toast.success(`Agent ${deletingAgent.nickname?.trim() || deletingAgent.name} deleted`);
+      toast.success(`Agent ${agentLabel(deletingAgent)} deleted`);
       setDeletingAgent(null);
       void refreshDashboard();
     } catch (cause) {
@@ -406,7 +407,7 @@ export default function HomeDashboard() {
                         href={`/agents/${s.agent.id}`}
                         className="text-blue-400 hover:text-blue-300 hover:underline"
                       >
-                        {s.agent.nickname?.trim() || s.agent.name}
+                        {agentLabel(s.agent)}
                       </Link>
                     </TableCell>
                     <TableCell>
@@ -650,7 +651,7 @@ export default function HomeDashboard() {
             <AlertDialogDescription>
               Are you sure you want to delete{' '}
               <span className="font-semibold text-white">
-                {deletingAgent?.nickname?.trim() || deletingAgent?.name}
+                {deletingAgent ? agentLabel(deletingAgent) : ''}
               </span>
               ? This action cannot be undone. All associated telemetry, decisions, and containment history will be removed.
             </AlertDialogDescription>

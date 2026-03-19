@@ -14,7 +14,11 @@ import {
 } from '@/components/ui/table';
 import { fetchIncidentDetailSnapshot } from '@/src/features/monitoring/api';
 import { IncidentDetailSnapshot } from '@/src/features/monitoring/types';
-import { formatRelativeTime, formatTimestamp } from '@/src/features/monitoring/utils';
+import {
+  agentLabel,
+  formatRelativeTime,
+  formatTimestamp,
+} from '@/src/features/monitoring/utils';
 
 export default function BehaviorIncidentDetailPage() {
   const params = useParams<{ id: string }>();
@@ -149,7 +153,7 @@ export default function BehaviorIncidentDetailPage() {
                 href={`/agents/${agent.id}`}
                 className="rounded-lg border border-gray-800 bg-gray-900/40 px-3 py-1.5 text-sm text-gray-200 hover:border-gray-600 hover:text-blue-400 transition-colors"
               >
-                {agent.nickname?.trim() || agent.name}
+                {agentLabel(agent)}
               </Link>
             ))}
           </div>

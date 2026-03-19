@@ -11,7 +11,11 @@ import {
   SeverityBadge,
 } from '@/src/features/monitoring/components/status-badge';
 import { IncidentDetailSnapshot } from '@/src/features/monitoring/types';
-import { formatRelativeTime, formatTimestamp } from '@/src/features/monitoring/utils';
+import {
+  agentLabel,
+  formatRelativeTime,
+  formatTimestamp,
+} from '@/src/features/monitoring/utils';
 
 export function IncidentDetailPage() {
   const params = useParams<{ id: string }>();
@@ -163,7 +167,7 @@ export function IncidentDetailPage() {
                     href={`/agents/${agent.id}`}
                     className="rounded-full border border-white/10 px-3 py-1 text-sm text-slate-200 transition-colors hover:border-sky-400/40 hover:text-sky-200"
                   >
-                    {agent.nickname?.trim() || agent.name}
+                    {agentLabel(agent)}
                   </Link>
                 ))}
               </div>

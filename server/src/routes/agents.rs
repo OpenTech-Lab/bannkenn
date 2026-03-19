@@ -227,7 +227,16 @@ pub async fn update_nickname(
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
-    Ok(StatusCode::NO_CONTENT)
+    let Some(agent) = state
+        .db
+        .get_agent_with_last_seen(id)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+    else {
+        return Err(StatusCode::NOT_FOUND);
+    };
+
+    Ok(Json(map_agent_status(agent, Utc::now())))
 }
 
 pub async fn delete_agent(

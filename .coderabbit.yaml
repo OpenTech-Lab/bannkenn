@@ -1,0 +1,26 @@
+# CodeRabbit Configuration
+version: "1.0"
+
+reviews:
+  # Set this to false to stop automatic reviews on every push/PR
+  enable_review: false 
+  # High-level summary of changes
+  request_review_summary: true
+  # Profile can be 'assertive', 'chill', or 'comprehensive'
+  profile: assertive
+  
+  # Fine-tune which files should be ignored
+  path_filters:
+    - "!**/node_modules/**"
+    - "!**/dist/**"
+    - "!**/*.lock"
+    - "!**/vendor/**"
+
+chat:
+  # Keeps the chat feature enabled so you can still talk to the bot
+  enabled: true
+
+instructions: |
+  You are an expert senior software engineer. 
+  When I call you for a review, focus on performance, 
+  security, and adherence to clean code principles.
