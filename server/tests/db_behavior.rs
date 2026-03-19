@@ -43,6 +43,18 @@ async fn behavior_events_round_trip_structured_payloads() {
         rows[0].maintenance_activity.as_deref(),
         Some("trusted_maintenance")
     );
+    assert_eq!(rows[0].package_name.as_deref(), Some("python3"));
+    assert_eq!(rows[0].package_manager.as_deref(), Some("dpkg"));
+    assert_eq!(rows[0].parent_chain.len(), 2);
+    assert_eq!(rows[0].parent_chain[0].pid, 1);
+    assert_eq!(
+        rows[0].parent_chain[0].process_name.as_deref(),
+        Some("systemd")
+    );
+    assert_eq!(
+        rows[0].parent_chain[1].exe_path.as_deref(),
+        Some("/usr/local/bin/backup-wrapper")
+    );
     assert_eq!(rows[0].parent_process_name.as_deref(), Some("systemd"));
     assert_eq!(rows[0].parent_command_line.as_deref(), Some("systemd"));
     assert_eq!(rows[0].container_runtime.as_deref(), Some("docker"));

@@ -260,6 +260,8 @@ impl CompositeBehaviorScorer {
             trust_policy_visibility: process
                 .map(|proc_info| proc_info.trust_policy_visibility)
                 .unwrap_or_default(),
+            package_name: process.and_then(|proc_info| proc_info.package_name.clone()),
+            package_manager: process.and_then(|proc_info| proc_info.package_manager.clone()),
             process_name: process.map(|proc_info| proc_info.process_name.clone()),
             exe_path: process.map(|proc_info| proc_info.exe_path.clone()),
             command_line: process.map(|proc_info| proc_info.command_line.clone()),
@@ -267,6 +269,9 @@ impl CompositeBehaviorScorer {
                 .and_then(|proc_info| proc_info.parent_process_name.clone()),
             parent_command_line: process
                 .and_then(|proc_info| proc_info.parent_command_line.clone()),
+            parent_chain: process
+                .map(|proc_info| proc_info.parent_chain.clone())
+                .unwrap_or_default(),
             container_runtime: process.and_then(|proc_info| proc_info.container_runtime.clone()),
             container_id: process.and_then(|proc_info| proc_info.container_id.clone()),
             correlation_hits: process
@@ -375,6 +380,8 @@ impl Scorer for CompositeBehaviorScorer {
             trust_policy_visibility: process
                 .map(|proc_info| proc_info.trust_policy_visibility)
                 .unwrap_or_default(),
+            package_name: process.and_then(|proc_info| proc_info.package_name.clone()),
+            package_manager: process.and_then(|proc_info| proc_info.package_manager.clone()),
             process_name: process.map(|proc_info| proc_info.process_name.clone()),
             exe_path: process.map(|proc_info| proc_info.exe_path.clone()),
             command_line: process.map(|proc_info| proc_info.command_line.clone()),
@@ -382,6 +389,9 @@ impl Scorer for CompositeBehaviorScorer {
                 .and_then(|proc_info| proc_info.parent_process_name.clone()),
             parent_command_line: process
                 .and_then(|proc_info| proc_info.parent_command_line.clone()),
+            parent_chain: process
+                .map(|proc_info| proc_info.parent_chain.clone())
+                .unwrap_or_default(),
             container_runtime: process.and_then(|proc_info| proc_info.container_runtime.clone()),
             container_id: process.and_then(|proc_info| proc_info.container_id.clone()),
             correlation_hits: process
@@ -511,7 +521,18 @@ fn is_containerized_service_temp_activity(
 }
 
 fn has_shell_like_parent(process: &ProcessInfo) -> bool {
-    matches_any_command_name(
+    process.parent_chain.iter().any(|parent| {
+        matches_any_command_name(
+            [
+                parent.process_name.as_deref(),
+                parent.exe_path.as_deref().and_then(path_basename),
+                parent.command_line.as_deref().and_then(argv0_basename),
+            ]
+            .into_iter()
+            .flatten(),
+            SHELL_LIKE_PARENT_PATTERNS,
+        )
+    }) || matches_any_command_name(
         [
             process.parent_process_name.as_deref(),
             process

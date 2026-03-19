@@ -57,6 +57,9 @@ impl Db {
             "trust_class": &event.trust_class,
             "trust_policy_name": &event.trust_policy_name,
             "maintenance_activity": &event.maintenance_activity,
+            "package_name": &event.package_name,
+            "package_manager": &event.package_manager,
+            "parent_chain": &event.parent_chain,
             "process_name": &event.process_name,
             "exe_path": &event.exe_path,
             "command_line": &event.command_line,
@@ -157,6 +160,7 @@ impl Db {
         let touched_paths_json = encode_json(&event.touched_paths)?;
         let protected_paths_json = encode_json(&event.protected_paths_touched)?;
         let reasons_json = encode_json(&event.reasons)?;
+        let parent_chain_json = encode_json(&event.parent_chain)?;
         let result = sqlx::query(
             r#"
             INSERT INTO behavior_events (
@@ -173,6 +177,9 @@ impl Db {
                 trust_class,
                 trust_policy_name,
                 maintenance_activity,
+                package_name,
+                package_manager,
+                parent_chain_json,
                 process_name,
                 exe_path,
                 command_line,
@@ -194,7 +201,7 @@ impl Db {
                 level,
                 created_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             "#,
         )
         .bind(incident_id)
@@ -210,6 +217,9 @@ impl Db {
         .bind(&event.trust_class)
         .bind(&event.trust_policy_name)
         .bind(&event.maintenance_activity)
+        .bind(&event.package_name)
+        .bind(&event.package_manager)
+        .bind(parent_chain_json)
         .bind(&event.process_name)
         .bind(&event.exe_path)
         .bind(&event.command_line)
@@ -256,6 +266,9 @@ impl Db {
                 trust_class,
                 trust_policy_name,
                 maintenance_activity,
+                package_name,
+                package_manager,
+                parent_chain_json,
                 process_name,
                 exe_path,
                 command_line,
@@ -319,6 +332,9 @@ impl Db {
                 trust_class,
                 trust_policy_name,
                 maintenance_activity,
+                package_name,
+                package_manager,
+                parent_chain_json,
                 process_name,
                 exe_path,
                 command_line,
@@ -360,6 +376,7 @@ fn map_behavior_event_row(row: sqlx::sqlite::SqliteRow) -> anyhow::Result<Behavi
     let touched_paths_json: String = row.try_get("touched_paths_json")?;
     let protected_paths_json: String = row.try_get("protected_paths_json")?;
     let reasons_json: String = row.try_get("reasons_json")?;
+    let parent_chain_json: Option<String> = row.try_get("parent_chain_json")?;
 
     Ok(BehaviorEventRow {
         id: row.try_get("id")?,
@@ -375,6 +392,12 @@ fn map_behavior_event_row(row: sqlx::sqlite::SqliteRow) -> anyhow::Result<Behavi
         trust_class: row.try_get("trust_class")?,
         trust_policy_name: row.try_get("trust_policy_name")?,
         maintenance_activity: row.try_get("maintenance_activity")?,
+        package_name: row.try_get("package_name")?,
+        package_manager: row.try_get("package_manager")?,
+        parent_chain: decode_json(
+            &parent_chain_json.unwrap_or_else(|| "[]".to_string()),
+            "behavior_events.parent_chain_json",
+        )?,
         process_name: row.try_get("process_name")?,
         exe_path: row.try_get("exe_path")?,
         command_line: row.try_get("command_line")?,

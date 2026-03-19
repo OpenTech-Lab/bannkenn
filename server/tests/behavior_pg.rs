@@ -49,6 +49,9 @@ fn archive_record_preserves_ingested_behavior_fields() {
         record.maintenance_activity.as_deref(),
         Some("trusted_maintenance")
     );
+    assert_eq!(record.package_name.as_deref(), Some("python3"));
+    assert_eq!(record.package_manager.as_deref(), Some("dpkg"));
+    assert!(record.parent_chain_json.contains("\"pid\":1"));
     assert_eq!(record.parent_process_name.as_deref(), Some("systemd"));
     assert_eq!(record.parent_command_line.as_deref(), Some("systemd"));
     assert_eq!(record.container_runtime.as_deref(), Some("docker"));

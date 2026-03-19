@@ -56,6 +56,23 @@ type LogBlockTab = 'behavior' | 'ip';
 type EventTab = 'behavior' | 'containment';
 type IpTab = 'telemetry' | 'decisions';
 
+function formatParentChain(chain: BehaviorEvent['parent_chain']) {
+  if (!chain.length) {
+    return 'unknown';
+  }
+
+  return chain
+    .map((entry) => {
+      const label = entry.process_name ?? entry.exe_path ?? `pid ${entry.pid}`;
+      const details = [
+        entry.exe_path ? `exe: ${entry.exe_path}` : null,
+        entry.command_line ? `cmd: ${entry.command_line}` : null,
+      ].filter((value): value is string => Boolean(value));
+      return details.length ? `${label} (${details.join(' / ')})` : label;
+    })
+    .join(' -> ');
+}
+
 export function AgentDetailPage() {
   const params = useParams<{ id: string }>();
   const id = params?.id;
@@ -491,6 +508,15 @@ export function AgentDetailPage() {
                                 </p>
                                 <p className="truncate text-xs text-muted-foreground">
                                   maintenance: {event.maintenance_activity ?? 'none'}
+                                </p>
+                                <p className="truncate text-xs text-muted-foreground">
+                                  package: {event.package_name ?? 'unknown'}
+                                  {event.package_manager
+                                    ? ` / manager: ${event.package_manager}`
+                                    : ''}
+                                </p>
+                                <p className="break-words text-xs text-muted-foreground">
+                                  ancestry: {formatParentChain(event.parent_chain)}
                                 </p>
                                 <p className="truncate text-xs text-muted-foreground">
                                   ids: pid {event.pid ?? '—'} / ppid {event.parent_pid ?? '—'} / uid

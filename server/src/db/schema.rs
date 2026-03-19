@@ -54,6 +54,9 @@ pub(crate) async fn migrate(pool: &SqlitePool) -> anyhow::Result<()> {
             trust_class TEXT,
             trust_policy_name TEXT,
             maintenance_activity TEXT,
+            package_name TEXT,
+            package_manager TEXT,
+            parent_chain_json TEXT NOT NULL DEFAULT '[]',
             process_name TEXT,
             exe_path TEXT,
             command_line TEXT,
@@ -442,6 +445,17 @@ pub(crate) async fn migrate(pool: &SqlitePool) -> anyhow::Result<()> {
     let _ = sqlx::query("ALTER TABLE behavior_events ADD COLUMN maintenance_activity TEXT")
         .execute(pool)
         .await;
+    let _ = sqlx::query("ALTER TABLE behavior_events ADD COLUMN package_name TEXT")
+        .execute(pool)
+        .await;
+    let _ = sqlx::query("ALTER TABLE behavior_events ADD COLUMN package_manager TEXT")
+        .execute(pool)
+        .await;
+    let _ = sqlx::query(
+        "ALTER TABLE behavior_events ADD COLUMN parent_chain_json TEXT NOT NULL DEFAULT '[]'",
+    )
+    .execute(pool)
+    .await;
     let _ = sqlx::query("ALTER TABLE behavior_events ADD COLUMN container_runtime TEXT")
         .execute(pool)
         .await;

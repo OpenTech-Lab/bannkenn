@@ -99,11 +99,19 @@ fn outbox_round_trips_behavior_and_containment_reports() {
                 trust_class: Some("allowed_local_process".to_string()),
                 trust_policy_name: Some("backup-window".to_string()),
                 maintenance_activity: Some("trusted_maintenance".to_string()),
+                package_name: Some("python3-minimal".to_string()),
+                package_manager: Some("dpkg".to_string()),
                 process_name: Some("python3".to_string()),
                 exe_path: Some("/usr/bin/python3".to_string()),
                 command_line: Some("python3 encrypt.py".to_string()),
                 parent_process_name: Some("systemd".to_string()),
                 parent_command_line: Some("systemd --user".to_string()),
+                parent_chain: vec![crate::ebpf::events::ProcessAncestor {
+                    pid: 1,
+                    process_name: Some("systemd".to_string()),
+                    exe_path: Some("/usr/lib/systemd/systemd".to_string()),
+                    command_line: Some("systemd --user".to_string()),
+                }],
                 correlation_hits: 3,
                 file_ops: crate::ebpf::events::FileOperationCounts {
                     modified: 5,
@@ -151,11 +159,13 @@ fn outbox_round_trips_behavior_and_containment_reports() {
             assert_eq!(report.source, "ebpf_ringbuf");
             assert_eq!(report.level, "throttle_candidate");
             assert_eq!(report.parent_process_name.as_deref(), Some("systemd"));
+            assert_eq!(report.package_name.as_deref(), Some("python3-minimal"));
             assert_eq!(report.trust_policy_name.as_deref(), Some("backup-window"));
             assert_eq!(
                 report.maintenance_activity.as_deref(),
                 Some("trusted_maintenance")
             );
+            assert_eq!(report.parent_chain.len(), 1);
         }
         payload => panic!("expected behavior event payload, got {payload:?}"),
     }

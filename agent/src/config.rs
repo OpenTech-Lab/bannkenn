@@ -85,6 +85,8 @@ pub struct TrustPolicyRule {
     #[serde(default)]
     pub exe_paths: Vec<String>,
     #[serde(default)]
+    pub package_names: Vec<String>,
+    #[serde(default)]
     pub service_units: Vec<String>,
     pub trust_class: ProcessTrustClass,
     #[serde(default)]

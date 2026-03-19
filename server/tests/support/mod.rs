@@ -1,7 +1,8 @@
 #![allow(dead_code)]
 
 use bannkenn_server::db::{
-    BehaviorFileOpsRow, ContainmentOutcomeRow, Db, NewBehaviorEvent, NewContainmentEvent,
+    BehaviorFileOpsRow, BehaviorParentChainEntry, ContainmentOutcomeRow, Db, NewBehaviorEvent,
+    NewContainmentEvent,
 };
 
 pub async fn test_db() -> Db {
@@ -26,6 +27,22 @@ pub fn sample_behavior_event(
         trust_class: Some("allowed_local_process".to_string()),
         trust_policy_name: Some("backup-window".to_string()),
         maintenance_activity: Some("trusted_maintenance".to_string()),
+        package_name: Some("python3".to_string()),
+        package_manager: Some("dpkg".to_string()),
+        parent_chain: vec![
+            BehaviorParentChainEntry {
+                pid: 1,
+                process_name: Some("systemd".to_string()),
+                exe_path: Some("/usr/lib/systemd/systemd".to_string()),
+                command_line: Some("systemd".to_string()),
+            },
+            BehaviorParentChainEntry {
+                pid: 42,
+                process_name: Some("backup-wrapper".to_string()),
+                exe_path: Some("/usr/local/bin/backup-wrapper".to_string()),
+                command_line: Some("backup-wrapper --run".to_string()),
+            },
+        ],
         process_name: Some("python3".to_string()),
         exe_path: Some("/usr/bin/python3".to_string()),
         command_line: Some("python3 encrypt.py".to_string()),

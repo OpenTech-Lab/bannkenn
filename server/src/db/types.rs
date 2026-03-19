@@ -36,6 +36,17 @@ pub struct BehaviorFileOpsRow {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BehaviorParentChainEntry {
+    pub pid: u32,
+    #[serde(default)]
+    pub process_name: Option<String>,
+    #[serde(default)]
+    pub exe_path: Option<String>,
+    #[serde(default)]
+    pub command_line: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct BehaviorEventRow {
     pub id: i64,
     pub agent_name: String,
@@ -50,6 +61,9 @@ pub struct BehaviorEventRow {
     pub trust_class: Option<String>,
     pub trust_policy_name: Option<String>,
     pub maintenance_activity: Option<String>,
+    pub package_name: Option<String>,
+    pub package_manager: Option<String>,
+    pub parent_chain: Vec<BehaviorParentChainEntry>,
     pub process_name: Option<String>,
     pub exe_path: Option<String>,
     pub command_line: Option<String>,
@@ -190,6 +204,9 @@ pub struct NewBehaviorEvent {
     pub trust_class: Option<String>,
     pub trust_policy_name: Option<String>,
     pub maintenance_activity: Option<String>,
+    pub package_name: Option<String>,
+    pub package_manager: Option<String>,
+    pub parent_chain: Vec<BehaviorParentChainEntry>,
     pub process_name: Option<String>,
     pub exe_path: Option<String>,
     pub command_line: Option<String>,

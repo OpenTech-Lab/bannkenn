@@ -1,7 +1,8 @@
 use super::*;
 use crate::config::ContainmentConfig;
 use crate::ebpf::events::{
-    FileActivityBatch, FileOperationCounts, MaintenanceActivity, ProcessInfo, ProcessTrustClass,
+    FileActivityBatch, FileOperationCounts, MaintenanceActivity, ProcessAncestor, ProcessInfo,
+    ProcessTrustClass,
 };
 use chrono::Utc;
 
@@ -35,12 +36,15 @@ fn process(pid: u32, process_name: &str, exe_path: &str, command_line: &str) -> 
         trust_policy_name: None,
         maintenance_activity: None,
         trust_policy_visibility: Default::default(),
+        package_name: None,
+        package_manager: None,
         process_name: process_name.to_string(),
         exe_path: exe_path.to_string(),
         command_line: command_line.to_string(),
         correlation_hits: 20,
         parent_process_name: None,
         parent_command_line: None,
+        parent_chain: Vec::new(),
         container_runtime: None,
         container_id: None,
     }
@@ -75,12 +79,15 @@ fn mass_rename_scores_as_suspicious() {
             trust_policy_name: None,
             maintenance_activity: None,
             trust_policy_visibility: Default::default(),
+            package_name: None,
+            package_manager: None,
             process_name: "python3".to_string(),
             exe_path: "/usr/bin/python3".to_string(),
             command_line: "python3 encrypt.py".to_string(),
             correlation_hits: 20,
             parent_process_name: Some("systemd".to_string()),
             parent_command_line: Some("systemd".to_string()),
+            parent_chain: Vec::new(),
             container_runtime: None,
             container_id: None,
         }),
@@ -411,6 +418,58 @@ fn real_shell_parent_still_blocks_containerized_service_suppression() {
     );
     proc.parent_process_name = Some("sh".to_string());
     proc.parent_command_line = Some("/bin/sh -c /usr/bin/python3 /tmp/dropper.py".to_string());
+    proc.container_runtime = Some("docker".to_string());
+    proc.container_id = Some("fedcba9876543210fedcba9876543210".to_string());
+    let correlation = CorrelationResult {
+        process: Some(proc),
+        protected_hits: 0,
+    };
+
+    let event = scorer.score(&batch, &correlation);
+
+    assert!(!event
+        .reasons
+        .iter()
+        .any(|reason| reason == "containerized service temp activity"));
+}
+
+#[test]
+fn shell_ancestor_anywhere_in_chain_blocks_containerized_service_suppression() {
+    let scorer = CompositeBehaviorScorer::from_config(&ContainmentConfig::default());
+    let batch = batch_with_ops(
+        FileOperationCounts {
+            modified: 5,
+            deleted: 5,
+            ..Default::default()
+        },
+        vec!["/tmp/cron-staging"],
+        2 * 1_048_576,
+    );
+    let mut proc = process(
+        57,
+        "python3",
+        "/usr/bin/python3",
+        "/usr/bin/python3 /tmp/dropper.py",
+    );
+    proc.parent_process_name = Some("containerd-shim".to_string());
+    proc.parent_command_line =
+        Some("/usr/bin/containerd-shim-runc-v2 -namespace moby -id abc".to_string());
+    proc.parent_chain = vec![
+        ProcessAncestor {
+            pid: 200,
+            process_name: Some("containerd-shim".to_string()),
+            exe_path: Some("/usr/bin/containerd-shim-runc-v2".to_string()),
+            command_line: Some(
+                "/usr/bin/containerd-shim-runc-v2 -namespace moby -id abc".to_string(),
+            ),
+        },
+        ProcessAncestor {
+            pid: 199,
+            process_name: Some("sh".to_string()),
+            exe_path: Some("/bin/sh".to_string()),
+            command_line: Some("/bin/sh -c /usr/bin/python3 /tmp/dropper.py".to_string()),
+        },
+    ];
     proc.container_runtime = Some("docker".to_string());
     proc.container_id = Some("fedcba9876543210fedcba9876543210".to_string());
     let correlation = CorrelationResult {

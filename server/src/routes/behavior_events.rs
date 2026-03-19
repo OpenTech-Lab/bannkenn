@@ -1,6 +1,6 @@
 use crate::auth::AuthenticatedAgent;
 use crate::behavior_pg::{BehaviorArchiveRecord, BehaviorPgArchive};
-use crate::db::{BehaviorFileOpsRow, Db, NewBehaviorEvent};
+use crate::db::{BehaviorFileOpsRow, BehaviorParentChainEntry, Db, NewBehaviorEvent};
 use crate::validation::{cap_string, cap_vec, MAX_STRING_BYTES, MAX_VEC_ITEMS};
 use axum::{
     extract::{Query, State},
@@ -30,6 +30,10 @@ pub struct CreateBehaviorEventRequest {
     pub trust_class: Option<String>,
     pub trust_policy_name: Option<String>,
     pub maintenance_activity: Option<String>,
+    pub package_name: Option<String>,
+    pub package_manager: Option<String>,
+    #[serde(default)]
+    pub parent_chain: Vec<BehaviorParentChainEntry>,
     pub process_name: Option<String>,
     pub exe_path: Option<String>,
     pub command_line: Option<String>,
@@ -93,6 +97,13 @@ pub async fn create(
         maintenance_activity: payload
             .maintenance_activity
             .map(|s| cap_string(s, MAX_STRING_BYTES)),
+        package_name: payload
+            .package_name
+            .map(|s| cap_string(s, MAX_STRING_BYTES)),
+        package_manager: payload
+            .package_manager
+            .map(|s| cap_string(s, MAX_STRING_BYTES)),
+        parent_chain: cap_vec(payload.parent_chain, MAX_VEC_ITEMS),
         process_name: payload.process_name,
         exe_path: payload.exe_path,
         command_line: payload

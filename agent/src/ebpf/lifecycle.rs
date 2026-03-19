@@ -1,10 +1,11 @@
 use crate::config::{ContainmentConfig, TrustPolicyRule, TrustPolicyVisibility};
-use crate::ebpf::events::{MaintenanceActivity, ProcessTrustClass};
+use crate::ebpf::events::{MaintenanceActivity, ProcessAncestor, ProcessTrustClass};
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 
 const TRUSTED_SYSTEM_EXEC_PREFIXES: &[&str] = &["/usr/", "/bin/", "/sbin/", "/lib/", "/nix/store/"];
 const TRUSTED_PACKAGE_MANAGED_PATTERNS: &[&str] = &[
@@ -56,6 +57,7 @@ const PACKAGE_MANAGER_HELPER_PATTERNS: &[&str] = &[
 const SHELL_LIKE_PARENT_PATTERNS: &[&str] = &["sh", "bash", "dash", "zsh", "ash", "busybox"];
 const LOCAL_EXEC_PREFIXES: &[&str] = &["/usr/local/", "/opt/", "/srv/", "/home/", "/root/"];
 const TEMP_EXEC_PREFIXES: &[&str] = &["/tmp/", "/var/tmp/"];
+const MAX_PARENT_CHAIN_DEPTH: usize = 6;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TrackedProcess {
@@ -69,11 +71,14 @@ pub struct TrackedProcess {
     pub trust_policy_name: Option<String>,
     pub maintenance_activity: Option<MaintenanceActivity>,
     pub trust_policy_visibility: TrustPolicyVisibility,
+    pub package_name: Option<String>,
+    pub package_manager: Option<String>,
     pub process_name: String,
     pub exe_path: String,
     pub command_line: String,
     pub parent_process_name: Option<String>,
     pub parent_command_line: Option<String>,
+    pub parent_chain: Vec<ProcessAncestor>,
     pub container_runtime: Option<String>,
     pub container_id: Option<String>,
     pub open_paths: HashSet<String>,
@@ -117,6 +122,8 @@ struct ProcessIdentity {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ProcessProfileState {
     first_seen_at: DateTime<Utc>,
+    package_name: Option<String>,
+    package_manager: Option<String>,
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -131,6 +138,12 @@ struct CgroupMetadata {
     service_unit: Option<String>,
     container_runtime: Option<String>,
     container_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PackageOwner {
+    name: String,
+    manager: String,
 }
 
 impl ProcessLifecycleTracker {
@@ -191,12 +204,23 @@ impl ProcessLifecycleTracker {
     ) {
         for process in processes.values_mut() {
             let profile_key = process_profile_key(process);
-            let first_seen_at = self
-                .profiles
-                .entry(profile_key)
-                .or_insert_with(|| ProcessProfileState { first_seen_at: now })
-                .first_seen_at;
-            process.first_seen_at = first_seen_at;
+            let profile = self.profiles.entry(profile_key).or_insert_with(|| {
+                let package_owner = resolve_package_owner(&process.exe_path);
+                ProcessProfileState {
+                    first_seen_at: now,
+                    package_name: process
+                        .package_name
+                        .clone()
+                        .or_else(|| package_owner.as_ref().map(|owner| owner.name.clone())),
+                    package_manager: process
+                        .package_manager
+                        .clone()
+                        .or_else(|| package_owner.map(|owner| owner.manager)),
+                }
+            });
+            process.first_seen_at = profile.first_seen_at;
+            process.package_name = profile.package_name.clone();
+            process.package_manager = profile.package_manager.clone();
             process.trust_class = classify_process_trust(process);
             process.trust_policy_name = None;
             process.trust_policy_visibility = TrustPolicyVisibility::Visible;
@@ -242,10 +266,7 @@ fn inspect_process(
 ) -> Option<TrackedProcess> {
     let proc_dir = PathBuf::from("/proc").join(pid.to_string());
     let process_name = read_trimmed_file(proc_dir.join("comm"))?;
-    let exe_path = fs::read_link(proc_dir.join("exe"))
-        .ok()
-        .map(|path| path.display().to_string())
-        .unwrap_or_else(|| process_name.clone());
+    let exe_path = read_exe_path(proc_dir.join("exe")).unwrap_or_else(|| process_name.clone());
     let command_line = read_cmdline(proc_dir.join("cmdline")).unwrap_or_else(|| exe_path.clone());
     let open_paths = collect_open_paths(proc_dir.join("fd"), watch_roots);
 
@@ -254,10 +275,10 @@ fn inspect_process(
     }
 
     let status = read_status_metadata(proc_dir.join("status"));
-    let (parent_process_name, parent_command_line) = status
+    let (parent_process_name, parent_command_line, parent_chain) = status
         .parent_pid
         .and_then(inspect_parent_process)
-        .unwrap_or((None, None));
+        .unwrap_or((None, None, Vec::new()));
     let cgroup = read_cgroup_metadata(proc_dir.join("cgroup"));
 
     let protected = pid == 1
@@ -275,11 +296,14 @@ fn inspect_process(
         trust_policy_name: None,
         maintenance_activity: None,
         trust_policy_visibility: TrustPolicyVisibility::Visible,
+        package_name: None,
+        package_manager: None,
         process_name,
         exe_path,
         command_line,
         parent_process_name,
         parent_command_line,
+        parent_chain,
         container_runtime: cgroup.container_runtime,
         container_id: cgroup.container_id,
         open_paths,
@@ -378,6 +402,11 @@ fn read_trimmed_file(path: PathBuf) -> Option<String> {
     }
 }
 
+fn read_exe_path(path: PathBuf) -> Option<String> {
+    let target = fs::read_link(path).ok()?;
+    Some(normalize_proc_target(&target))
+}
+
 fn read_cmdline(path: PathBuf) -> Option<String> {
     let content = fs::read(path).ok()?;
     let args = content
@@ -421,19 +450,52 @@ fn parse_status_first_u32(line: &str, prefix: &str) -> Option<u32> {
     value.parse::<u32>().ok()
 }
 
-fn inspect_parent_process(ppid: u32) -> Option<(Option<String>, Option<String>)> {
+fn inspect_parent_process(
+    ppid: u32,
+) -> Option<(Option<String>, Option<String>, Vec<ProcessAncestor>)> {
     if ppid == 0 {
         return None;
     }
 
-    let proc_dir = PathBuf::from("/proc").join(ppid.to_string());
-    let process_name = read_trimmed_file(proc_dir.join("comm"));
-    let command_line = read_cmdline(proc_dir.join("cmdline"));
-    if process_name.is_none() && command_line.is_none() {
+    let chain = inspect_parent_chain(Path::new("/proc"), ppid, MAX_PARENT_CHAIN_DEPTH);
+    let parent_process_name = chain.first().and_then(|parent| parent.process_name.clone());
+    let parent_command_line = chain.first().and_then(|parent| parent.command_line.clone());
+    if parent_process_name.is_none() && parent_command_line.is_none() && chain.is_empty() {
         None
     } else {
-        Some((process_name, command_line))
+        Some((parent_process_name, parent_command_line, chain))
     }
+}
+
+fn inspect_parent_chain(proc_root: &Path, ppid: u32, max_depth: usize) -> Vec<ProcessAncestor> {
+    let mut chain = Vec::new();
+    let mut next_pid = Some(ppid);
+    let mut visited = HashSet::new();
+
+    while let Some(pid) = next_pid {
+        if pid == 0 || chain.len() >= max_depth || !visited.insert(pid) {
+            break;
+        }
+
+        let proc_dir = proc_root.join(pid.to_string());
+        let process_name = read_trimmed_file(proc_dir.join("comm"));
+        let exe_path = read_exe_path(proc_dir.join("exe"));
+        let command_line = read_cmdline(proc_dir.join("cmdline"));
+        if process_name.is_none() && exe_path.is_none() && command_line.is_none() {
+            break;
+        }
+
+        chain.push(ProcessAncestor {
+            pid,
+            process_name,
+            exe_path,
+            command_line,
+        });
+
+        next_pid = read_status_metadata(proc_dir.join("status")).parent_pid;
+    }
+
+    chain
 }
 
 fn process_profile_key(process: &TrackedProcess) -> String {
@@ -453,9 +515,21 @@ fn process_profile_key(process: &TrackedProcess) -> String {
     format!("{exe_path}|{service_unit}|{container_id}")
 }
 
+fn normalize_proc_target(target: &Path) -> String {
+    target
+        .display()
+        .to_string()
+        .trim_end_matches(" (deleted)")
+        .to_string()
+}
+
 fn classify_process_trust(process: &TrackedProcess) -> ProcessTrustClass {
     if is_temp_executable(&process.exe_path) {
         return ProcessTrustClass::Suspicious;
+    }
+
+    if process.package_name.is_some() {
+        return ProcessTrustClass::TrustedPackageManaged;
     }
 
     if is_trusted_system_executable(&process.exe_path)
@@ -529,8 +603,12 @@ fn trust_policy_matches(
         && policy.service_units.iter().any(|service_unit| {
             service_unit_matches_policy(process.service_unit.as_deref(), service_unit)
         });
+    let package_name_match = !policy.package_names.is_empty()
+        && policy.package_names.iter().any(|package_name| {
+            package_name_matches_policy(process.package_name.as_deref(), package_name)
+        });
 
-    if !exe_match && !service_unit_match {
+    if !exe_match && !service_unit_match && !package_name_match {
         return false;
     }
 
@@ -592,7 +670,18 @@ fn process_matches_any_command_name(process: &TrackedProcess, patterns: &[&str])
 }
 
 fn has_shell_like_parent(process: &TrackedProcess) -> bool {
-    matches_any_command_name(
+    process.parent_chain.iter().any(|parent| {
+        matches_any_command_name(
+            [
+                parent.process_name.as_deref(),
+                parent.exe_path.as_deref().and_then(path_basename),
+                parent.command_line.as_deref().and_then(argv0_basename),
+            ]
+            .into_iter()
+            .flatten(),
+            SHELL_LIKE_PARENT_PATTERNS,
+        )
+    }) || matches_any_command_name(
         [
             process.parent_process_name.as_deref(),
             process
@@ -664,6 +753,16 @@ fn exe_path_matches_policy(exe_path: &str, configured_value: &str) -> bool {
     !normalized.is_empty() && normalized == configured
 }
 
+fn package_name_matches_policy(package_name: Option<&str>, configured_value: &str) -> bool {
+    let Some(package_name) = package_name else {
+        return false;
+    };
+
+    let normalized = normalize_command_name(package_name);
+    let configured = normalize_command_name(configured_value);
+    !normalized.is_empty() && normalized == configured
+}
+
 fn normalize_command_name(value: &str) -> String {
     value.trim().to_ascii_lowercase()
 }
@@ -681,6 +780,98 @@ fn normalize_policy_path(value: &str) -> String {
     } else {
         trimmed.trim_end_matches('/').to_string()
     }
+}
+
+fn resolve_package_owner(exe_path: &str) -> Option<PackageOwner> {
+    let normalized = normalize_policy_path(exe_path);
+    let path = Path::new(&normalized);
+    if normalized.is_empty() || !path.is_absolute() {
+        return None;
+    }
+
+    query_package_owner(
+        "dpkg-query",
+        &["-S", normalized.as_str()],
+        parse_dpkg_owner_output,
+        "dpkg",
+    )
+    .or_else(|| {
+        query_package_owner(
+            "rpm",
+            &["-qf", normalized.as_str()],
+            parse_rpm_owner_output,
+            "rpm",
+        )
+    })
+    .or_else(|| {
+        query_package_owner(
+            "pacman",
+            &["-Qo", normalized.as_str()],
+            parse_pacman_owner_output,
+            "pacman",
+        )
+    })
+    .or_else(|| {
+        query_package_owner(
+            "apk",
+            &["info", "--who-owns", normalized.as_str()],
+            parse_apk_owner_output,
+            "apk",
+        )
+    })
+}
+
+fn query_package_owner(
+    program: &str,
+    args: &[&str],
+    parse: fn(&str) -> Option<String>,
+    manager: &str,
+) -> Option<PackageOwner> {
+    let output = Command::new(program)
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    parse(&stdout).map(|name| PackageOwner {
+        name,
+        manager: manager.to_string(),
+    })
+}
+
+fn parse_dpkg_owner_output(output: &str) -> Option<String> {
+    output.lines().find_map(|line| {
+        let package = line.split_once(':')?.0.trim();
+        (!package.is_empty()).then(|| package.to_string())
+    })
+}
+
+fn parse_rpm_owner_output(output: &str) -> Option<String> {
+    output
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty() && !line.starts_with("file "))
+        .map(|line| line.to_string())
+}
+
+fn parse_pacman_owner_output(output: &str) -> Option<String> {
+    output.lines().find_map(|line| {
+        let owner = line.split(" is owned by ").nth(1)?.trim();
+        owner.split_whitespace().next().map(str::to_string)
+    })
+}
+
+fn parse_apk_owner_output(output: &str) -> Option<String> {
+    output.lines().find_map(|line| {
+        let owner = line.split(" is owned by ").nth(1)?.trim();
+        owner.split_whitespace().next().map(str::to_string)
+    })
 }
 
 fn read_cgroup_metadata(path: PathBuf) -> CgroupMetadata {

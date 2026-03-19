@@ -68,6 +68,10 @@ pub struct ProcessInfo {
     pub maintenance_activity: Option<MaintenanceActivity>,
     #[serde(skip, default)]
     pub trust_policy_visibility: TrustPolicyVisibility,
+    #[serde(default)]
+    pub package_name: Option<String>,
+    #[serde(default)]
+    pub package_manager: Option<String>,
     pub process_name: String,
     pub exe_path: String,
     pub command_line: String,
@@ -77,9 +81,22 @@ pub struct ProcessInfo {
     #[serde(default)]
     pub parent_command_line: Option<String>,
     #[serde(default)]
+    pub parent_chain: Vec<ProcessAncestor>,
+    #[serde(default)]
     pub container_runtime: Option<String>,
     #[serde(default)]
     pub container_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProcessAncestor {
+    pub pid: u32,
+    #[serde(default)]
+    pub process_name: Option<String>,
+    #[serde(default)]
+    pub exe_path: Option<String>,
+    #[serde(default)]
+    pub command_line: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -162,11 +179,15 @@ pub struct BehaviorEvent {
     pub maintenance_activity: Option<MaintenanceActivity>,
     #[serde(skip, default)]
     pub trust_policy_visibility: TrustPolicyVisibility,
+    pub package_name: Option<String>,
+    pub package_manager: Option<String>,
     pub process_name: Option<String>,
     pub exe_path: Option<String>,
     pub command_line: Option<String>,
     pub parent_process_name: Option<String>,
     pub parent_command_line: Option<String>,
+    #[serde(default)]
+    pub parent_chain: Vec<ProcessAncestor>,
     pub container_runtime: Option<String>,
     pub container_id: Option<String>,
     pub correlation_hits: u32,

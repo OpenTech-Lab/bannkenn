@@ -21,6 +21,13 @@ export type BehaviorFileOps = {
   deleted: number;
 };
 
+export type BehaviorParentChainEntry = {
+  pid: number;
+  process_name?: string | null;
+  exe_path?: string | null;
+  command_line?: string | null;
+};
+
 export type BehaviorEvent = {
   id: number;
   agent_name: string;
@@ -35,6 +42,9 @@ export type BehaviorEvent = {
   trust_class?: string | null;
   trust_policy_name?: string | null;
   maintenance_activity?: string | null;
+  package_name?: string | null;
+  package_manager?: string | null;
+  parent_chain: BehaviorParentChainEntry[];
   process_name?: string | null;
   exe_path?: string | null;
   command_line?: string | null;

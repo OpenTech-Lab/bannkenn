@@ -1,5 +1,5 @@
 use crate::containment::ContainmentDecision;
-use crate::ebpf::events::{BehaviorEvent, FileOperationCounts};
+use crate::ebpf::events::{BehaviorEvent, FileOperationCounts, ProcessAncestor};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -16,11 +16,15 @@ pub struct BehaviorEventUpload {
     pub trust_class: Option<String>,
     pub trust_policy_name: Option<String>,
     pub maintenance_activity: Option<String>,
+    pub package_name: Option<String>,
+    pub package_manager: Option<String>,
     pub process_name: Option<String>,
     pub exe_path: Option<String>,
     pub command_line: Option<String>,
     pub parent_process_name: Option<String>,
     pub parent_command_line: Option<String>,
+    #[serde(default)]
+    pub parent_chain: Vec<ProcessAncestor>,
     pub container_runtime: Option<String>,
     pub container_id: Option<String>,
     pub correlation_hits: u32,
@@ -72,11 +76,14 @@ impl From<&BehaviorEvent> for BehaviorEventUpload {
             maintenance_activity: event
                 .maintenance_activity
                 .map(|activity| activity.as_str().to_string()),
+            package_name: event.package_name.clone(),
+            package_manager: event.package_manager.clone(),
             process_name: event.process_name.clone(),
             exe_path: event.exe_path.clone(),
             command_line: event.command_line.clone(),
             parent_process_name: event.parent_process_name.clone(),
             parent_command_line: event.parent_command_line.clone(),
+            parent_chain: event.parent_chain.clone(),
             container_runtime: event.container_runtime.clone(),
             container_id: event.container_id.clone(),
             correlation_hits: event.correlation_hits,

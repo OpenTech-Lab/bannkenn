@@ -91,6 +91,7 @@ fn containment_trust_policy_round_trips() {
             trust_policies: vec![TrustPolicyRule {
                 name: "backup-window".to_string(),
                 exe_paths: vec!["/usr/bin/rsync".to_string()],
+                package_names: vec!["rsync".to_string()],
                 service_units: vec!["backup.service".to_string()],
                 trust_class: crate::ebpf::events::ProcessTrustClass::TrustedPackageManaged,
                 visibility: TrustPolicyVisibility::Hidden,
@@ -114,6 +115,7 @@ fn containment_trust_policy_round_trips() {
 
     assert_eq!(policy.name, "backup-window");
     assert_eq!(policy.exe_paths, vec!["/usr/bin/rsync"]);
+    assert_eq!(policy.package_names, vec!["rsync"]);
     assert_eq!(policy.service_units, vec!["backup.service"]);
     assert_eq!(
         policy.trust_class,

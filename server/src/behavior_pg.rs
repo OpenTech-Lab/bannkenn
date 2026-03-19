@@ -21,6 +21,9 @@ CREATE TABLE IF NOT EXISTS behavior_events_archive (
     trust_class TEXT,
     trust_policy_name TEXT,
     maintenance_activity TEXT,
+    package_name TEXT,
+    package_manager TEXT,
+    parent_chain_json TEXT NOT NULL DEFAULT '[]',
     process_name TEXT,
     exe_path TEXT,
     command_line TEXT,
@@ -82,6 +85,9 @@ pub struct BehaviorArchiveRecord {
     pub trust_class: Option<String>,
     pub trust_policy_name: Option<String>,
     pub maintenance_activity: Option<String>,
+    pub package_name: Option<String>,
+    pub package_manager: Option<String>,
+    pub parent_chain_json: String,
     pub process_name: Option<String>,
     pub exe_path: Option<String>,
     pub command_line: Option<String>,
@@ -126,6 +132,9 @@ impl BehaviorArchiveRecord {
             trust_class: event.trust_class.clone(),
             trust_policy_name: event.trust_policy_name.clone(),
             maintenance_activity: event.maintenance_activity.clone(),
+            package_name: event.package_name.clone(),
+            package_manager: event.package_manager.clone(),
+            parent_chain_json: serde_json::to_string(&event.parent_chain)?,
             process_name: event.process_name.clone(),
             exe_path: event.exe_path.clone(),
             command_line: event.command_line.clone(),
@@ -215,6 +224,21 @@ impl BehaviorPgArchive {
         .execute(&self.pool)
         .await?;
         sqlx::query(
+            "ALTER TABLE behavior_events_archive ADD COLUMN IF NOT EXISTS package_name TEXT",
+        )
+        .execute(&self.pool)
+        .await?;
+        sqlx::query(
+            "ALTER TABLE behavior_events_archive ADD COLUMN IF NOT EXISTS package_manager TEXT",
+        )
+        .execute(&self.pool)
+        .await?;
+        sqlx::query(
+            "ALTER TABLE behavior_events_archive ADD COLUMN IF NOT EXISTS parent_chain_json TEXT NOT NULL DEFAULT '[]'",
+        )
+        .execute(&self.pool)
+        .await?;
+        sqlx::query(
             "ALTER TABLE behavior_events_archive ADD COLUMN IF NOT EXISTS container_runtime TEXT",
         )
         .execute(&self.pool)
@@ -248,6 +272,9 @@ impl BehaviorPgArchive {
                 trust_class,
                 trust_policy_name,
                 maintenance_activity,
+                package_name,
+                package_manager,
+                parent_chain_json,
                 process_name,
                 exe_path,
                 command_line,
@@ -272,7 +299,7 @@ impl BehaviorPgArchive {
             VALUES (
                 $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14,
                 $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26,
-                $27, $28, $29, $30, $31, $32, $33, $34
+                $27, $28, $29, $30, $31, $32, $33, $34, $35, $36
             )
             ON CONFLICT (sqlite_event_id) DO NOTHING
             "#,
@@ -291,6 +318,9 @@ impl BehaviorPgArchive {
         .bind(&record.trust_class)
         .bind(&record.trust_policy_name)
         .bind(&record.maintenance_activity)
+        .bind(&record.package_name)
+        .bind(&record.package_manager)
+        .bind(&record.parent_chain_json)
         .bind(&record.process_name)
         .bind(&record.exe_path)
         .bind(&record.command_line)

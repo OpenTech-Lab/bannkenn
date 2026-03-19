@@ -19,10 +19,16 @@
 
 ## Phase 2: Attribution And Trust
 - [x] Enrich collected events with PID, PPID, executable path, command line, UID/GID, timestamp, operation type, target path, rename extension changes, bytes written, and host/container context.
-- [ ] Build a process identity profile that tracks executable path, package owner, parent chain, service unit, first-seen time, and known-good classification.
+- [x] Build a process identity profile that tracks executable path, package owner, parent chain, service unit, first-seen time, and known-good classification.
+  - [x] Resolve package ownership for tracked executables with cached profile metadata and use it to strengthen `trusted_package_managed_process` attribution.
+  - [x] Capture a bounded parent ancestry chain instead of only a single parent hint, then flow it through uploads, storage, and the dashboard.
+  - [x] Persist the new identity fields through agent outbox, server SQLite/Postgres storage, incident timeline payloads, and dashboard event details.
+  - [x] Carry optional package metadata alongside the ancestry chain in the behavior-event contract and dashboard detail view.
 - [x] Add service-unit, first-seen, and explicit trust-class metadata to process attribution and behavior events as the next step toward the identity profile.
-- [ ] Introduce a trust model with clear classes such as trusted system process, trusted package-managed process, allowed local process, unknown process, and suspicious process.
+- [x] Introduce a trust model with clear classes such as trusted system process, trusted package-managed process, allowed local process, unknown process, and suspicious process.
 - [ ] Add a policy-driven allowlist/baseline layer keyed by executable path, package name, service unit, container image, and maintenance window.
+  - [x] Extend trust policy overrides to match package names in addition to executable paths, service units, and maintenance windows.
+  - [ ] Add container-image keyed trust/baseline matching once container image attribution exists.
 - [x] Add agent-config trust policy overrides keyed by executable path and service unit, with optional maintenance windows and event visibility for the matched policy.
 - [x] Add explicit maintenance attribution for package-manager helper and trusted system/package-managed work, then use that metadata in scoring and dashboard event details.
 - [x] Identify package-manager and systemd-maintenance activity explicitly so protected-path changes can be downgraded when context is trustworthy.
@@ -73,3 +79,7 @@
 - Regression coverage for this pass includes trust-policy config round-trips, overnight maintenance-window matching, lifecycle trust-policy/maintenance classification tests, hidden-policy suppression tests, outbox/server/archive round-trips for the new behavior fields, and another dashboard production build.
 - Verification for this pass: `cargo test -p bannkenn-agent`, `cargo test -p bannkenn-server`, `cargo clippy -p bannkenn-agent -p bannkenn-server --tests -- -D warnings`, and `npm run build` in `dashboard/`.
 - The current verification loop still reports a non-blocking future incompatibility warning from `sqlx-postgres v0.7.4`; it is now tracked in `Additional Issues` because it needs a dependency-upgrade pass rather than another local feature change.
+- 2026-03-19: Behavior-event identity plumbing now carries optional `package_name`, optional `package_manager`, and a typed `parent_chain` array through the server ingest contract, SQLite/Postgres persistence, dashboard agent detail view, and round-trip tests.
+- 2026-03-19: Agent lifecycle profiling now resolves cached package ownership for tracked executables, uses that evidence to back `trusted_package_managed_process`, and captures bounded `/proc` ancestry chains that feed maintenance classification and container temp-activity suppression.
+- Regression coverage for this pass includes package-owner parser tests, fake-`/proc` ancestry extraction tests, package-name trust-policy matching, shell-ancestor regressions in lifecycle/scorer logic, agent outbox round-trips for the new fields, server behavior/archive round-trips, and the dashboard production build.
+- Verification for this pass: `cargo fmt --all`, `cargo test -p bannkenn-agent`, `cargo test -p bannkenn-server`, `cargo clippy -p bannkenn-agent -p bannkenn-server --tests -- -D warnings`, and `npm run build` in `dashboard/`.

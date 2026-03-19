@@ -1,6 +1,7 @@
 use super::*;
 use crate::config::{MaintenanceWindow, TrustPolicyRule, TrustPolicyVisibility};
-use crate::ebpf::events::{MaintenanceActivity, ProcessTrustClass};
+use crate::ebpf::events::{MaintenanceActivity, ProcessAncestor, ProcessTrustClass};
+use std::os::unix::fs::symlink;
 
 fn tracked_process(pid: u32, process_name: &str, exe_path: &str) -> TrackedProcess {
     TrackedProcess {
@@ -14,11 +15,14 @@ fn tracked_process(pid: u32, process_name: &str, exe_path: &str) -> TrackedProce
         trust_policy_name: None,
         maintenance_activity: None,
         trust_policy_visibility: TrustPolicyVisibility::Visible,
+        package_name: None,
+        package_manager: None,
         process_name: process_name.to_string(),
         exe_path: exe_path.to_string(),
         command_line: exe_path.to_string(),
         parent_process_name: None,
         parent_command_line: None,
+        parent_chain: Vec::new(),
         container_runtime: None,
         container_id: None,
         open_paths: HashSet::from(["/srv/data/file.txt".to_string()]),
@@ -154,6 +158,7 @@ fn trust_policy_override_applies_matching_rule() {
         trust_policies: vec![TrustPolicyRule {
             name: "backup-window".to_string(),
             exe_paths: vec!["/usr/bin/python3".to_string()],
+            package_names: vec!["python3-minimal".to_string()],
             service_units: vec!["backup.service".to_string()],
             trust_class: ProcessTrustClass::TrustedPackageManaged,
             visibility: TrustPolicyVisibility::Hidden,
@@ -232,6 +237,136 @@ fn classify_process_trust_marks_package_managed_service_as_trusted() {
 }
 
 #[test]
+fn classify_process_trust_uses_package_ownership_evidence() {
+    let mut process = tracked_process(55, "python3", "/usr/bin/python3");
+    process.package_name = Some("python3-minimal".to_string());
+
+    assert_eq!(
+        classify_process_trust(&process),
+        ProcessTrustClass::TrustedPackageManaged
+    );
+}
+
+#[test]
+fn trust_policy_override_matches_package_name() {
+    let config = ContainmentConfig {
+        watch_paths: vec!["/srv/data".to_string()],
+        trust_policies: vec![TrustPolicyRule {
+            name: "python-backup".to_string(),
+            exe_paths: Vec::new(),
+            package_names: vec!["python3-minimal".to_string()],
+            service_units: Vec::new(),
+            trust_class: ProcessTrustClass::AllowedLocal,
+            visibility: TrustPolicyVisibility::Visible,
+            maintenance_windows: Vec::new(),
+        }],
+        ..ContainmentConfig::default()
+    };
+    let mut tracker = ProcessLifecycleTracker::new(&config);
+    let now = chrono::Utc::now();
+    let mut process = tracked_process(42, "python3", "/usr/bin/python3");
+    process.package_name = Some("python3-minimal".to_string());
+    process.package_manager = Some("dpkg".to_string());
+
+    let mut processes = HashMap::from([(42, process)]);
+    tracker.apply_profile_metadata(&mut processes, now);
+
+    let process = processes.get(&42).expect("tracked process");
+    assert_eq!(process.trust_class, ProcessTrustClass::AllowedLocal);
+    assert_eq!(process.trust_policy_name.as_deref(), Some("python-backup"));
+}
+
+#[test]
+fn package_owner_parsers_extract_expected_names() {
+    assert_eq!(
+        parse_dpkg_owner_output("python3-minimal: /usr/bin/python3\n").as_deref(),
+        Some("python3-minimal")
+    );
+    assert_eq!(
+        parse_rpm_owner_output("bash-5.2.26-4.fc39.x86_64\n").as_deref(),
+        Some("bash-5.2.26-4.fc39.x86_64")
+    );
+    assert_eq!(
+        parse_pacman_owner_output("/usr/bin/bash is owned by bash 5.2.015-1\n").as_deref(),
+        Some("bash")
+    );
+    assert_eq!(
+        parse_apk_owner_output("/bin/busybox is owned by busybox-1.36.1-r20\n").as_deref(),
+        Some("busybox-1.36.1-r20")
+    );
+}
+
+#[test]
+fn inspect_parent_chain_reads_multiple_ancestors() {
+    let root = std::env::temp_dir().join(format!("bannkenn-parent-chain-{}", uuid::Uuid::new_v4()));
+    write_proc_entry(
+        &root,
+        20,
+        10,
+        "bash",
+        "/usr/bin/bash",
+        "/usr/bin/bash /tmp/run.sh",
+    );
+    write_proc_entry(&root, 10, 1, "sshd", "/usr/sbin/sshd", "sshd: root@pts/0");
+    write_proc_entry(
+        &root,
+        1,
+        0,
+        "systemd",
+        "/usr/lib/systemd/systemd",
+        "systemd",
+    );
+
+    let chain = inspect_parent_chain(&root, 20, 6);
+
+    assert_eq!(chain.len(), 3);
+    assert_eq!(chain[0].pid, 20);
+    assert_eq!(chain[0].process_name.as_deref(), Some("bash"));
+    assert_eq!(chain[1].process_name.as_deref(), Some("sshd"));
+    assert_eq!(chain[2].process_name.as_deref(), Some("systemd"));
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn maintenance_activity_skips_shell_ancestor_anywhere_in_chain() {
+    let config = ContainmentConfig {
+        watch_paths: vec!["/srv/data".to_string()],
+        ..ContainmentConfig::default()
+    };
+    let mut tracker = ProcessLifecycleTracker::new(&config);
+    let now = chrono::Utc::now();
+    let mut process = tracked_process(55, "fwupd", "/usr/libexec/fwupd/fwupd");
+    process.service_unit = Some("fwupd.service".to_string());
+    process.parent_process_name = Some("systemd".to_string());
+    process.parent_command_line = Some("systemd".to_string());
+    process.parent_chain = vec![
+        ProcessAncestor {
+            pid: 1,
+            process_name: Some("systemd".to_string()),
+            exe_path: Some("/usr/lib/systemd/systemd".to_string()),
+            command_line: Some("systemd".to_string()),
+        },
+        ProcessAncestor {
+            pid: 999,
+            process_name: Some("bash".to_string()),
+            exe_path: Some("/usr/bin/bash".to_string()),
+            command_line: Some("/usr/bin/bash /tmp/fwupd-wrapper.sh".to_string()),
+        },
+    ];
+
+    let mut processes = HashMap::from([(55, process)]);
+    tracker.apply_profile_metadata(&mut processes, now);
+
+    assert_eq!(
+        processes
+            .get(&55)
+            .and_then(|process| process.maintenance_activity),
+        None
+    );
+}
+
+#[test]
 fn status_metadata_reads_parent_uid_and_gid() {
     let path = std::env::temp_dir().join(format!("bannkenn-status-{}", uuid::Uuid::new_v4()));
     fs::write(
@@ -255,4 +390,31 @@ fn read_cgroup_metadata_from_str(content: &str) -> CgroupMetadata {
     let result = read_cgroup_metadata(path.clone());
     let _ = fs::remove_file(path);
     result
+}
+
+fn write_proc_entry(
+    proc_root: &Path,
+    pid: u32,
+    ppid: u32,
+    name: &str,
+    exe_path: &str,
+    command_line: &str,
+) {
+    let dir = proc_root.join(pid.to_string());
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(dir.join("comm"), format!("{name}\n")).unwrap();
+    fs::write(
+        dir.join("cmdline"),
+        command_line
+            .split_whitespace()
+            .flat_map(|part| part.as_bytes().iter().copied().chain(std::iter::once(0)))
+            .collect::<Vec<_>>(),
+    )
+    .unwrap();
+    fs::write(
+        dir.join("status"),
+        format!("Name:\t{name}\nPPid:\t{ppid}\n"),
+    )
+    .unwrap();
+    symlink(exe_path, dir.join("exe")).unwrap();
 }
