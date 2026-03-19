@@ -1,4 +1,3 @@
-
 use super::{
     apply_containment_setup, invalid_containment_paths, is_cloudflare_response,
     is_https_plain_http_mismatch_error, parse_containment_path_list, Cli, Commands,

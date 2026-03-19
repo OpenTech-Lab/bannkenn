@@ -239,6 +239,11 @@
 - When externalizing a large Rust test tree, add the manifest test file in the same change and verify `cargo test --test <name>` runs it directly before calling the relocation complete.
 - If the goal is "tests live under `tests/`", prove the new files are wired as a discovered test binary instead of assuming `#[cfg(test)] #[path = ...] mod tests;` inside production modules is sufficient.
 
+### Formatting-only CI gates still need explicit `cargo fmt --all -- --check` verification
+- Do not assume `cargo fmt --all` touched every relocated test file correctly just because code compiled and clippy passed.
+- After moving or generating Rust test files, run `cargo fmt --all -- --check` explicitly and fix any remaining diffs before closing the task.
+- Treat formatter verification as separate from test and clippy verification in `tasks/todo.md`.
+
 ### CI lint fixes need full workspace verification, not only the first reported warning
 - When GitHub Actions fails on an initial clippy warning, do not stop after patching the first printed lines; rerun `cargo clippy --workspace -- -D warnings` locally until the workspace is clean because later lints may be hidden behind the first failure.
 - Prefer structural fixes over `#[allow(...)]`: replace long tuple spellings with type aliases and replace long helper argument lists with typed request structs so the code gets simpler while satisfying the lint.

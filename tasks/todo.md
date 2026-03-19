@@ -1,5 +1,19 @@
 # tasks
 
+## Done: Fix formatter regressions in relocated `agent` test files
+
+### Scope
+- [x] Remove the rustfmt diff in relocated `agent/tests/unit` files
+- [x] Re-run `cargo fmt --all -- --check`
+
+### Notes
+- Review correction: the relocation work passed tests and clippy, but two test files still failed CI formatting checks.
+
+### Review
+- `cargo fmt --all` removed the leading blank line from `agent/tests/unit/main_tests.rs`.
+- Manually normalized the remaining `assert_eq!` indentation in `agent/tests/unit/updater_tests.rs`.
+- Verification: `cargo fmt --all -- --check` passed.
+
 ## Done: Wire relocated `agent/tests/unit` files into Cargo test binaries
 
 ### Scope

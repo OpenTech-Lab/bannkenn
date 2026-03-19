@@ -1,24 +1,23 @@
-
 use super::*;
 
 #[test]
 fn explicit_version_is_normalized() {
     assert_eq!(
-            release_download_url(Some("1.3.18"), "bannkenn-agent-linux-x64").unwrap(),
-            "https://github.com/OpenTech-Lab/bannkenn/releases/download/v1.3.18/bannkenn-agent-linux-x64"
-        );
+        release_download_url(Some("1.3.18"), "bannkenn-agent-linux-x64").unwrap(),
+        "https://github.com/OpenTech-Lab/bannkenn/releases/download/v1.3.18/bannkenn-agent-linux-x64"
+    );
     assert_eq!(
-            release_download_url(Some("v1.3.18"), "bannkenn-agent-linux-x64").unwrap(),
-            "https://github.com/OpenTech-Lab/bannkenn/releases/download/v1.3.18/bannkenn-agent-linux-x64"
-        );
+        release_download_url(Some("v1.3.18"), "bannkenn-agent-linux-x64").unwrap(),
+        "https://github.com/OpenTech-Lab/bannkenn/releases/download/v1.3.18/bannkenn-agent-linux-x64"
+    );
 }
 
 #[test]
 fn no_version_uses_latest_release_redirect() {
     assert_eq!(
-            release_download_url(None, "bannkenn-agent-linux-x64").unwrap(),
-            "https://github.com/OpenTech-Lab/bannkenn/releases/latest/download/bannkenn-agent-linux-x64"
-        );
+        release_download_url(None, "bannkenn-agent-linux-x64").unwrap(),
+        "https://github.com/OpenTech-Lab/bannkenn/releases/latest/download/bannkenn-agent-linux-x64"
+    );
 }
 
 #[test]
@@ -30,11 +29,11 @@ fn invalid_version_is_rejected() {
 #[test]
 fn resolved_release_is_parsed_from_redirect_url() {
     assert_eq!(
-            release_version_from_url(
-                "https://github.com/OpenTech-Lab/bannkenn/releases/download/v1.3.18/bannkenn-agent-linux-x64"
-            ),
-            Some("1.3.18".to_string())
-        );
+        release_version_from_url(
+            "https://github.com/OpenTech-Lab/bannkenn/releases/download/v1.3.18/bannkenn-agent-linux-x64",
+        ),
+        Some("1.3.18".to_string())
+    );
 }
 
 #[test]
