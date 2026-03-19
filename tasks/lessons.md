@@ -254,6 +254,11 @@
 - Do not let independent "known benign" branches each subtract the full component set, or one process can be downgraded more than intended just because contexts overlap.
 - Add a regression test for at least one realistic overlap case whenever a new benign-context suppressor is introduced.
 
+### Short classifier markers need exact command-name matching, not substring scans
+- Markers like `sh`, `apt`, and `rpm` are too short for raw `contains()` checks across full process names or command lines; they will match unrelated names like `containerd-shim` or `capturer`.
+- For scorer-side helper/process/shell classification in this repo, compare normalized basenames and `argv[0]` command names exactly, and use a separate narrower matcher when runtime metadata needs token/segment matching.
+- Add regressions for at least one false-positive substring case whenever a new short marker is introduced.
+
 ### CI lint fixes need full workspace verification, not only the first reported warning
 - When GitHub Actions fails on an initial clippy warning, do not stop after patching the first printed lines; rerun `cargo clippy --workspace -- -D warnings` locally until the workspace is clean because later lints may be hidden behind the first failure.
 - Prefer structural fixes over `#[allow(...)]`: replace long tuple spellings with type aliases and replace long helper argument lists with typed request structs so the code gets simpler while satisfying the lint.

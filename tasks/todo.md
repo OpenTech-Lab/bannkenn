@@ -1,5 +1,22 @@
 # tasks
 
+## Done: Replace raw substring scorer matching with exact command-name checks
+
+### Scope
+- [x] Replace substring-based process/package/shell matching in the scorer
+- [x] Keep Java runtime suppression working with narrower marker matching
+- [x] Add regressions for false positives like `capturer` and `containerd-shim`
+- [x] Re-run formatter, targeted tests, and workspace clippy
+
+### Notes
+- Review correction: short markers like `sh`, `apt`, and `rpm` were matched with raw `contains()`, which could misclassify unrelated names and distort suppressor behavior.
+
+### Review
+- Updated [agent/src/scorer.rs](/home/toyofumi/Project/Bannkenn/agent/src/scorer.rs) to use exact normalized command-name matching for process/package/shell classifiers, with a separate runtime-marker extractor for Java/OpenSearch/Solr context.
+- Added false-positive regressions in [agent/tests/unit/scorer_tests.rs](/home/toyofumi/Project/Bannkenn/agent/tests/unit/scorer_tests.rs) for unrelated package-name substrings and `containerd-shim` parents, while preserving real shell-parent blocking.
+- Verification: `cargo test --workspace scorer::tests::` passed.
+- Verification: `cargo clippy --workspace -- -D warnings` passed.
+
 ## Done: Prevent overlapping benign scorer suppressions from double-counting
 
 ### Scope

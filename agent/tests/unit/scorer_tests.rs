@@ -107,14 +107,14 @@ fn known_java_temp_extraction_is_downgraded() {
         2 * 1_048_576,
     );
     let correlation = CorrelationResult {
-            process: Some(process(
-                4242,
-                "java",
-                "/usr/share/wazuh-indexer/jdk/bin/java",
-                "/usr/share/wazuh-indexer/jdk/bin/java -Djava.io.tmpdir=/tmp/opensearch-123 -cp /usr/share/wazuh-indexer/lib/* org.opensearch.bootstrap.OpenSearch",
-            )),
-            protected_hits: 0,
-        };
+        process: Some(process(
+            4242,
+            "java",
+            "/usr/share/wazuh-indexer/jdk/bin/java",
+            "/usr/share/wazuh-indexer/jdk/bin/java -Djava.io.tmpdir=/tmp/opensearch-123 -cp /usr/share/wazuh-indexer/lib/* org.opensearch.bootstrap.OpenSearch",
+        )),
+        protected_hits: 0,
+    };
 
     let event = scorer.score(&batch, &correlation);
 
@@ -156,6 +156,35 @@ fn package_manager_helper_temp_activity_is_downgraded() {
 }
 
 #[test]
+fn package_manager_detection_does_not_match_unrelated_substrings() {
+    let scorer = CompositeBehaviorScorer::from_config(&ContainmentConfig::default());
+    let batch = batch_with_ops(
+        FileOperationCounts {
+            modified: 8,
+            ..Default::default()
+        },
+        vec!["/tmp/capturer-cache"],
+        0,
+    );
+    let correlation = CorrelationResult {
+        process: Some(process(
+            88,
+            "capturer",
+            "/usr/bin/capturer",
+            "/usr/bin/capturer --rpm-cache /tmp/capturer-cache",
+        )),
+        protected_hits: 0,
+    };
+
+    let event = scorer.score(&batch, &correlation);
+
+    assert!(!event
+        .reasons
+        .iter()
+        .any(|reason| reason == "package-manager helper activity"));
+}
+
+#[test]
 fn trusted_containerized_service_temp_activity_is_downgraded() {
     let scorer = CompositeBehaviorScorer::from_config(&ContainmentConfig::default());
     let batch = batch_with_ops(
@@ -186,6 +215,77 @@ fn trusted_containerized_service_temp_activity_is_downgraded() {
 
     assert_eq!(event.level, BehaviorLevel::Observed);
     assert!(event
+        .reasons
+        .iter()
+        .any(|reason| reason == "containerized service temp activity"));
+}
+
+#[test]
+fn containerd_shim_parent_is_not_treated_as_a_shell_parent() {
+    let scorer = CompositeBehaviorScorer::from_config(&ContainmentConfig::default());
+    let batch = batch_with_ops(
+        FileOperationCounts {
+            modified: 5,
+            deleted: 5,
+            ..Default::default()
+        },
+        vec!["/tmp/#sql-temptable"],
+        2 * 1_048_576,
+    );
+    let mut proc = process(
+        55,
+        "mariadbd",
+        "/usr/sbin/mariadbd",
+        "mariadbd --user=node --datadir=/app/data/mariadb --socket=/app/data/run/mariadb.sock",
+    );
+    proc.parent_process_name = Some("containerd-shim".to_string());
+    proc.parent_command_line =
+        Some("/usr/bin/containerd-shim-runc-v2 -namespace moby -id 0123456789abcdef".to_string());
+    proc.container_runtime = Some("docker".to_string());
+    proc.container_id = Some("0123456789abcdef0123456789abcdef".to_string());
+    let correlation = CorrelationResult {
+        process: Some(proc),
+        protected_hits: 0,
+    };
+
+    let event = scorer.score(&batch, &correlation);
+
+    assert!(event
+        .reasons
+        .iter()
+        .any(|reason| reason == "containerized service temp activity"));
+}
+
+#[test]
+fn real_shell_parent_still_blocks_containerized_service_suppression() {
+    let scorer = CompositeBehaviorScorer::from_config(&ContainmentConfig::default());
+    let batch = batch_with_ops(
+        FileOperationCounts {
+            modified: 5,
+            deleted: 5,
+            ..Default::default()
+        },
+        vec!["/tmp/cron-staging"],
+        2 * 1_048_576,
+    );
+    let mut proc = process(
+        56,
+        "python3",
+        "/usr/bin/python3",
+        "/usr/bin/python3 /tmp/dropper.py",
+    );
+    proc.parent_process_name = Some("sh".to_string());
+    proc.parent_command_line = Some("/bin/sh -c /usr/bin/python3 /tmp/dropper.py".to_string());
+    proc.container_runtime = Some("docker".to_string());
+    proc.container_id = Some("fedcba9876543210fedcba9876543210".to_string());
+    let correlation = CorrelationResult {
+        process: Some(proc),
+        protected_hits: 0,
+    };
+
+    let event = scorer.score(&batch, &correlation);
+
+    assert!(!event
         .reasons
         .iter()
         .any(|reason| reason == "containerized service temp activity"));

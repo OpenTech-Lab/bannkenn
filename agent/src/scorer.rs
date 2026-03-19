@@ -4,6 +4,7 @@ use crate::ebpf::events::{
     BehaviorEvent, BehaviorLevel, FileActivityBatch, FileOperationCounts, ProcessInfo,
 };
 use chrono::{DateTime, Utc};
+use std::collections::HashSet;
 use std::path::Path;
 
 const TEMP_ROOTS: &[&str] = &["/tmp", "/var/tmp"];
@@ -338,15 +339,24 @@ fn batch_touches_only_temp_paths(batch: &FileActivityBatch) -> bool {
     }
 }
 
-fn process_matches_any_pattern(process: &ProcessInfo, patterns: &[&str]) -> bool {
-    let process_name = process.process_name.to_ascii_lowercase();
-    let exe_path = process.exe_path.to_ascii_lowercase();
-    let command_line = process.command_line.to_ascii_lowercase();
+fn process_matches_any_command_name(process: &ProcessInfo, patterns: &[&str]) -> bool {
+    matches_any_command_name(
+        [
+            Some(process.process_name.as_str()),
+            path_basename(&process.exe_path),
+            argv0_basename(&process.command_line),
+        ]
+        .into_iter()
+        .flatten(),
+        patterns,
+    )
+}
 
+fn process_matches_any_runtime_marker(process: &ProcessInfo, patterns: &[&str]) -> bool {
+    let terms = process_runtime_terms(process);
     patterns.iter().any(|pattern| {
-        process_name.contains(pattern)
-            || exe_path.contains(pattern)
-            || command_line.contains(pattern)
+        let normalized = pattern.trim().to_ascii_lowercase();
+        !normalized.is_empty() && terms.contains(&normalized)
     })
 }
 
@@ -354,13 +364,13 @@ fn is_known_java_temp_extraction(process: &ProcessInfo, batch: &FileActivityBatc
     batch_touches_only_temp_paths(batch)
         && batch.file_ops.modified > 0
         && batch.file_ops.deleted > 0
-        && process_matches_any_pattern(process, &["java"])
-        && process_matches_any_pattern(process, KNOWN_JAVA_RUNTIME_MARKERS)
+        && process_matches_any_command_name(process, &["java"])
+        && process_matches_any_runtime_marker(process, KNOWN_JAVA_RUNTIME_MARKERS)
 }
 
 fn is_package_manager_helper_activity(process: &ProcessInfo, batch: &FileActivityBatch) -> bool {
     batch_touches_only_temp_paths(batch)
-        && process_matches_any_pattern(process, PACKAGE_HELPER_PATTERNS)
+        && process_matches_any_command_name(process, PACKAGE_HELPER_PATTERNS)
 }
 
 fn is_containerized_service_temp_activity(
@@ -376,16 +386,18 @@ fn is_containerized_service_temp_activity(
 }
 
 fn has_shell_like_parent(process: &ProcessInfo) -> bool {
-    process
-        .parent_process_name
-        .as_deref()
-        .map(|name| contains_any_ascii_case_insensitive(name, SHELL_LIKE_PARENT_PATTERNS))
-        .unwrap_or(false)
-        || process
-            .parent_command_line
-            .as_deref()
-            .map(|cmd| contains_any_ascii_case_insensitive(cmd, SHELL_LIKE_PARENT_PATTERNS))
-            .unwrap_or(false)
+    matches_any_command_name(
+        [
+            process.parent_process_name.as_deref(),
+            process
+                .parent_command_line
+                .as_deref()
+                .and_then(argv0_basename),
+        ]
+        .into_iter()
+        .flatten(),
+        SHELL_LIKE_PARENT_PATTERNS,
+    )
 }
 
 fn is_trusted_system_executable(path: &str) -> bool {
@@ -394,9 +406,83 @@ fn is_trusted_system_executable(path: &str) -> bool {
         .any(|prefix| path.starts_with(prefix))
 }
 
-fn contains_any_ascii_case_insensitive(value: &str, patterns: &[&str]) -> bool {
-    let lower = value.to_ascii_lowercase();
-    patterns.iter().any(|pattern| lower.contains(pattern))
+fn matches_any_command_name<'a>(
+    candidates: impl IntoIterator<Item = &'a str>,
+    patterns: &[&str],
+) -> bool {
+    let normalized_patterns = patterns
+        .iter()
+        .map(|pattern| normalize_command_name(pattern))
+        .filter(|pattern| !pattern.is_empty())
+        .collect::<HashSet<_>>();
+
+    candidates.into_iter().any(|candidate| {
+        let normalized = normalize_command_name(candidate);
+        !normalized.is_empty() && normalized_patterns.contains(&normalized)
+    })
+}
+
+fn process_runtime_terms(process: &ProcessInfo) -> HashSet<String> {
+    let mut terms = HashSet::new();
+    extend_runtime_terms(&mut terms, &process.process_name);
+    extend_runtime_terms(&mut terms, &process.exe_path);
+    extend_runtime_terms(&mut terms, &process.command_line);
+    terms
+}
+
+fn extend_runtime_terms(terms: &mut HashSet<String>, value: &str) {
+    if value.trim().is_empty() {
+        return;
+    }
+
+    terms.insert(value.trim().to_ascii_lowercase());
+
+    if let Some(basename) = path_basename(value) {
+        terms.insert(basename.to_ascii_lowercase());
+    }
+
+    for token in value.split_whitespace() {
+        let lower = token.to_ascii_lowercase();
+        if lower.is_empty() {
+            continue;
+        }
+
+        terms.insert(lower.clone());
+
+        if let Some(basename) = path_basename(token) {
+            terms.insert(basename.to_ascii_lowercase());
+        }
+
+        for component in token.split('/') {
+            let lower = component.to_ascii_lowercase();
+            if !lower.is_empty() {
+                terms.insert(lower);
+            }
+        }
+
+        for segment in token.split(|ch: char| !ch.is_ascii_alphanumeric()) {
+            let lower = segment.to_ascii_lowercase();
+            if !lower.is_empty() {
+                terms.insert(lower);
+            }
+        }
+    }
+}
+
+fn path_basename(value: &str) -> Option<&str> {
+    Path::new(value)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.is_empty())
+}
+
+fn argv0_basename(command_line: &str) -> Option<&str> {
+    let argv0 = command_line.split_whitespace().next()?;
+    path_basename(argv0).or_else(|| (!argv0.is_empty()).then_some(argv0))
+}
+
+fn normalize_command_name(value: &str) -> String {
+    value.trim().to_ascii_lowercase()
 }
 
 fn has_process_name_mismatch(process: &ProcessInfo) -> bool {
