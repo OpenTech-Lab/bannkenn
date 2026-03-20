@@ -25,6 +25,7 @@ use chrono::Utc;
 use std::collections::{hash_map::Entry, BTreeSet, HashMap};
 use std::fs;
 use std::future::Future;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::time::Instant;
@@ -66,6 +67,9 @@ const RECENT_TEMP_WRITE_WINDOW_SECS: u64 = 60;
 const USERSPACE_MAX_IDLE_SKIP_POLLS: u32 = 15;
 const AYA_MAX_RING_EVENTS_PER_POLL: usize = 512;
 const AYA_BACKPRESSURE_WARNING_COOLDOWN_SECS: u64 = 30;
+const CONTENT_PROFILE_MIN_SAMPLE_BYTES: usize = 256;
+const HIGH_ENTROPY_THRESHOLD_X100: u16 = 720;
+const HIGH_ENTROPY_DELTA_X100: u16 = 80;
 type BackendPollFuture<'a> = Pin<Box<dyn Future<Output = Result<BackendPollResult>> + Send + 'a>>;
 
 trait BehaviorSensorBackend: Send + std::fmt::Debug {
@@ -88,6 +92,7 @@ pub struct SensorManager {
     correlator: ProcessCorrelator,
     scorer: CompositeBehaviorScorer,
     recent_temp_writes: HashMap<String, RecentTempWrite>,
+    content_profile_tracker: Option<ContentProfileTracker>,
 }
 
 #[derive(Debug)]
@@ -151,6 +156,21 @@ struct FileSnapshot {
 struct RecentTempWrite {
     recorded_at: Instant,
     watched_root: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct FileContentProfile {
+    sample_bytes: u16,
+    entropy_x100: u16,
+    utf8_valid: bool,
+}
+
+#[derive(Debug)]
+struct ContentProfileTracker {
+    roots: Vec<PathBuf>,
+    sample_bytes: usize,
+    initialized: bool,
+    profiles: HashMap<String, FileContentProfile>,
 }
 
 #[derive(Debug, Clone)]
@@ -261,6 +281,7 @@ impl SensorManager {
         if roots.is_empty() {
             return None;
         }
+        let content_profile_roots = roots.clone();
 
         Some(Self {
             poll_interval: Duration::from_millis(config.poll_interval_ms.max(100)),
@@ -274,6 +295,10 @@ impl SensorManager {
             correlator: ProcessCorrelator::new(),
             scorer: CompositeBehaviorScorer::from_config(config),
             recent_temp_writes: HashMap::new(),
+            content_profile_tracker: Some(ContentProfileTracker::new(
+                content_profile_roots,
+                config.content_profile_sample_bytes,
+            )),
         })
     }
 
@@ -299,6 +324,8 @@ impl SensorManager {
         let mut lifecycle = self.lifecycle.refresh().await?;
         let mut polled = self.backend.poll_batches(&self.protected_paths).await?;
         polled.batches = coalesce_activity_batches(polled.batches);
+        self.annotate_content_indicators(&mut polled.batches)
+            .await?;
         merge_lifecycle_events(&mut lifecycle.events, polled.lifecycle_events);
         let now = Instant::now();
         self.prune_recent_temp_writes(now);
@@ -327,6 +354,28 @@ impl SensorManager {
         }
 
         Ok(events)
+    }
+
+    async fn annotate_content_indicators(
+        &mut self,
+        batches: &mut Vec<FileActivityBatch>,
+    ) -> Result<()> {
+        let Some(mut tracker) = self.content_profile_tracker.take() else {
+            return Ok(());
+        };
+        let mut local_batches = std::mem::take(batches);
+        let (tracker, local_batches) = tokio::task::spawn_blocking(
+            move || -> (ContentProfileTracker, Vec<FileActivityBatch>) {
+                tracker.ensure_initialized();
+                tracker.annotate_batches(&mut local_batches);
+                (tracker, local_batches)
+            },
+        )
+        .await
+        .context("content profile task join failed")?;
+        self.content_profile_tracker = Some(tracker);
+        *batches = local_batches;
+        Ok(())
     }
 
     fn prune_recent_temp_writes(&mut self, now: Instant) {
@@ -713,6 +762,14 @@ fn merge_activity_batch(target: &mut FileActivityBatch, mut incoming: FileActivi
     target
         .rename_extension_targets
         .append(&mut incoming.rename_extension_targets);
+    target.content_indicators.unreadable_rewrites = target
+        .content_indicators
+        .unreadable_rewrites
+        .saturating_add(incoming.content_indicators.unreadable_rewrites);
+    target.content_indicators.high_entropy_rewrites = target
+        .content_indicators
+        .high_entropy_rewrites
+        .saturating_add(incoming.content_indicators.high_entropy_rewrites);
 }
 
 #[cfg(target_os = "linux")]
@@ -779,6 +836,7 @@ fn raw_ring_event_to_batch(
         touched_paths,
         protected_paths_touched,
         rename_extension_targets: Vec::new(),
+        content_indicators: Default::default(),
         bytes_written: raw.bytes_written,
         io_rate_bytes_per_sec: if poll_interval_ms == 0 {
             raw.bytes_written
@@ -881,6 +939,7 @@ fn build_activity_batch(
         touched_paths: touched_paths.into_iter().collect(),
         protected_paths_touched: protected_touched.into_iter().collect(),
         rename_extension_targets,
+        content_indicators: Default::default(),
         bytes_written,
         io_rate_bytes_per_sec,
     })
@@ -895,6 +954,153 @@ fn renamed_extension_target(before: &Path, after: &Path) -> Option<String> {
 fn normalized_extension(path: &Path) -> Option<String> {
     let extension = path.extension()?.to_str()?.trim().to_ascii_lowercase();
     (!extension.is_empty()).then_some(extension)
+}
+
+impl ContentProfileTracker {
+    fn new(roots: Vec<PathBuf>, sample_bytes: u64) -> Self {
+        let sample_bytes = usize::try_from(sample_bytes)
+            .ok()
+            .filter(|value| *value >= CONTENT_PROFILE_MIN_SAMPLE_BYTES)
+            .unwrap_or(CONTENT_PROFILE_MIN_SAMPLE_BYTES);
+
+        Self {
+            roots,
+            sample_bytes,
+            initialized: false,
+            profiles: HashMap::new(),
+        }
+    }
+
+    fn ensure_initialized(&mut self) {
+        if self.initialized {
+            return;
+        }
+
+        let mut profiles = HashMap::new();
+        for root in &self.roots {
+            collect_content_profiles(root, self.sample_bytes, &mut profiles);
+        }
+        self.profiles = profiles;
+        self.initialized = true;
+    }
+
+    fn annotate_batches(&mut self, batches: &mut [FileActivityBatch]) {
+        for batch in batches {
+            self.annotate_batch(batch);
+        }
+    }
+
+    fn annotate_batch(&mut self, batch: &mut FileActivityBatch) {
+        let mut content_indicators = crate::ebpf::events::FileContentIndicators::default();
+        let touched_paths = batch
+            .touched_paths
+            .iter()
+            .chain(batch.protected_paths_touched.iter())
+            .cloned()
+            .collect::<BTreeSet<_>>();
+
+        for path in touched_paths {
+            let previous = self.profiles.get(&path).copied();
+            match sample_file_content_profile(Path::new(&path), self.sample_bytes) {
+                Some(current) => {
+                    if let Some(previous) = previous {
+                        if is_unreadable_rewrite(previous, current) {
+                            content_indicators.unreadable_rewrites =
+                                content_indicators.unreadable_rewrites.saturating_add(1);
+                        }
+                        if is_high_entropy_rewrite(previous, current) {
+                            content_indicators.high_entropy_rewrites =
+                                content_indicators.high_entropy_rewrites.saturating_add(1);
+                        }
+                    }
+                    self.profiles.insert(path, current);
+                }
+                None => {
+                    self.profiles.remove(&path);
+                }
+            }
+        }
+
+        batch.content_indicators = content_indicators;
+    }
+}
+
+fn collect_content_profiles(
+    root: &Path,
+    sample_bytes: usize,
+    out: &mut HashMap<String, FileContentProfile>,
+) {
+    let Ok(metadata) = fs::symlink_metadata(root) else {
+        return;
+    };
+
+    if metadata.file_type().is_symlink() {
+        return;
+    }
+
+    if metadata.is_file() {
+        if let Some(profile) = sample_file_content_profile(root, sample_bytes) {
+            out.insert(root.display().to_string(), profile);
+        }
+        return;
+    }
+
+    if !metadata.is_dir() {
+        return;
+    }
+
+    let Ok(entries) = fs::read_dir(root) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        collect_content_profiles(&entry.path(), sample_bytes, out);
+    }
+}
+
+fn sample_file_content_profile(path: &Path, sample_bytes: usize) -> Option<FileContentProfile> {
+    let mut file = fs::File::open(path).ok()?;
+    let mut sample = vec![0u8; sample_bytes];
+    let read = file.read(&mut sample).ok()?;
+    if read < CONTENT_PROFILE_MIN_SAMPLE_BYTES {
+        return None;
+    }
+    sample.truncate(read);
+
+    Some(FileContentProfile {
+        sample_bytes: read.min(u16::MAX as usize) as u16,
+        entropy_x100: shannon_entropy_x100(&sample),
+        utf8_valid: std::str::from_utf8(&sample).is_ok(),
+    })
+}
+
+fn shannon_entropy_x100(sample: &[u8]) -> u16 {
+    let mut counts = [0u32; 256];
+    for byte in sample {
+        counts[*byte as usize] = counts[*byte as usize].saturating_add(1);
+    }
+
+    let total = sample.len() as f64;
+    let mut entropy = 0.0f64;
+    for count in counts.into_iter().filter(|count| *count > 0) {
+        let probability = f64::from(count) / total;
+        entropy -= probability * probability.log2();
+    }
+
+    (entropy * 100.0).round().clamp(0.0, f64::from(u16::MAX)) as u16
+}
+
+fn is_unreadable_rewrite(previous: FileContentProfile, current: FileContentProfile) -> bool {
+    previous.utf8_valid && !current.utf8_valid
+}
+
+fn is_high_entropy_rewrite(previous: FileContentProfile, current: FileContentProfile) -> bool {
+    previous.sample_bytes >= CONTENT_PROFILE_MIN_SAMPLE_BYTES as u16
+        && current.sample_bytes >= CONTENT_PROFILE_MIN_SAMPLE_BYTES as u16
+        && current.entropy_x100 >= HIGH_ENTROPY_THRESHOLD_X100
+        && current.entropy_x100
+            >= previous
+                .entropy_x100
+                .saturating_add(HIGH_ENTROPY_DELTA_X100)
 }
 
 fn process_info_from_tracked(
@@ -923,6 +1129,8 @@ fn process_info_from_tracked(
         container_runtime: process.container_runtime.clone(),
         container_id: process.container_id.clone(),
         container_image: process.container_image.clone(),
+        orchestrator: process.orchestrator.clone(),
+        container_mounts: process.container_mounts.clone(),
     }
 }
 

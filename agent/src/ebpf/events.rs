@@ -35,6 +35,14 @@ impl FileOperationCounts {
     }
 }
 
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct FileContentIndicators {
+    #[serde(default)]
+    pub unreadable_rewrites: u32,
+    #[serde(default)]
+    pub high_entropy_rewrites: u32,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct FileActivityBatch {
     pub timestamp: DateTime<Utc>,
@@ -46,6 +54,8 @@ pub struct FileActivityBatch {
     pub protected_paths_touched: Vec<String>,
     #[serde(default)]
     pub rename_extension_targets: Vec<String>,
+    #[serde(default)]
+    pub content_indicators: FileContentIndicators,
     pub bytes_written: u64,
     pub io_rate_bytes_per_sec: u64,
 }
@@ -90,6 +100,10 @@ pub struct ProcessInfo {
     pub container_id: Option<String>,
     #[serde(default)]
     pub container_image: Option<String>,
+    #[serde(default)]
+    pub orchestrator: OrchestratorMetadata,
+    #[serde(default)]
+    pub container_mounts: Vec<ContainerMount>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -101,6 +115,26 @@ pub struct ProcessAncestor {
     pub exe_path: Option<String>,
     #[serde(default)]
     pub command_line: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct OrchestratorMetadata {
+    #[serde(default)]
+    pub platform: Option<String>,
+    #[serde(default)]
+    pub namespace: Option<String>,
+    #[serde(default)]
+    pub workload: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ContainerMount {
+    pub mount_type: String,
+    #[serde(default)]
+    pub source: Option<String>,
+    pub destination: String,
+    #[serde(default)]
+    pub name: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -196,6 +230,10 @@ pub struct BehaviorEvent {
     pub container_id: Option<String>,
     #[serde(default)]
     pub container_image: Option<String>,
+    #[serde(default)]
+    pub orchestrator: OrchestratorMetadata,
+    #[serde(default)]
+    pub container_mounts: Vec<ContainerMount>,
     pub correlation_hits: u32,
     pub file_ops: FileOperationCounts,
     pub touched_paths: Vec<String>,

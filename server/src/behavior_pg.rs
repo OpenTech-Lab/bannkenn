@@ -32,6 +32,8 @@ CREATE TABLE IF NOT EXISTS behavior_events_archive (
     container_runtime TEXT,
     container_id TEXT,
     container_image TEXT,
+    orchestrator_json TEXT NOT NULL DEFAULT '{}',
+    container_mounts_json TEXT NOT NULL DEFAULT '[]',
     correlation_hits BIGINT NOT NULL,
     file_ops_created BIGINT NOT NULL,
     file_ops_modified BIGINT NOT NULL,
@@ -97,6 +99,8 @@ pub struct BehaviorArchiveRecord {
     pub container_runtime: Option<String>,
     pub container_id: Option<String>,
     pub container_image: Option<String>,
+    pub orchestrator_json: String,
+    pub container_mounts_json: String,
     pub correlation_hits: u32,
     pub file_ops_created: u32,
     pub file_ops_modified: u32,
@@ -145,6 +149,8 @@ impl BehaviorArchiveRecord {
             container_runtime: event.container_runtime.clone(),
             container_id: event.container_id.clone(),
             container_image: event.container_image.clone(),
+            orchestrator_json: serde_json::to_string(&event.orchestrator)?,
+            container_mounts_json: serde_json::to_string(&event.container_mounts)?,
             correlation_hits: event.correlation_hits,
             file_ops_created: event.file_ops.created,
             file_ops_modified: event.file_ops.modified,
@@ -256,6 +262,16 @@ impl BehaviorPgArchive {
         )
         .execute(&self.pool)
         .await?;
+        sqlx::query(
+            "ALTER TABLE behavior_events_archive ADD COLUMN IF NOT EXISTS orchestrator_json TEXT NOT NULL DEFAULT '{}'",
+        )
+        .execute(&self.pool)
+        .await?;
+        sqlx::query(
+            "ALTER TABLE behavior_events_archive ADD COLUMN IF NOT EXISTS container_mounts_json TEXT NOT NULL DEFAULT '[]'",
+        )
+        .execute(&self.pool)
+        .await?;
         for statement in BEHAVIOR_ARCHIVE_INDEXES {
             sqlx::query(statement).execute(&self.pool).await?;
         }
@@ -291,6 +307,8 @@ impl BehaviorPgArchive {
                 container_runtime,
                 container_id,
                 container_image,
+                orchestrator_json,
+                container_mounts_json,
                 correlation_hits,
                 file_ops_created,
                 file_ops_modified,
@@ -308,7 +326,7 @@ impl BehaviorPgArchive {
             VALUES (
                 $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14,
                 $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26,
-                $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37
+                $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39
             )
             ON CONFLICT (sqlite_event_id) DO NOTHING
             "#,
@@ -338,6 +356,8 @@ impl BehaviorPgArchive {
         .bind(&record.container_runtime)
         .bind(&record.container_id)
         .bind(&record.container_image)
+        .bind(&record.orchestrator_json)
+        .bind(&record.container_mounts_json)
         .bind(i64::from(record.correlation_hits))
         .bind(i64::from(record.file_ops_created))
         .bind(i64::from(record.file_ops_modified))

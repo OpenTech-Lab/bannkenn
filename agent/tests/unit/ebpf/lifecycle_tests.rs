@@ -1,6 +1,8 @@
 use super::*;
 use crate::config::{MaintenanceWindow, TrustPolicyRule, TrustPolicyVisibility};
-use crate::ebpf::events::{MaintenanceActivity, ProcessAncestor, ProcessTrustClass};
+use crate::ebpf::events::{
+    ContainerMount, MaintenanceActivity, OrchestratorMetadata, ProcessAncestor, ProcessTrustClass,
+};
 use std::os::unix::fs::symlink;
 
 fn tracked_process(pid: u32, process_name: &str, exe_path: &str) -> TrackedProcess {
@@ -26,6 +28,8 @@ fn tracked_process(pid: u32, process_name: &str, exe_path: &str) -> TrackedProce
         container_runtime: None,
         container_id: None,
         container_image: None,
+        orchestrator: Default::default(),
+        container_mounts: Vec::new(),
         open_paths: HashSet::from(["/srv/data/file.txt".to_string()]),
         protected: false,
     }
@@ -381,6 +385,80 @@ fn parse_container_inspect_image_reads_known_layouts() {
         parse_container_inspect_image(crictl_inspect).as_deref(),
         Some("registry.k8s.io/pause:3.9")
     );
+}
+
+#[test]
+fn parse_container_inspect_context_reads_orchestrator_and_mounts() {
+    let docker_inspect = r#"[{
+        "Config":{
+            "Image":"ghcr.io/acme/backup:1.2.3",
+            "Labels":{
+                "io.kubernetes.pod.namespace":"prod",
+                "io.kubernetes.pod.name":"backup-pod"
+            }
+        },
+        "Mounts":[{
+            "Type":"bind",
+            "Source":"/srv/data",
+            "Destination":"/data"
+        }]
+    }]"#;
+
+    let context = parse_container_inspect_context(docker_inspect).expect("container context");
+
+    assert_eq!(context.image.as_deref(), Some("ghcr.io/acme/backup:1.2.3"));
+    assert_eq!(context.orchestrator.platform.as_deref(), Some("kubernetes"));
+    assert_eq!(context.orchestrator.namespace.as_deref(), Some("prod"));
+    assert_eq!(context.orchestrator.workload.as_deref(), Some("backup-pod"));
+    assert_eq!(context.mounts.len(), 1);
+    assert_eq!(context.mounts[0].mount_type, "bind");
+    assert_eq!(context.mounts[0].source.as_deref(), Some("/srv/data"));
+    assert_eq!(context.mounts[0].destination, "/data");
+}
+
+#[test]
+fn container_mounts_map_container_paths_back_to_watched_roots() {
+    let config = ContainmentConfig {
+        watch_paths: vec!["/srv/data".to_string()],
+        ..ContainmentConfig::default()
+    };
+    let mut tracker = ProcessLifecycleTracker::new(&config);
+    tracker.container_contexts.insert(
+        "docker:0123456789abcdef0123456789abcdef".to_string(),
+        ResolvedContainerContext {
+            image: Some("ghcr.io/acme/backup:1.2.3".to_string()),
+            orchestrator: OrchestratorMetadata {
+                platform: Some("kubernetes".to_string()),
+                namespace: Some("prod".to_string()),
+                workload: Some("backup-pod".to_string()),
+            },
+            mounts: vec![ContainerMount {
+                mount_type: "bind".to_string(),
+                source: Some("/srv/data".to_string()),
+                destination: "/data".to_string(),
+                name: None,
+            }],
+        },
+    );
+
+    let now = chrono::Utc::now();
+    let mut process = tracked_process(42, "backupd", "/usr/local/bin/backupd");
+    process.container_runtime = Some("docker".to_string());
+    process.container_id = Some("0123456789abcdef0123456789abcdef".to_string());
+    process.open_paths = HashSet::from(["/data/report.txt".to_string()]);
+
+    let mut processes = HashMap::from([(42, process)]);
+    tracker.apply_profile_metadata(&mut processes, now);
+
+    let process = processes.get(&42).expect("tracked process");
+    assert!(process.open_paths.contains("/srv/data/report.txt"));
+    assert_eq!(
+        process.container_image.as_deref(),
+        Some("ghcr.io/acme/backup:1.2.3")
+    );
+    assert_eq!(process.orchestrator.platform.as_deref(), Some("kubernetes"));
+    assert_eq!(process.container_mounts.len(), 1);
+    assert_eq!(process.container_mounts[0].destination, "/data");
 }
 
 #[test]

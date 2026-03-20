@@ -1,5 +1,7 @@
 use crate::containment::ContainmentDecision;
-use crate::ebpf::events::{BehaviorEvent, FileOperationCounts, ProcessAncestor};
+use crate::ebpf::events::{
+    BehaviorEvent, ContainerMount, FileOperationCounts, OrchestratorMetadata, ProcessAncestor,
+};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -29,6 +31,10 @@ pub struct BehaviorEventUpload {
     pub container_id: Option<String>,
     #[serde(default)]
     pub container_image: Option<String>,
+    #[serde(default)]
+    pub orchestrator: OrchestratorMetadata,
+    #[serde(default)]
+    pub container_mounts: Vec<ContainerMount>,
     pub correlation_hits: u32,
     pub file_ops: FileOperationCounts,
     pub touched_paths: Vec<String>,
@@ -89,6 +95,8 @@ impl From<&BehaviorEvent> for BehaviorEventUpload {
             container_runtime: event.container_runtime.clone(),
             container_id: event.container_id.clone(),
             container_image: event.container_image.clone(),
+            orchestrator: event.orchestrator.clone(),
+            container_mounts: event.container_mounts.clone(),
             correlation_hits: event.correlation_hits,
             file_ops: event.file_ops,
             touched_paths: event.touched_paths.clone(),

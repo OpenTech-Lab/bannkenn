@@ -63,6 +63,12 @@ fn archive_record_preserves_ingested_behavior_fields() {
         record.container_image.as_deref(),
         Some("ghcr.io/acme/backup:1.2.3")
     );
+    assert!(record
+        .orchestrator_json
+        .contains("\"platform\":\"kubernetes\""));
+    assert!(record
+        .container_mounts_json
+        .contains("\"mount_type\":\"bind\""));
     assert_eq!(record.level, "containment_candidate");
     assert!(record.reasons_json.contains("rename burst x4"));
 }

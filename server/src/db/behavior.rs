@@ -68,6 +68,8 @@ impl Db {
             "container_runtime": &event.container_runtime,
             "container_id": &event.container_id,
             "container_image": &event.container_image,
+            "orchestrator": &event.orchestrator,
+            "container_mounts": &event.container_mounts,
             "correlation_hits": event.correlation_hits,
             "file_ops": &event.file_ops,
             "touched_paths": &event.touched_paths,
@@ -162,6 +164,8 @@ impl Db {
         let protected_paths_json = encode_json(&event.protected_paths_touched)?;
         let reasons_json = encode_json(&event.reasons)?;
         let parent_chain_json = encode_json(&event.parent_chain)?;
+        let orchestrator_json = encode_json(&event.orchestrator)?;
+        let container_mounts_json = encode_json(&event.container_mounts)?;
         let result = sqlx::query(
             r#"
             INSERT INTO behavior_events (
@@ -189,6 +193,8 @@ impl Db {
                 container_runtime,
                 container_id,
                 container_image,
+                orchestrator_json,
+                container_mounts_json,
                 correlation_hits,
                 file_ops_created,
                 file_ops_modified,
@@ -203,7 +209,7 @@ impl Db {
                 level,
                 created_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             "#,
         )
         .bind(incident_id)
@@ -230,6 +236,8 @@ impl Db {
         .bind(&event.container_runtime)
         .bind(&event.container_id)
         .bind(&event.container_image)
+        .bind(orchestrator_json)
+        .bind(container_mounts_json)
         .bind(i64::from(event.correlation_hits))
         .bind(i64::from(event.file_ops.created))
         .bind(i64::from(event.file_ops.modified))
@@ -280,6 +288,8 @@ impl Db {
                 container_runtime,
                 container_id,
                 container_image,
+                orchestrator_json,
+                container_mounts_json,
                 correlation_hits,
                 file_ops_created,
                 file_ops_modified,
@@ -347,6 +357,8 @@ impl Db {
                 container_runtime,
                 container_id,
                 container_image,
+                orchestrator_json,
+                container_mounts_json,
                 correlation_hits,
                 file_ops_created,
                 file_ops_modified,
@@ -382,6 +394,8 @@ fn map_behavior_event_row(row: sqlx::sqlite::SqliteRow) -> anyhow::Result<Behavi
     let protected_paths_json: String = row.try_get("protected_paths_json")?;
     let reasons_json: String = row.try_get("reasons_json")?;
     let parent_chain_json: Option<String> = row.try_get("parent_chain_json")?;
+    let orchestrator_json: Option<String> = row.try_get("orchestrator_json")?;
+    let container_mounts_json: Option<String> = row.try_get("container_mounts_json")?;
 
     Ok(BehaviorEventRow {
         id: row.try_get("id")?,
@@ -411,6 +425,14 @@ fn map_behavior_event_row(row: sqlx::sqlite::SqliteRow) -> anyhow::Result<Behavi
         container_runtime: row.try_get("container_runtime")?,
         container_id: row.try_get("container_id")?,
         container_image: row.try_get("container_image")?,
+        orchestrator: decode_json(
+            &orchestrator_json.unwrap_or_else(|| "{}".to_string()),
+            "behavior_events.orchestrator_json",
+        )?,
+        container_mounts: decode_json(
+            &container_mounts_json.unwrap_or_else(|| "[]".to_string()),
+            "behavior_events.container_mounts_json",
+        )?,
         correlation_hits: from_i64_u32(
             row.try_get("correlation_hits")?,
             "behavior_events.correlation_hits",

@@ -28,6 +28,19 @@ export type BehaviorParentChainEntry = {
   command_line?: string | null;
 };
 
+export type BehaviorOrchestrator = {
+  platform?: string | null;
+  namespace?: string | null;
+  workload?: string | null;
+};
+
+export type BehaviorContainerMount = {
+  mount_type: string;
+  source?: string | null;
+  destination: string;
+  name?: string | null;
+};
+
 export type BehaviorEvent = {
   id: number;
   agent_name: string;
@@ -53,6 +66,8 @@ export type BehaviorEvent = {
   container_runtime?: string | null;
   container_id?: string | null;
   container_image?: string | null;
+  orchestrator: BehaviorOrchestrator;
+  container_mounts: BehaviorContainerMount[];
   correlation_hits: number;
   file_ops: BehaviorFileOps;
   touched_paths: string[];

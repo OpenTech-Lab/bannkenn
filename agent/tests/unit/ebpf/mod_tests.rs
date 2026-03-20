@@ -133,6 +133,7 @@ fn activity_batches_are_coalesced_per_source_and_root() {
             touched_paths: vec!["/srv/a.txt".to_string()],
             protected_paths_touched: vec!["/srv/a.txt".to_string()],
             rename_extension_targets: Vec::new(),
+            content_indicators: Default::default(),
             bytes_written: 1024,
             io_rate_bytes_per_sec: 1024,
         },
@@ -150,6 +151,7 @@ fn activity_batches_are_coalesced_per_source_and_root() {
             touched_paths: vec!["/srv/b.txt".to_string(), "/srv/a.txt".to_string()],
             protected_paths_touched: vec!["/srv/b.txt".to_string()],
             rename_extension_targets: Vec::new(),
+            content_indicators: Default::default(),
             bytes_written: 2048,
             io_rate_bytes_per_sec: 2048,
         },
@@ -170,6 +172,83 @@ fn activity_batches_are_coalesced_per_source_and_root() {
         batch.protected_paths_touched,
         vec!["/srv/a.txt".to_string(), "/srv/b.txt".to_string()]
     );
+}
+
+#[test]
+fn content_profile_tracker_flags_unreadable_and_high_entropy_rewrites() {
+    let root = std::env::temp_dir().join(format!("bannkenn-profile-{}", uuid::Uuid::new_v4()));
+    fs::create_dir_all(&root).unwrap();
+    let path = root.join("notes.txt");
+    fs::write(&path, "hello world ".repeat(64)).unwrap();
+
+    let mut tracker = ContentProfileTracker::new(vec![root.clone()], 2048);
+    tracker.ensure_initialized();
+
+    let payload = (0..2048)
+        .map(|index| (index % 256) as u8)
+        .collect::<Vec<_>>();
+    fs::write(&path, payload).unwrap();
+
+    let mut batch = FileActivityBatch {
+        timestamp: Utc::now(),
+        source: "userspace_polling".to_string(),
+        watched_root: root.display().to_string(),
+        poll_interval_ms: 1000,
+        file_ops: FileOperationCounts {
+            modified: 1,
+            ..Default::default()
+        },
+        touched_paths: vec![path.display().to_string()],
+        protected_paths_touched: Vec::new(),
+        rename_extension_targets: Vec::new(),
+        content_indicators: Default::default(),
+        bytes_written: 2048,
+        io_rate_bytes_per_sec: 2048,
+    };
+
+    tracker.annotate_batches(std::slice::from_mut(&mut batch));
+
+    assert_eq!(batch.content_indicators.unreadable_rewrites, 1);
+    assert_eq!(batch.content_indicators.high_entropy_rewrites, 1);
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn content_profile_tracker_ignores_benign_text_rewrites() {
+    let root = std::env::temp_dir().join(format!("bannkenn-profile-{}", uuid::Uuid::new_v4()));
+    fs::create_dir_all(&root).unwrap();
+    let path = root.join("notes.txt");
+    fs::write(&path, "hello world ".repeat(64)).unwrap();
+
+    let mut tracker = ContentProfileTracker::new(vec![root.clone()], 2048);
+    tracker.ensure_initialized();
+
+    fs::write(&path, "updated notes ".repeat(64)).unwrap();
+
+    let mut batch = FileActivityBatch {
+        timestamp: Utc::now(),
+        source: "userspace_polling".to_string(),
+        watched_root: root.display().to_string(),
+        poll_interval_ms: 1000,
+        file_ops: FileOperationCounts {
+            modified: 1,
+            ..Default::default()
+        },
+        touched_paths: vec![path.display().to_string()],
+        protected_paths_touched: Vec::new(),
+        rename_extension_targets: Vec::new(),
+        content_indicators: Default::default(),
+        bytes_written: 2048,
+        io_rate_bytes_per_sec: 2048,
+    };
+
+    tracker.annotate_batches(std::slice::from_mut(&mut batch));
+
+    assert_eq!(batch.content_indicators.unreadable_rewrites, 0);
+    assert_eq!(batch.content_indicators.high_entropy_rewrites, 0);
+
+    let _ = fs::remove_dir_all(root);
 }
 
 #[tokio::test]
@@ -253,6 +332,8 @@ async fn recent_temp_write_followed_by_exec_emits_trigger_event() {
             container_runtime: None,
             container_id: None,
             container_image: None,
+            orchestrator: Default::default(),
+            container_mounts: Vec::new(),
             open_paths: BTreeSet::new().into_iter().collect(),
             protected: false,
         }],
@@ -321,6 +402,8 @@ async fn ringbuf_exec_events_fall_back_to_tracked_process_exe_path() {
             container_runtime: None,
             container_id: None,
             container_image: None,
+            orchestrator: Default::default(),
+            container_mounts: Vec::new(),
             open_paths: std::collections::HashSet::new(),
             protected: false,
         }],

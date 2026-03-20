@@ -69,6 +69,8 @@ impl ProcessCorrelator {
                     container_runtime: proc_info.container_runtime.clone(),
                     container_id: proc_info.container_id.clone(),
                     container_image: proc_info.container_image.clone(),
+                    orchestrator: proc_info.orchestrator.clone(),
+                    container_mounts: proc_info.container_mounts.clone(),
                 });
             }
         }

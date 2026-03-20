@@ -73,6 +73,26 @@ function formatParentChain(chain: BehaviorEvent['parent_chain']) {
     .join(' -> ');
 }
 
+function formatOrchestrator(orchestrator: BehaviorEvent['orchestrator']) {
+  const parts = [orchestrator.platform, orchestrator.namespace, orchestrator.workload].filter(
+    (value): value is string => Boolean(value)
+  );
+  return parts.length ? parts.join(' / ') : 'none';
+}
+
+function formatContainerMounts(mounts: BehaviorEvent['container_mounts']) {
+  if (!mounts.length) {
+    return 'none';
+  }
+
+  return mounts
+    .map((mount) => {
+      const source = mount.source ?? mount.name ?? 'unknown';
+      return `${mount.mount_type}: ${source} -> ${mount.destination}`;
+    })
+    .join(' ; ');
+}
+
 export function AgentDetailPage() {
   const params = useParams<{ id: string }>();
   const id = params?.id;
@@ -538,6 +558,12 @@ export function AgentDetailPage() {
                                 </p>
                                 <p className="truncate text-xs text-muted-foreground">
                                   image: {event.container_image ?? 'unknown'}
+                                </p>
+                                <p className="truncate text-xs text-muted-foreground">
+                                  orchestrator: {formatOrchestrator(event.orchestrator)}
+                                </p>
+                                <p className="break-words text-xs text-muted-foreground">
+                                  mounts: {formatContainerMounts(event.container_mounts)}
                                 </p>
                               </div>
                             </TableCell>

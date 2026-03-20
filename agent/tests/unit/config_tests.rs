@@ -67,6 +67,8 @@ fn runtime_defaults_populate_containment_config_without_enabling_it() {
         containment.environment_profile,
         crate::config::ContainmentEnvironmentProfile::Balanced
     );
+    assert_eq!(containment.high_entropy_rewrite_score, 8);
+    assert_eq!(containment.unreadable_rewrite_score, 10);
     assert_eq!(containment.extension_anomaly_score, 5);
     assert_eq!(containment.extension_anomaly_min_count, 3);
     assert_eq!(containment.user_data_bonus, 8);
@@ -83,6 +85,11 @@ fn runtime_defaults_populate_containment_config_without_enabling_it() {
     assert_eq!(containment.recurrence_score, 6);
     assert_eq!(containment.recurrence_window_secs, 900);
     assert_eq!(containment.recurrence_min_events, 2);
+    assert!(containment.auto_containment_requires_pid);
+    assert_eq!(containment.containment_action_window_secs, 120);
+    assert_eq!(containment.throttle_action_min_events, 2);
+    assert_eq!(containment.fuse_action_min_events, 2);
+    assert_eq!(containment.content_profile_sample_bytes, 2048);
     assert!(containment
         .protected_pid_allowlist
         .contains(&"bannkenn-agent".to_string()));

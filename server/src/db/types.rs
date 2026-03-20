@@ -46,6 +46,26 @@ pub struct BehaviorParentChainEntry {
     pub command_line: Option<String>,
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BehaviorOrchestratorRow {
+    #[serde(default)]
+    pub platform: Option<String>,
+    #[serde(default)]
+    pub namespace: Option<String>,
+    #[serde(default)]
+    pub workload: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BehaviorContainerMountRow {
+    pub mount_type: String,
+    #[serde(default)]
+    pub source: Option<String>,
+    pub destination: String,
+    #[serde(default)]
+    pub name: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct BehaviorEventRow {
     pub id: i64,
@@ -72,6 +92,8 @@ pub struct BehaviorEventRow {
     pub container_runtime: Option<String>,
     pub container_id: Option<String>,
     pub container_image: Option<String>,
+    pub orchestrator: BehaviorOrchestratorRow,
+    pub container_mounts: Vec<BehaviorContainerMountRow>,
     pub correlation_hits: u32,
     pub file_ops: BehaviorFileOpsRow,
     pub touched_paths: Vec<String>,
@@ -216,6 +238,8 @@ pub struct NewBehaviorEvent {
     pub container_runtime: Option<String>,
     pub container_id: Option<String>,
     pub container_image: Option<String>,
+    pub orchestrator: BehaviorOrchestratorRow,
+    pub container_mounts: Vec<BehaviorContainerMountRow>,
     pub correlation_hits: u32,
     pub file_ops: BehaviorFileOpsRow,
     pub touched_paths: Vec<String>,

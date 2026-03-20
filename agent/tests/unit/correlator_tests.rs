@@ -17,6 +17,7 @@ fn correlator_prefers_non_protected_process_with_exact_path_hits() {
         touched_paths: vec!["/srv/data/file-a".to_string()],
         protected_paths_touched: Vec::new(),
         rename_extension_targets: Vec::new(),
+        content_indicators: Default::default(),
         bytes_written: 0,
         io_rate_bytes_per_sec: 0,
     };
@@ -44,6 +45,8 @@ fn correlator_prefers_non_protected_process_with_exact_path_hits() {
                 container_runtime: None,
                 container_id: None,
                 container_image: None,
+                orchestrator: Default::default(),
+                container_mounts: Vec::new(),
                 open_paths: HashSet::from(["/srv/data/file-a".to_string()]),
                 protected: true,
             },
@@ -69,6 +72,8 @@ fn correlator_prefers_non_protected_process_with_exact_path_hits() {
                 container_runtime: None,
                 container_id: None,
                 container_image: None,
+                orchestrator: Default::default(),
+                container_mounts: Vec::new(),
                 open_paths: HashSet::from([
                     "/srv/data/file-a".to_string(),
                     "/srv/data/file-b".to_string(),

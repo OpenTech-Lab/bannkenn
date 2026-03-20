@@ -120,6 +120,8 @@ fn behavior_event(score: u32, reasons: &[&str]) -> BehaviorEvent {
         container_runtime: None,
         container_id: None,
         container_image: None,
+        orchestrator: Default::default(),
+        container_mounts: Vec::new(),
         correlation_hits: 3,
         file_ops: FileOperationCounts {
             renamed: 4,

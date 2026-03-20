@@ -1,6 +1,9 @@
 use crate::auth::AuthenticatedAgent;
 use crate::behavior_pg::{BehaviorArchiveRecord, BehaviorPgArchive};
-use crate::db::{BehaviorFileOpsRow, BehaviorParentChainEntry, Db, NewBehaviorEvent};
+use crate::db::{
+    BehaviorContainerMountRow, BehaviorFileOpsRow, BehaviorOrchestratorRow,
+    BehaviorParentChainEntry, Db, NewBehaviorEvent,
+};
 use crate::validation::{cap_string, cap_vec, MAX_STRING_BYTES, MAX_VEC_ITEMS};
 use axum::{
     extract::{Query, State},
@@ -42,6 +45,10 @@ pub struct CreateBehaviorEventRequest {
     pub container_runtime: Option<String>,
     pub container_id: Option<String>,
     pub container_image: Option<String>,
+    #[serde(default)]
+    pub orchestrator: BehaviorOrchestratorRow,
+    #[serde(default)]
+    pub container_mounts: Vec<BehaviorContainerMountRow>,
     pub correlation_hits: u32,
     pub file_ops: BehaviorFileOpsRow,
     #[serde(default)]
@@ -125,6 +132,8 @@ pub async fn create(
         container_image: payload
             .container_image
             .map(|s| cap_string(s, MAX_STRING_BYTES)),
+        orchestrator: cap_orchestrator(payload.orchestrator),
+        container_mounts: cap_container_mounts(payload.container_mounts),
         correlation_hits: payload.correlation_hits,
         file_ops: payload.file_ops,
         touched_paths: cap_vec(payload.touched_paths, MAX_VEC_ITEMS),
@@ -164,6 +173,34 @@ pub async fn create(
         StatusCode::CREATED,
         Json(CreateBehaviorEventResponse { id: id.id }),
     ))
+}
+
+fn cap_orchestrator(orchestrator: BehaviorOrchestratorRow) -> BehaviorOrchestratorRow {
+    BehaviorOrchestratorRow {
+        platform: orchestrator
+            .platform
+            .map(|value| cap_string(value, MAX_STRING_BYTES)),
+        namespace: orchestrator
+            .namespace
+            .map(|value| cap_string(value, MAX_STRING_BYTES)),
+        workload: orchestrator
+            .workload
+            .map(|value| cap_string(value, MAX_STRING_BYTES)),
+    }
+}
+
+fn cap_container_mounts(mounts: Vec<BehaviorContainerMountRow>) -> Vec<BehaviorContainerMountRow> {
+    cap_vec(mounts, MAX_VEC_ITEMS)
+        .into_iter()
+        .map(|mount| BehaviorContainerMountRow {
+            mount_type: cap_string(mount.mount_type, MAX_STRING_BYTES),
+            source: mount
+                .source
+                .map(|value| cap_string(value, MAX_STRING_BYTES)),
+            destination: cap_string(mount.destination, MAX_STRING_BYTES),
+            name: mount.name.map(|value| cap_string(value, MAX_STRING_BYTES)),
+        })
+        .collect()
 }
 
 pub async fn list(

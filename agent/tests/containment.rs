@@ -33,6 +33,8 @@ fn event(level: BehaviorLevel, score: u32, pid: Option<u32>) -> BehaviorEvent {
         container_runtime: None,
         container_id: None,
         container_image: None,
+        orchestrator: Default::default(),
+        container_mounts: Vec::new(),
         correlation_hits: 10,
         file_ops: FileOperationCounts {
             modified: 1,
@@ -78,6 +80,7 @@ fn suspicious_and_throttle_events_escalate_state() {
     let config = ContainmentConfig {
         enabled: true,
         throttle_enabled: true,
+        throttle_action_min_events: 1,
         ..ContainmentConfig::default()
     };
     let start = Utc::now();
@@ -114,6 +117,8 @@ fn fuse_decay_waits_for_rate_limit_then_releases_to_throttle() {
         throttle_enabled: true,
         fuse_enabled: true,
         auto_fuse_release_min: 0,
+        throttle_action_min_events: 1,
+        fuse_action_min_events: 1,
         ..ContainmentConfig::default()
     };
     let start = Utc::now();
@@ -173,11 +178,108 @@ fn repeated_same_level_events_do_not_retransition() {
 }
 
 #[test]
+fn high_risk_events_are_held_until_repeated_for_auto_throttle() {
+    let config = ContainmentConfig {
+        enabled: true,
+        throttle_enabled: true,
+        containment_action_window_secs: 120,
+        throttle_action_min_events: 2,
+        ..ContainmentConfig::default()
+    };
+    let start = Utc::now();
+    let mut coordinator = ContainmentCoordinator::new(&config);
+
+    let first = coordinator
+        .handle_event_at(&event(BehaviorLevel::HighRisk, 70, Some(42)), start)
+        .expect("initial suspicious transition");
+    assert_eq!(first.state, ContainmentState::Suspicious);
+    assert!(first.actions.is_empty());
+    assert_eq!(
+        first.transition.as_ref().map(|transition| transition.reason.as_str()),
+        Some("auto containment held until 2 corroborating high-risk-or-higher events are observed in 120s")
+    );
+
+    let second = coordinator
+        .handle_event_at(
+            &event(BehaviorLevel::HighRisk, 72, Some(42)),
+            start + Duration::seconds(5),
+        )
+        .expect("throttle transition");
+    assert_eq!(second.state, ContainmentState::Throttle);
+    assert_eq!(second.actions.len(), 2);
+}
+
+#[test]
+fn containment_candidate_events_require_repeated_candidates_for_fuse() {
+    let config = ContainmentConfig {
+        enabled: true,
+        throttle_enabled: true,
+        fuse_enabled: true,
+        containment_action_window_secs: 120,
+        throttle_action_min_events: 2,
+        fuse_action_min_events: 2,
+        ..ContainmentConfig::default()
+    };
+    let start = Utc::now();
+    let mut coordinator = ContainmentCoordinator::new(&config);
+
+    let first = coordinator
+        .handle_event_at(
+            &event(BehaviorLevel::ContainmentCandidate, 90, Some(77)),
+            start,
+        )
+        .expect("initial suspicious transition");
+    assert_eq!(first.state, ContainmentState::Suspicious);
+    assert!(first.actions.is_empty());
+
+    let second = coordinator
+        .handle_event_at(
+            &event(BehaviorLevel::ContainmentCandidate, 92, Some(77)),
+            start + Duration::seconds(5),
+        )
+        .expect("fuse transition");
+    assert_eq!(second.state, ContainmentState::Fuse);
+    assert!(matches!(
+        second.actions.as_slice(),
+        [EnforcementAction::SuspendProcess { pid: 77, .. }]
+    ));
+}
+
+#[test]
+fn missing_pid_blocks_automatic_containment_actions() {
+    let config = ContainmentConfig {
+        enabled: true,
+        throttle_enabled: true,
+        fuse_enabled: true,
+        throttle_action_min_events: 1,
+        fuse_action_min_events: 1,
+        ..ContainmentConfig::default()
+    };
+    let start = Utc::now();
+    let mut coordinator = ContainmentCoordinator::new(&config);
+
+    let decision = coordinator
+        .handle_event_at(&event(BehaviorLevel::ContainmentCandidate, 95, None), start)
+        .expect("suspicious transition");
+    assert_eq!(decision.state, ContainmentState::Suspicious);
+    assert!(decision.actions.is_empty());
+    assert_eq!(
+        decision
+            .transition
+            .as_ref()
+            .map(|transition| transition.reason.as_str()),
+        Some("auto containment held because the triggering process PID is unavailable")
+    );
+}
+
+#[test]
 fn manual_fuse_trigger_bypasses_rate_limit_and_moves_to_fuse() {
     let config = ContainmentConfig {
         enabled: true,
         throttle_enabled: true,
         fuse_enabled: true,
+        throttle_action_min_events: 1,
+        fuse_action_min_events: 1,
         ..ContainmentConfig::default()
     };
     let start = Utc::now();
@@ -212,6 +314,8 @@ fn manual_fuse_release_returns_to_throttle_when_enabled() {
         enabled: true,
         throttle_enabled: true,
         fuse_enabled: true,
+        throttle_action_min_events: 1,
+        fuse_action_min_events: 1,
         ..ContainmentConfig::default()
     };
     let start = Utc::now();

@@ -20,6 +20,7 @@ fn batch_with_ops(
         touched_paths: touched_paths.into_iter().map(str::to_string).collect(),
         protected_paths_touched: Vec::new(),
         rename_extension_targets: Vec::new(),
+        content_indicators: Default::default(),
         bytes_written,
         io_rate_bytes_per_sec: bytes_written,
     }
@@ -49,6 +50,8 @@ fn process(pid: u32, process_name: &str, exe_path: &str, command_line: &str) -> 
         container_runtime: None,
         container_id: None,
         container_image: None,
+        orchestrator: Default::default(),
+        container_mounts: Vec::new(),
     }
 }
 
@@ -67,6 +70,7 @@ fn mass_rename_scores_as_suspicious() {
         touched_paths: vec!["/srv/data/a".to_string()],
         protected_paths_touched: Vec::new(),
         rename_extension_targets: Vec::new(),
+        content_indicators: Default::default(),
         bytes_written: 0,
         io_rate_bytes_per_sec: 0,
     };
@@ -94,6 +98,8 @@ fn mass_rename_scores_as_suspicious() {
             container_runtime: None,
             container_id: None,
             container_image: None,
+            orchestrator: Default::default(),
+            container_mounts: Vec::new(),
         }),
         protected_hits: 0,
     };
@@ -266,6 +272,10 @@ fn trusted_maintenance_activity_is_downgraded() {
         touched_paths: vec!["/usr/lib/firmware/vendor.bin".to_string()],
         protected_paths_touched: vec!["/usr/lib/firmware/vendor.bin".to_string()],
         rename_extension_targets: Vec::new(),
+        content_indicators: crate::ebpf::events::FileContentIndicators {
+            unreadable_rewrites: 1,
+            high_entropy_rewrites: 1,
+        },
         bytes_written: 2 * 1_048_576,
         io_rate_bytes_per_sec: 2 * 1_048_576,
     };
@@ -346,6 +356,7 @@ fn agent_internal_activity_is_downgraded() {
         touched_paths: vec!["/var/lib/bannkenn/policy/state.json".to_string()],
         protected_paths_touched: vec!["/etc/bannkenn/agent.toml".to_string()],
         rename_extension_targets: Vec::new(),
+        content_indicators: Default::default(),
         bytes_written: 0,
         io_rate_bytes_per_sec: 0,
     };
@@ -529,6 +540,8 @@ fn overlapping_benign_contexts_do_not_double_subtract_the_same_components() {
             throughput: (batch.bytes_written / scorer.bytes_per_score).min(u64::from(u32::MAX))
                 as u32,
             directory_spread: 0,
+            high_entropy_rewrite: 0,
+            unreadable_rewrite: 0,
         },
         build_context_flags(&batch, Some(&proc)),
     );
@@ -613,6 +626,7 @@ fn process_name_mismatch_adds_bonus() {
         touched_paths: vec!["/srv/data/file.txt".to_string()],
         protected_paths_touched: Vec::new(),
         rename_extension_targets: Vec::new(),
+        content_indicators: Default::default(),
         bytes_written: 0,
         io_rate_bytes_per_sec: 0,
     };
@@ -677,6 +691,7 @@ fn raw_score_only_rename_burst_is_downgraded_without_full_behavior_chain() {
         ],
         protected_paths_touched: Vec::new(),
         rename_extension_targets: Vec::new(),
+        content_indicators: Default::default(),
         bytes_written: 0,
         io_rate_bytes_per_sec: 0,
     };
@@ -726,6 +741,7 @@ fn raw_fuse_score_without_extra_corroboration_is_held_at_throttle() {
         touched_paths: vec!["/srv/data/customer/archive.enc".to_string()],
         protected_paths_touched: Vec::new(),
         rename_extension_targets: Vec::new(),
+        content_indicators: Default::default(),
         bytes_written: 8 * 1_048_576,
         io_rate_bytes_per_sec: 8 * 1_048_576,
     };
@@ -753,6 +769,61 @@ fn raw_fuse_score_without_extra_corroboration_is_held_at_throttle() {
     assert!(event.reasons.iter().any(|reason| {
         reason
             == "behavior chain signals: weak_identity, meaningful_rename, repeated_writes, user_data_targeting"
+    }));
+}
+
+#[test]
+fn content_rewrite_signals_raise_risk_and_chain_confidence() {
+    let scorer = CompositeBehaviorScorer::from_config(&ContainmentConfig::default());
+    let mut proc = process(
+        606,
+        "python3",
+        "/usr/bin/python3",
+        "/usr/bin/python3 /srv/data/job.py",
+    );
+    proc.first_seen_at = Utc::now() - chrono::Duration::minutes(30);
+    let correlation = CorrelationResult {
+        process: Some(proc),
+        protected_hits: 0,
+    };
+    let batch = FileActivityBatch {
+        timestamp: Utc::now(),
+        source: "userspace_polling".to_string(),
+        watched_root: "/srv/data".to_string(),
+        poll_interval_ms: 1000,
+        file_ops: FileOperationCounts {
+            modified: 6,
+            ..Default::default()
+        },
+        touched_paths: vec![
+            "/srv/data/finance/a.txt".to_string(),
+            "/srv/data/hr/b.txt".to_string(),
+            "/srv/data/legal/c.txt".to_string(),
+        ],
+        protected_paths_touched: Vec::new(),
+        rename_extension_targets: Vec::new(),
+        content_indicators: crate::ebpf::events::FileContentIndicators {
+            unreadable_rewrites: 2,
+            high_entropy_rewrites: 1,
+        },
+        bytes_written: 3 * 1_048_576,
+        io_rate_bytes_per_sec: 3 * 1_048_576,
+    };
+
+    let event = scorer.score(&batch, &correlation);
+
+    assert_eq!(event.level, BehaviorLevel::HighRisk);
+    assert!(event
+        .reasons
+        .iter()
+        .any(|reason| reason == "unreadable rewrite x2"));
+    assert!(event
+        .reasons
+        .iter()
+        .any(|reason| reason == "high-entropy rewrite x1"));
+    assert!(event.reasons.iter().any(|reason| {
+        reason
+            == "behavior chain signals: weak_identity, high_entropy_rewrite, unreadable_rewrite, repeated_writes, user_data_targeting, directory_spread"
     }));
 }
 
@@ -787,6 +858,7 @@ fn rename_extension_anomaly_adds_weight_and_reason() {
         ],
         protected_paths_touched: Vec::new(),
         rename_extension_targets: Vec::new(),
+        content_indicators: Default::default(),
         bytes_written: 3 * 1_048_576,
         io_rate_bytes_per_sec: 3 * 1_048_576,
     };
@@ -811,6 +883,7 @@ fn rename_extension_anomaly_adds_weight_and_reason() {
             "enc".to_string(),
             "enc".to_string(),
         ],
+        content_indicators: Default::default(),
         bytes_written: 3 * 1_048_576,
         io_rate_bytes_per_sec: 3 * 1_048_576,
     };
@@ -856,6 +929,7 @@ fn recurrent_medium_confidence_batches_escalate_to_high_risk() {
         ],
         protected_paths_touched: Vec::new(),
         rename_extension_targets: Vec::new(),
+        content_indicators: Default::default(),
         bytes_written: 10 * 1_048_576,
         io_rate_bytes_per_sec: 10 * 1_048_576,
     };
@@ -875,6 +949,7 @@ fn recurrent_medium_confidence_batches_escalate_to_high_risk() {
         ],
         protected_paths_touched: Vec::new(),
         rename_extension_targets: Vec::new(),
+        content_indicators: Default::default(),
         bytes_written: 10 * 1_048_576,
         io_rate_bytes_per_sec: 10 * 1_048_576,
     };
@@ -914,6 +989,7 @@ fn weighted_multi_signal_user_data_case_escalates_beyond_simple_burst_scoring() 
         ],
         protected_paths_touched: Vec::new(),
         rename_extension_targets: Vec::new(),
+        content_indicators: Default::default(),
         bytes_written: 3 * 1_048_576,
         io_rate_bytes_per_sec: 3 * 1_048_576,
     };
@@ -972,6 +1048,7 @@ fn environment_profiles_shift_thresholds_without_changing_actions() {
         touched_paths: vec!["/srv/data/customer/a.txt".to_string()],
         protected_paths_touched: Vec::new(),
         rename_extension_targets: Vec::new(),
+        content_indicators: Default::default(),
         bytes_written: 2 * 1_048_576,
         io_rate_bytes_per_sec: 2 * 1_048_576,
     };
@@ -1025,6 +1102,7 @@ fn trusted_process_lineage_reduces_weighted_score() {
         ],
         protected_paths_touched: Vec::new(),
         rename_extension_targets: Vec::new(),
+        content_indicators: Default::default(),
         bytes_written: 2 * 1_048_576,
         io_rate_bytes_per_sec: 2 * 1_048_576,
     };

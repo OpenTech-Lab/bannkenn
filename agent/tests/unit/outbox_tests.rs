@@ -125,6 +125,8 @@ fn outbox_round_trips_behavior_and_containment_reports() {
                 container_runtime: Some("docker".to_string()),
                 container_id: Some("0123456789abcdef0123456789abcdef".to_string()),
                 container_image: Some("ghcr.io/acme/backup:1.2.3".to_string()),
+                orchestrator: Default::default(),
+                container_mounts: Vec::new(),
                 score: 61,
                 reasons: vec!["rename burst".to_string()],
                 level: "high_risk".to_string(),

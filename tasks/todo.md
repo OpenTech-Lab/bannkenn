@@ -57,9 +57,12 @@
   - [x] Require recurrence/history or equivalent corroboration before repeated medium-confidence batches can escalate into the highest user-facing severity bands.
 
 ## Phase 4: Advanced Detection
-- [ ] Add entropy or unreadability indicators for rewritten files to improve ransomware confidence.
-- [ ] Add container-aware attribution for container ID, image name, orchestrator metadata, and bind-mount or volume context.
-- [ ] Gate containment actions behind higher-confidence scoring so weak signals do not trigger disruptive response.
+- [x] Add entropy or unreadability indicators for rewritten files to improve ransomware confidence.
+  - [x] Track bounded before/after content profiles for watched files so modified user-data files can surface entropy jumps or text-to-unreadable transitions.
+  - [x] Feed entropy/unreadability rewrite indicators into weighted scoring and behavior-chain correlation without expanding the server/dashboard schema.
+  - [x] Back the new content-based signals with regression coverage for benign text rewrites, unreadable rewrites, and higher-entropy suspicious rewrites.
+- [x] Add container-aware attribution for container ID, image name, orchestrator metadata, and bind-mount or volume context.
+- [x] Gate containment actions behind higher-confidence scoring so weak signals do not trigger disruptive response.
 - [ ] Support fleet-wide baseline or trust sharing once local attribution and scoring are stable.
 
 ## Verification
@@ -123,3 +126,15 @@
 - `ContainmentConfig` now exposes `environment_profile` alongside the new extension-anomaly and recurrence knobs, and the scorer adjusts severity thresholds/signal requirements per profile without changing throttle/fuse action semantics.
 - Regression coverage for this pass adds rename-extension anomaly scoring, recurrence-driven `high_risk` escalation, environment-profile threshold tests, severity-name compatibility checks across containment/outbox/server/archive paths, and another dashboard production build.
 - Verification for this pass: `cargo fmt --all --check`, `cargo test -p bannkenn-agent`, `cargo test -p bannkenn-server`, `cargo clippy -p bannkenn-agent -p bannkenn-server --tests -- -D warnings`, and `npm run build` in `dashboard/`.
+- 2026-03-20: Phase 4 content-based rewrite detection has started. The agent now keeps bounded per-path content profiles for watched files, detects text-to-unreadable rewrites plus sharp entropy jumps, and annotates activity batches with those indicators before scoring.
+- 2026-03-20: The scorer treats unreadable and high-entropy rewrites as first-class weighted signals in both severity scoring and behavior-chain correlation, while trusted maintenance, package-helper temp work, containerized service temp activity, and agent-internal work explicitly suppress those content-based bonuses to limit false positives.
+- Regression coverage for this pass adds content-profile tracker tests for benign text rewrites versus unreadable/high-entropy rewrites, scorer coverage for rewrite-driven `high_risk` escalation, and config-default assertions for the new sampling and scoring knobs.
+- Verification for this pass: `cargo fmt --all`, `cargo fmt --all --check`, `cargo test -p bannkenn-agent`, and `cargo clippy -p bannkenn-agent --tests -- -D warnings`.
+- 2026-03-20: Container-aware attribution now resolves and caches full container context instead of image-only metadata. The agent extracts orchestrator labels and mount mappings from inspect metadata, maps container-internal open paths back onto watched host roots for correlation, and attaches only the relevant bind-mount or volume context to behavior events.
+- 2026-03-20: Orchestrator metadata and relevant container mounts now flow end to end through agent uploads, SQLite/Postgres behavior storage, incident timeline payloads, archive records, and the dashboard agent detail view.
+- Regression coverage for this pass adds lifecycle tests for inspect-label parsing and watched-root mount mapping, plus server round-trip and archive assertions for the new orchestrator and mount payloads.
+- Verification for this pass: `cargo fmt --all`, `cargo fmt --all --check`, `cargo test -p bannkenn-agent`, `cargo test -p bannkenn-server`, `cargo clippy -p bannkenn-agent -p bannkenn-server --tests -- -D warnings`, and `npm run build` in `dashboard/`.
+- 2026-03-20: Automatic throttle and fuse actions now have a second gate beyond event severity. The containment coordinator requires repeated corroborating `high_risk` or `containment_candidate` events within a short window before applying disruptive actions, and it holds missing-PID events at `suspicious` even when the scorer output is higher.
+- `ContainmentConfig` now exposes `auto_containment_requires_pid`, `containment_action_window_secs`, `throttle_action_min_events`, and `fuse_action_min_events` so operators can tune action confidence separately from scoring thresholds.
+- Regression coverage for this pass adds containment tests for repeated high-risk throttling, repeated containment-candidate fuse escalation, missing-PID suppression, and config-default assertions for the new action-gating knobs.
+- Verification for this pass: `cargo fmt --all`, `cargo fmt --all --check`, `cargo test -p bannkenn-agent`, and `cargo clippy -p bannkenn-agent --tests -- -D warnings`.

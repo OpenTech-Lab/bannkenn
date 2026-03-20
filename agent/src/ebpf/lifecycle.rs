@@ -1,5 +1,7 @@
 use crate::config::{ContainmentConfig, TrustPolicyRule, TrustPolicyVisibility};
-use crate::ebpf::events::{MaintenanceActivity, ProcessAncestor, ProcessTrustClass};
+use crate::ebpf::events::{
+    ContainerMount, MaintenanceActivity, OrchestratorMetadata, ProcessAncestor, ProcessTrustClass,
+};
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use serde_json::Value;
@@ -59,6 +61,7 @@ const SHELL_LIKE_PARENT_PATTERNS: &[&str] = &["sh", "bash", "dash", "zsh", "ash"
 const LOCAL_EXEC_PREFIXES: &[&str] = &["/usr/local/", "/opt/", "/srv/", "/home/", "/root/"];
 const TEMP_EXEC_PREFIXES: &[&str] = &["/tmp/", "/var/tmp/"];
 const MAX_PARENT_CHAIN_DEPTH: usize = 6;
+const MAX_OPEN_PATHS_PER_PROCESS: usize = 128;
 const DOCKER_CONTAINER_CONFIG_ROOT: &str = "/var/lib/docker/containers";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -84,6 +87,8 @@ pub struct TrackedProcess {
     pub container_runtime: Option<String>,
     pub container_id: Option<String>,
     pub container_image: Option<String>,
+    pub orchestrator: OrchestratorMetadata,
+    pub container_mounts: Vec<ContainerMount>,
     pub open_paths: HashSet<String>,
     pub protected: bool,
 }
@@ -114,7 +119,7 @@ pub struct ProcessLifecycleTracker {
     trust_policies: Vec<TrustPolicyRule>,
     previous: HashMap<u32, ProcessIdentity>,
     profiles: HashMap<String, ProcessProfileState>,
-    container_images: HashMap<String, Option<String>>,
+    container_contexts: HashMap<String, ResolvedContainerContext>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -150,6 +155,13 @@ struct PackageOwner {
     manager: String,
 }
 
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+struct ResolvedContainerContext {
+    image: Option<String>,
+    orchestrator: OrchestratorMetadata,
+    mounts: Vec<ContainerMount>,
+}
+
 impl ProcessLifecycleTracker {
     pub fn new(config: &ContainmentConfig) -> Self {
         let watch_roots = config
@@ -168,7 +180,7 @@ impl ProcessLifecycleTracker {
             trust_policies: config.trust_policies.clone(),
             previous: HashMap::new(),
             profiles: HashMap::new(),
-            container_images: HashMap::new(),
+            container_contexts: HashMap::new(),
         }
     }
 
@@ -182,6 +194,7 @@ impl ProcessLifecycleTracker {
         .context("lifecycle task join failed")??;
 
         self.apply_profile_metadata(&mut processes, Utc::now());
+        processes.retain(|_, process| !process.open_paths.is_empty());
         let events = diff_lifecycle_events(&self.previous, &processes);
         self.previous = processes
             .iter()
@@ -208,12 +221,26 @@ impl ProcessLifecycleTracker {
         now: DateTime<Utc>,
     ) {
         for process in processes.values_mut() {
+            let container_context = self.resolve_container_context(
+                process.container_runtime.as_deref(),
+                process.container_id.as_deref(),
+            );
             if process.container_image.is_none() {
-                process.container_image = self.resolve_container_image(
-                    process.container_runtime.as_deref(),
-                    process.container_id.as_deref(),
-                );
+                process.container_image = container_context.image.clone();
             }
+            if process.orchestrator == OrchestratorMetadata::default() {
+                process.orchestrator = container_context.orchestrator.clone();
+            }
+            process.open_paths = filter_process_open_paths(
+                &process.open_paths,
+                &self.watch_roots,
+                &container_context.mounts,
+            );
+            process.container_mounts = select_relevant_container_mounts(
+                &container_context.mounts,
+                &self.watch_roots,
+                &process.open_paths,
+            );
             let profile_key = process_profile_key(process);
             let profile = self.profiles.entry(profile_key).or_insert_with(|| {
                 let package_owner = resolve_package_owner(&process.exe_path);
@@ -244,24 +271,27 @@ impl ProcessLifecycleTracker {
         }
     }
 
-    fn resolve_container_image(
+    fn resolve_container_context(
         &mut self,
         runtime: Option<&str>,
         container_id: Option<&str>,
-    ) -> Option<String> {
+    ) -> ResolvedContainerContext {
         let runtime = runtime
             .map(normalize_command_name)
-            .filter(|value| !value.is_empty())?;
+            .filter(|value| !value.is_empty());
         let container_id = container_id
             .map(normalize_command_name)
-            .filter(|value| !value.is_empty())?;
+            .filter(|value| !value.is_empty());
+        let (Some(runtime), Some(container_id)) = (runtime, container_id) else {
+            return ResolvedContainerContext::default();
+        };
         let cache_key = format!("{runtime}:{container_id}");
-        if let Some(image) = self.container_images.get(&cache_key) {
-            return image.clone();
+        if let Some(context) = self.container_contexts.get(&cache_key) {
+            return context.clone();
         }
 
-        let resolved = resolve_container_image_uncached(&runtime, &container_id);
-        self.container_images.insert(cache_key, resolved.clone());
+        let resolved = resolve_container_context_uncached(&runtime, &container_id);
+        self.container_contexts.insert(cache_key, resolved.clone());
         resolved
     }
 }
@@ -300,7 +330,11 @@ fn inspect_process(
     let process_name = read_trimmed_file(proc_dir.join("comm"))?;
     let exe_path = read_exe_path(proc_dir.join("exe")).unwrap_or_else(|| process_name.clone());
     let command_line = read_cmdline(proc_dir.join("cmdline")).unwrap_or_else(|| exe_path.clone());
-    let open_paths = collect_open_paths(proc_dir.join("fd"), watch_roots);
+    let cgroup = read_cgroup_metadata(proc_dir.join("cgroup"));
+    let open_paths = collect_open_paths(
+        proc_dir.join("fd"),
+        (!is_container_context(&cgroup)).then_some(watch_roots),
+    );
 
     if open_paths.is_empty() {
         return None;
@@ -311,7 +345,6 @@ fn inspect_process(
         .parent_pid
         .and_then(inspect_parent_process)
         .unwrap_or((None, None, Vec::new()));
-    let cgroup = read_cgroup_metadata(proc_dir.join("cgroup"));
 
     let protected = pid == 1
         || matches_allowlist(&process_name, protected_pid_allowlist)
@@ -339,12 +372,14 @@ fn inspect_process(
         container_runtime: cgroup.container_runtime,
         container_id: cgroup.container_id,
         container_image: None,
+        orchestrator: OrchestratorMetadata::default(),
+        container_mounts: Vec::new(),
         open_paths,
         protected,
     })
 }
 
-fn collect_open_paths(fd_dir: PathBuf, watch_roots: &[PathBuf]) -> HashSet<String> {
+fn collect_open_paths(fd_dir: PathBuf, watch_roots: Option<&[PathBuf]>) -> HashSet<String> {
     let Ok(entries) = fs::read_dir(fd_dir) else {
         return HashSet::new();
     };
@@ -356,12 +391,98 @@ fn collect_open_paths(fd_dir: PathBuf, watch_roots: &[PathBuf]) -> HashSet<Strin
         };
         let normalized = normalize_fd_target(&target);
         let target_path = Path::new(&normalized);
-        if watch_roots.iter().any(|root| target_path.starts_with(root)) {
-            open_paths.insert(normalized);
+        if !target_path.is_absolute() {
+            continue;
+        }
+        if let Some(roots) = watch_roots {
+            if !roots.iter().any(|root| target_path.starts_with(root)) {
+                continue;
+            }
+        }
+        open_paths.insert(normalized);
+        if open_paths.len() >= MAX_OPEN_PATHS_PER_PROCESS {
+            break;
         }
     }
 
     open_paths
+}
+
+fn is_container_context(metadata: &CgroupMetadata) -> bool {
+    metadata.container_runtime.is_some() || metadata.container_id.is_some()
+}
+
+fn filter_process_open_paths(
+    open_paths: &HashSet<String>,
+    watch_roots: &[PathBuf],
+    mounts: &[ContainerMount],
+) -> HashSet<String> {
+    open_paths
+        .iter()
+        .filter_map(|path| {
+            if path_matches_watch_roots(path, watch_roots) {
+                return Some(path.clone());
+            }
+
+            let mapped = map_container_open_path(path, mounts)?;
+            path_matches_watch_roots(&mapped, watch_roots).then_some(mapped)
+        })
+        .collect()
+}
+
+fn select_relevant_container_mounts(
+    mounts: &[ContainerMount],
+    watch_roots: &[PathBuf],
+    open_paths: &HashSet<String>,
+) -> Vec<ContainerMount> {
+    let mut relevant = Vec::new();
+
+    for mount in mounts {
+        let Some(source) = mount.source.as_deref() else {
+            continue;
+        };
+        if source.is_empty() {
+            continue;
+        }
+
+        let source_path = Path::new(source);
+        let matches_watch_root = watch_roots
+            .iter()
+            .any(|root| source_path.starts_with(root) || root.starts_with(source_path));
+        let matches_open_path = open_paths
+            .iter()
+            .map(Path::new)
+            .any(|open_path| open_path.starts_with(source_path));
+
+        if (matches_watch_root || matches_open_path) && !relevant.contains(mount) {
+            relevant.push(mount.clone());
+        }
+    }
+
+    relevant
+}
+
+fn path_matches_watch_roots(path: &str, watch_roots: &[PathBuf]) -> bool {
+    let candidate = Path::new(path);
+    watch_roots.iter().any(|root| candidate.starts_with(root))
+}
+
+fn map_container_open_path(path: &str, mounts: &[ContainerMount]) -> Option<String> {
+    let candidate = Path::new(path);
+    if !candidate.is_absolute() {
+        return None;
+    }
+
+    mounts.iter().find_map(|mount| {
+        let source = mount.source.as_deref().filter(|value| !value.is_empty())?;
+        let destination = Path::new(&mount.destination);
+        if !destination.is_absolute() {
+            return None;
+        }
+
+        let suffix = candidate.strip_prefix(destination).ok()?;
+        Some(Path::new(source).join(suffix).display().to_string())
+    })
 }
 
 fn diff_lifecycle_events(
@@ -873,25 +994,39 @@ fn resolve_package_owner(exe_path: &str) -> Option<PackageOwner> {
     })
 }
 
-fn resolve_container_image_uncached(runtime: &str, container_id: &str) -> Option<String> {
+fn resolve_container_context_uncached(
+    runtime: &str,
+    container_id: &str,
+) -> ResolvedContainerContext {
     match runtime {
-        "docker" => read_docker_container_image_from_root(
+        "docker" => read_docker_container_context_from_root(
             Path::new(DOCKER_CONTAINER_CONFIG_ROOT),
             container_id,
         )
-        .or_else(|| inspect_container_image("docker", container_id)),
-        "podman" => inspect_container_image("podman", container_id),
-        "containerd" => inspect_container_image("crictl", container_id)
-            .or_else(|| inspect_container_image("nerdctl", container_id)),
-        "kubernetes" | "crio" => inspect_container_image("crictl", container_id),
-        _ => None,
+        .unwrap_or_else(|| inspect_container_context("docker", container_id).unwrap_or_default()),
+        "podman" => inspect_container_context("podman", container_id).unwrap_or_default(),
+        "containerd" => inspect_container_context("crictl", container_id)
+            .or_else(|| inspect_container_context("nerdctl", container_id))
+            .unwrap_or_default(),
+        "kubernetes" | "crio" => {
+            inspect_container_context("crictl", container_id).unwrap_or_default()
+        }
+        _ => ResolvedContainerContext::default(),
     }
 }
 
-fn read_docker_container_image_from_root(root: &Path, container_id: &str) -> Option<String> {
+fn read_docker_container_context_from_root(
+    root: &Path,
+    container_id: &str,
+) -> Option<ResolvedContainerContext> {
     let container_dir = docker_container_dir(root, container_id)?;
     let content = fs::read_to_string(container_dir.join("config.v2.json")).ok()?;
-    parse_container_inspect_image(&content)
+    parse_container_inspect_context(&content)
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+fn read_docker_container_image_from_root(root: &Path, container_id: &str) -> Option<String> {
+    read_docker_container_context_from_root(root, container_id).and_then(|context| context.image)
 }
 
 fn docker_container_dir(root: &Path, container_id: &str) -> Option<PathBuf> {
@@ -924,7 +1059,10 @@ fn docker_container_dir(root: &Path, container_id: &str) -> Option<PathBuf> {
     }
 }
 
-fn inspect_container_image(program: &str, container_id: &str) -> Option<String> {
+fn inspect_container_context(
+    program: &str,
+    container_id: &str,
+) -> Option<ResolvedContainerContext> {
     let output = Command::new(program)
         .args(["inspect", container_id])
         .stdin(Stdio::null())
@@ -937,39 +1075,180 @@ fn inspect_container_image(program: &str, container_id: &str) -> Option<String> 
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    parse_container_inspect_image(&stdout)
+    parse_container_inspect_context(&stdout)
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 fn parse_container_inspect_image(content: &str) -> Option<String> {
-    let value: Value = serde_json::from_str(content).ok()?;
-    parse_container_inspect_image_value(&value)
+    parse_container_inspect_context(content).and_then(|context| context.image)
 }
 
-fn parse_container_inspect_image_value(value: &Value) -> Option<String> {
+fn parse_container_inspect_context(content: &str) -> Option<ResolvedContainerContext> {
+    let value: Value = serde_json::from_str(content).ok()?;
+    parse_container_inspect_context_value(&value)
+}
+
+fn parse_container_inspect_context_value(value: &Value) -> Option<ResolvedContainerContext> {
     if let Some(entries) = value.as_array() {
-        return entries.iter().find_map(parse_container_inspect_image_value);
+        return entries
+            .iter()
+            .find_map(parse_container_inspect_context_value);
     }
 
-    for pointer in [
+    let image = [
         "/Config/Image",
         "/ImageName",
         "/status/image/image",
         "/info/config/image/image",
         "/status/imageRef",
         "/Image",
-    ] {
-        if let Some(image) = value.pointer(pointer).and_then(Value::as_str) {
-            if let Some(normalized) = normalize_container_image(image) {
-                return Some(normalized);
-            }
-        }
-    }
+    ]
+    .into_iter()
+    .find_map(|pointer| {
+        value
+            .pointer(pointer)
+            .and_then(Value::as_str)
+            .and_then(normalize_container_image)
+    });
+    let orchestrator = parse_orchestrator_metadata(value);
+    let mounts = parse_container_mounts(value);
 
-    None
+    if image.is_none() && orchestrator == OrchestratorMetadata::default() && mounts.is_empty() {
+        None
+    } else {
+        Some(ResolvedContainerContext {
+            image,
+            orchestrator,
+            mounts,
+        })
+    }
 }
 
 fn normalize_container_image(value: &str) -> Option<String> {
     let trimmed = value.trim().trim_matches('"');
+    (!trimmed.is_empty()).then(|| trimmed.to_string())
+}
+
+fn parse_orchestrator_metadata(value: &Value) -> OrchestratorMetadata {
+    let labels = extract_container_labels(value);
+
+    if let Some(namespace) = labels
+        .get("io.kubernetes.pod.namespace")
+        .and_then(Value::as_str)
+    {
+        return OrchestratorMetadata {
+            platform: Some("kubernetes".to_string()),
+            namespace: normalize_non_empty_string(namespace),
+            workload: labels
+                .get("io.kubernetes.pod.name")
+                .and_then(Value::as_str)
+                .and_then(normalize_non_empty_string),
+        };
+    }
+
+    if let Some(project) = labels
+        .get("com.docker.compose.project")
+        .and_then(Value::as_str)
+    {
+        return OrchestratorMetadata {
+            platform: Some("docker_compose".to_string()),
+            namespace: normalize_non_empty_string(project),
+            workload: labels
+                .get("com.docker.compose.service")
+                .and_then(Value::as_str)
+                .and_then(normalize_non_empty_string),
+        };
+    }
+
+    OrchestratorMetadata::default()
+}
+
+fn extract_container_labels(value: &Value) -> &serde_json::Map<String, Value> {
+    for pointer in [
+        "/Config/Labels",
+        "/Config/config/Labels",
+        "/status/labels",
+        "/info/config/labels",
+        "/labels",
+    ] {
+        if let Some(labels) = value.pointer(pointer).and_then(Value::as_object) {
+            return labels;
+        }
+    }
+
+    static EMPTY_LABELS: std::sync::OnceLock<serde_json::Map<String, Value>> =
+        std::sync::OnceLock::new();
+    EMPTY_LABELS.get_or_init(serde_json::Map::new)
+}
+
+fn parse_container_mounts(value: &Value) -> Vec<ContainerMount> {
+    if let Some(mounts) = value.pointer("/Mounts").and_then(Value::as_array) {
+        return mounts
+            .iter()
+            .filter_map(parse_container_mount)
+            .collect::<Vec<_>>();
+    }
+
+    if let Some(mount_points) = value.pointer("/MountPoints").and_then(Value::as_object) {
+        return mount_points
+            .values()
+            .filter_map(parse_container_mount)
+            .collect::<Vec<_>>();
+    }
+
+    if let Some(mounts) = value.pointer("/status/mounts").and_then(Value::as_array) {
+        return mounts
+            .iter()
+            .filter_map(parse_container_mount)
+            .collect::<Vec<_>>();
+    }
+
+    Vec::new()
+}
+
+fn parse_container_mount(value: &Value) -> Option<ContainerMount> {
+    let destination = [
+        value.get("Destination"),
+        value.get("destination"),
+        value.get("container_path"),
+    ]
+    .into_iter()
+    .flatten()
+    .find_map(Value::as_str)
+    .and_then(normalize_non_empty_string)?;
+    let mount_type = [
+        value.get("Type"),
+        value.get("type"),
+        value.get("mount_type"),
+    ]
+    .into_iter()
+    .flatten()
+    .find_map(Value::as_str)
+    .and_then(normalize_non_empty_string)
+    .unwrap_or_else(|| "unknown".to_string());
+
+    Some(ContainerMount {
+        mount_type,
+        source: [
+            value.get("Source"),
+            value.get("source"),
+            value.get("host_path"),
+        ]
+        .into_iter()
+        .flatten()
+        .find_map(Value::as_str)
+        .and_then(normalize_non_empty_string),
+        destination,
+        name: [value.get("Name"), value.get("name")]
+            .into_iter()
+            .flatten()
+            .find_map(Value::as_str)
+            .and_then(normalize_non_empty_string),
+    })
+}
+
+fn normalize_non_empty_string(value: &str) -> Option<String> {
+    let trimmed = value.trim();
     (!trimmed.is_empty()).then(|| trimmed.to_string())
 }
 

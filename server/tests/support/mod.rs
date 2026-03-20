@@ -1,8 +1,8 @@
 #![allow(dead_code)]
 
 use bannkenn_server::db::{
-    BehaviorFileOpsRow, BehaviorParentChainEntry, ContainmentOutcomeRow, Db, NewBehaviorEvent,
-    NewContainmentEvent,
+    BehaviorContainerMountRow, BehaviorFileOpsRow, BehaviorOrchestratorRow,
+    BehaviorParentChainEntry, ContainmentOutcomeRow, Db, NewBehaviorEvent, NewContainmentEvent,
 };
 
 pub async fn test_db() -> Db {
@@ -51,6 +51,17 @@ pub fn sample_behavior_event(
         container_runtime: Some("docker".to_string()),
         container_id: Some("0123456789abcdef0123456789abcdef".to_string()),
         container_image: Some("ghcr.io/acme/backup:1.2.3".to_string()),
+        orchestrator: BehaviorOrchestratorRow {
+            platform: Some("kubernetes".to_string()),
+            namespace: Some("prod".to_string()),
+            workload: Some("backup-pod".to_string()),
+        },
+        container_mounts: vec![BehaviorContainerMountRow {
+            mount_type: "bind".to_string(),
+            source: Some(watched_root.to_string()),
+            destination: "/data".to_string(),
+            name: None,
+        }],
         correlation_hits: 3,
         file_ops: BehaviorFileOpsRow {
             created: 1,

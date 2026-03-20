@@ -61,11 +61,15 @@ struct ScoreComponents {
     delete: u32,
     throughput: u32,
     directory_spread: u32,
+    high_entropy_rewrite: u32,
+    unreadable_rewrite: u32,
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 struct BehaviorChainInputs {
     extension_anomaly_component: u32,
+    high_entropy_rewrite_component: u32,
+    unreadable_rewrite_component: u32,
     user_data_component: u32,
     directory_spread_component: u32,
     throughput_component: u32,
@@ -104,6 +108,8 @@ struct BehaviorChainAssessment {
     weak_identity: bool,
     meaningful_rename: bool,
     extension_anomaly: bool,
+    high_entropy_rewrite: bool,
+    unreadable_rewrite: bool,
     repeated_writes: bool,
     user_data_targeting: bool,
     suspicious_lineage: bool,
@@ -121,7 +127,11 @@ impl BehaviorChainAssessment {
             && self.weak_identity
             && self.repeated_writes
             && self.user_data_targeting
-            && (self.meaningful_rename || self.extension_anomaly || self.recurrence_history)
+            && (self.meaningful_rename
+                || self.extension_anomaly
+                || self.high_entropy_rewrite
+                || self.unreadable_rewrite
+                || self.recurrence_history)
     }
 
     fn qualifies_for_containment_candidate(
@@ -131,7 +141,10 @@ impl BehaviorChainAssessment {
     ) -> bool {
         self.qualifies_for_high_risk(high_risk_min_signals)
             && self.signal_count >= containment_candidate_min_signals
-            && (self.meaningful_rename || self.extension_anomaly)
+            && (self.meaningful_rename
+                || self.extension_anomaly
+                || self.high_entropy_rewrite
+                || self.unreadable_rewrite)
             && (self.suspicious_lineage
                 || self.directory_spread
                 || self.rapid_delete
@@ -176,6 +189,8 @@ pub struct CompositeBehaviorScorer {
     rename_score: u32,
     write_score: u32,
     delete_score: u32,
+    high_entropy_rewrite_score: u32,
+    unreadable_rewrite_score: u32,
     extension_anomaly_score: u32,
     extension_anomaly_min_count: u32,
     protected_path_bonus: u32,
@@ -225,6 +240,8 @@ impl CompositeBehaviorScorer {
             rename_score: config.rename_score,
             write_score: config.write_score,
             delete_score: config.delete_score,
+            high_entropy_rewrite_score: config.high_entropy_rewrite_score,
+            unreadable_rewrite_score: config.unreadable_rewrite_score,
             extension_anomaly_score: config.extension_anomaly_score,
             extension_anomaly_min_count: config.extension_anomaly_min_count.max(1),
             protected_path_bonus: config.protected_path_bonus,
@@ -317,6 +334,38 @@ impl CompositeBehaviorScorer {
         Some((
             extra_directories.saturating_mul(self.directory_spread_score),
             format!("directory spread x{}", directory_count),
+        ))
+    }
+
+    fn high_entropy_rewrite_component(
+        &self,
+        batch: &FileActivityBatch,
+        activity_score: u32,
+    ) -> Option<(u32, String)> {
+        if activity_score == 0 || batch.content_indicators.high_entropy_rewrites == 0 {
+            return None;
+        }
+
+        let count = batch.content_indicators.high_entropy_rewrites;
+        Some((
+            count.saturating_mul(self.high_entropy_rewrite_score),
+            format!("high-entropy rewrite x{}", count),
+        ))
+    }
+
+    fn unreadable_rewrite_component(
+        &self,
+        batch: &FileActivityBatch,
+        activity_score: u32,
+    ) -> Option<(u32, String)> {
+        if activity_score == 0 || batch.content_indicators.unreadable_rewrites == 0 {
+            return None;
+        }
+
+        let count = batch.content_indicators.unreadable_rewrites;
+        Some((
+            count.saturating_mul(self.unreadable_rewrite_score),
+            format!("unreadable rewrite x{}", count),
         ))
     }
 
@@ -439,6 +488,8 @@ impl CompositeBehaviorScorer {
         });
         let meaningful_rename = batch.file_ops.renamed >= self.meaningful_rename_count;
         let extension_anomaly = inputs.extension_anomaly_component > 0;
+        let high_entropy_rewrite = inputs.high_entropy_rewrite_component > 0;
+        let unreadable_rewrite = inputs.unreadable_rewrite_component > 0;
         let repeated_writes = batch.file_ops.modified >= self.meaningful_write_count
             || inputs.throughput_component > 0;
         let user_data_targeting = inputs.user_data_component > 0;
@@ -457,6 +508,12 @@ impl CompositeBehaviorScorer {
         }
         if extension_anomaly {
             signal_names.push("extension_anomaly");
+        }
+        if high_entropy_rewrite {
+            signal_names.push("high_entropy_rewrite");
+        }
+        if unreadable_rewrite {
+            signal_names.push("unreadable_rewrite");
         }
         if repeated_writes {
             signal_names.push("repeated_writes");
@@ -482,6 +539,8 @@ impl CompositeBehaviorScorer {
             weak_identity,
             meaningful_rename,
             extension_anomaly,
+            high_entropy_rewrite,
+            unreadable_rewrite,
             repeated_writes,
             user_data_targeting,
             suspicious_lineage,
@@ -575,6 +634,10 @@ impl CompositeBehaviorScorer {
             || flags.trusted_maintenance_activity
             || flags.containerized_service_temp_activity
             || flags.agent_internal_activity;
+        let suppress_content_rewrite = flags.package_manager_helper_activity
+            || flags.trusted_maintenance_activity
+            || flags.containerized_service_temp_activity
+            || flags.agent_internal_activity;
 
         if suppress_rename {
             adjustment.penalty = adjustment.penalty.saturating_add(components.rename);
@@ -600,6 +663,13 @@ impl CompositeBehaviorScorer {
             adjustment.penalty = adjustment
                 .penalty
                 .saturating_add(components.directory_spread);
+        }
+
+        if suppress_content_rewrite {
+            adjustment.penalty = adjustment
+                .penalty
+                .saturating_add(components.high_entropy_rewrite)
+                .saturating_add(components.unreadable_rewrite);
         }
 
         if flags.known_java_temp_extraction {
@@ -708,6 +778,12 @@ impl CompositeBehaviorScorer {
             container_runtime: process.and_then(|proc_info| proc_info.container_runtime.clone()),
             container_id: process.and_then(|proc_info| proc_info.container_id.clone()),
             container_image: process.and_then(|proc_info| proc_info.container_image.clone()),
+            orchestrator: process
+                .map(|proc_info| proc_info.orchestrator.clone())
+                .unwrap_or_default(),
+            container_mounts: process
+                .map(|proc_info| proc_info.container_mounts.clone())
+                .unwrap_or_default(),
             correlation_hits: process
                 .map(|proc_info| proc_info.correlation_hits)
                 .unwrap_or(0),
@@ -790,6 +866,26 @@ impl Scorer for CompositeBehaviorScorer {
         if let Some(reason) = user_data_reason {
             reasons.push(reason);
         }
+        let (high_entropy_rewrite_component, high_entropy_rewrite_reason) = self
+            .high_entropy_rewrite_component(batch, pre_path_activity_score)
+            .map(|(component, reason)| (component, Some(reason)))
+            .unwrap_or((0, None));
+        if high_entropy_rewrite_component > 0 {
+            score = score.saturating_add(high_entropy_rewrite_component);
+        }
+        if let Some(reason) = high_entropy_rewrite_reason {
+            reasons.push(reason);
+        }
+        let (unreadable_rewrite_component, unreadable_rewrite_reason) = self
+            .unreadable_rewrite_component(batch, pre_path_activity_score)
+            .map(|(component, reason)| (component, Some(reason)))
+            .unwrap_or((0, None));
+        if unreadable_rewrite_component > 0 {
+            score = score.saturating_add(unreadable_rewrite_component);
+        }
+        if let Some(reason) = unreadable_rewrite_reason {
+            reasons.push(reason);
+        }
 
         if throughput_component > 0 {
             score = score.saturating_add(throughput_component);
@@ -852,6 +948,8 @@ impl Scorer for CompositeBehaviorScorer {
             || delete_component > 0
             || throughput_component > 0
             || extension_anomaly_component > 0
+            || high_entropy_rewrite_component > 0
+            || unreadable_rewrite_component > 0
             || protected_path_component > 0
             || user_data_component > 0
             || recurrence_component > 0
@@ -862,6 +960,8 @@ impl Scorer for CompositeBehaviorScorer {
             flags,
             BehaviorChainInputs {
                 extension_anomaly_component,
+                high_entropy_rewrite_component,
+                unreadable_rewrite_component,
                 user_data_component,
                 directory_spread_component,
                 throughput_component,
@@ -878,6 +978,8 @@ impl Scorer for CompositeBehaviorScorer {
                 delete: delete_component,
                 throughput: throughput_component,
                 directory_spread: directory_spread_component,
+                high_entropy_rewrite: high_entropy_rewrite_component,
+                unreadable_rewrite: unreadable_rewrite_component,
             },
             flags,
         );
@@ -935,6 +1037,12 @@ impl Scorer for CompositeBehaviorScorer {
             container_runtime: process.and_then(|proc_info| proc_info.container_runtime.clone()),
             container_id: process.and_then(|proc_info| proc_info.container_id.clone()),
             container_image: process.and_then(|proc_info| proc_info.container_image.clone()),
+            orchestrator: process
+                .map(|proc_info| proc_info.orchestrator.clone())
+                .unwrap_or_default(),
+            container_mounts: process
+                .map(|proc_info| proc_info.container_mounts.clone())
+                .unwrap_or_default(),
             correlation_hits: process
                 .map(|proc_info| proc_info.correlation_hits)
                 .unwrap_or(0),

@@ -156,6 +156,10 @@ pub struct ContainmentConfig {
     pub write_score: u32,
     #[serde(default = "default_delete_score")]
     pub delete_score: u32,
+    #[serde(default = "default_high_entropy_rewrite_score")]
+    pub high_entropy_rewrite_score: u32,
+    #[serde(default = "default_unreadable_rewrite_score")]
+    pub unreadable_rewrite_score: u32,
     #[serde(default = "default_extension_anomaly_score")]
     pub extension_anomaly_score: u32,
     #[serde(default = "default_extension_anomaly_min_count")]
@@ -192,6 +196,16 @@ pub struct ContainmentConfig {
     pub recurrence_window_secs: u64,
     #[serde(default = "default_recurrence_min_events")]
     pub recurrence_min_events: u32,
+    #[serde(default = "default_auto_containment_requires_pid")]
+    pub auto_containment_requires_pid: bool,
+    #[serde(default = "default_containment_action_window_secs")]
+    pub containment_action_window_secs: u64,
+    #[serde(default = "default_throttle_action_min_events")]
+    pub throttle_action_min_events: u32,
+    #[serde(default = "default_fuse_action_min_events")]
+    pub fuse_action_min_events: u32,
+    #[serde(default = "default_content_profile_sample_bytes")]
+    pub content_profile_sample_bytes: u64,
     #[serde(default = "default_bytes_per_score")]
     pub bytes_per_score: u64,
 }
@@ -223,6 +237,8 @@ impl Default for ContainmentConfig {
             rename_score: default_rename_score(),
             write_score: default_write_score(),
             delete_score: default_delete_score(),
+            high_entropy_rewrite_score: default_high_entropy_rewrite_score(),
+            unreadable_rewrite_score: default_unreadable_rewrite_score(),
             extension_anomaly_score: default_extension_anomaly_score(),
             extension_anomaly_min_count: default_extension_anomaly_min_count(),
             protected_path_bonus: default_protected_path_bonus(),
@@ -241,6 +257,11 @@ impl Default for ContainmentConfig {
             recurrence_score: default_recurrence_score(),
             recurrence_window_secs: default_recurrence_window_secs(),
             recurrence_min_events: default_recurrence_min_events(),
+            auto_containment_requires_pid: default_auto_containment_requires_pid(),
+            containment_action_window_secs: default_containment_action_window_secs(),
+            throttle_action_min_events: default_throttle_action_min_events(),
+            fuse_action_min_events: default_fuse_action_min_events(),
+            content_profile_sample_bytes: default_content_profile_sample_bytes(),
             bytes_per_score: default_bytes_per_score(),
         }
     }
@@ -367,6 +388,14 @@ fn default_delete_score() -> u32 {
     3
 }
 
+fn default_high_entropy_rewrite_score() -> u32 {
+    8
+}
+
+fn default_unreadable_rewrite_score() -> u32 {
+    10
+}
+
 fn default_extension_anomaly_score() -> u32 {
     5
 }
@@ -437,6 +466,26 @@ fn default_recurrence_window_secs() -> u64 {
 
 fn default_recurrence_min_events() -> u32 {
     2
+}
+
+fn default_auto_containment_requires_pid() -> bool {
+    true
+}
+
+fn default_containment_action_window_secs() -> u64 {
+    120
+}
+
+fn default_throttle_action_min_events() -> u32 {
+    2
+}
+
+fn default_fuse_action_min_events() -> u32 {
+    2
+}
+
+fn default_content_profile_sample_bytes() -> u64 {
+    2048
 }
 
 fn default_bytes_per_score() -> u64 {

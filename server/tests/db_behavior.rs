@@ -66,6 +66,16 @@ async fn behavior_events_round_trip_structured_payloads() {
         rows[0].container_image.as_deref(),
         Some("ghcr.io/acme/backup:1.2.3")
     );
+    assert_eq!(rows[0].orchestrator.platform.as_deref(), Some("kubernetes"));
+    assert_eq!(rows[0].orchestrator.namespace.as_deref(), Some("prod"));
+    assert_eq!(rows[0].orchestrator.workload.as_deref(), Some("backup-pod"));
+    assert_eq!(rows[0].container_mounts.len(), 1);
+    assert_eq!(rows[0].container_mounts[0].mount_type, "bind");
+    assert_eq!(
+        rows[0].container_mounts[0].source.as_deref(),
+        Some("/srv/data")
+    );
+    assert_eq!(rows[0].container_mounts[0].destination, "/data");
     assert_eq!(rows[0].level, "high_risk");
 
     let agent_rows = db
