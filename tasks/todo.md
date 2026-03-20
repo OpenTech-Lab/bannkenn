@@ -66,9 +66,9 @@
 - [x] Support fleet-wide baseline or trust sharing once local attribution and scoring are stable.
 
 ## Verification
-- [ ] Run package-update, `fwupd`, `snapd`, and unattended-upgrade scenarios and prove the new model reduces false positives on protected paths.
-- [ ] Benchmark before/after CPU usage under normal load and during synthetic event storms.
-- [ ] Validate journald-first behavior on systemd hosts and confirm sane fallback on legacy log-file setups.
+- [x] Run package-update, `fwupd`, `snapd`, and unattended-upgrade scenarios and prove the new model reduces false positives on protected paths.
+- [x] Benchmark before/after CPU usage under normal load and during synthetic event storms.
+- [x] Validate journald-first behavior on systemd hosts and confirm sane fallback on legacy log-file setups.
 - [x] Simulate ransomware-like rename/write workloads and compare alert quality against the current detector.
 - [x] Document the default trust seeds, tuning knobs, and operator-facing severity semantics.
 
@@ -142,3 +142,9 @@
 - 2026-03-20: Operator-facing docs now describe the seeded maintenance trust classes, the primary scoring/correlation tuning knobs, the severity-band semantics, and the new fleet baseline sharing path in `README.md`.
 - Regression coverage for this pass adds agent scorer/shared-risk tests for fleet-shared process downgrades and identity matching, a benign-maintenance versus ransomware-workload comparison test, and server DB tests proving shared process baselines are exported only for multi-agent low-risk histories and are suppressed when any `high_risk` history exists.
 - Verification for this pass: `cargo fmt --all`, `cargo test -p bannkenn-agent --tests`, `cargo test -p bannkenn-server`, and `cargo clippy -p bannkenn-agent -p bannkenn-server --tests -- -D warnings`.
+- 2026-03-20: Remaining verification is now backed by explicit maintenance-scenario coverage plus a repeatable runtime harness in `scripts/verify-runtime-checks.sh`.
+- Protected-path false-positive verification now covers package-update (`apt-get`), `snapd`, and `unattended-upgrade` protected-path scenarios in addition to the existing `fwupd` scorer regression; all four stay at `observed` severity in the current model.
+- Runtime verification on this Ubuntu 24.04 systemd host recorded `journald_check=passed`, `normal_cpu_pct=0.20`, and `storm_cpu_pct=173.00` for a clean workspace build under a single-log idle run and a 100k-line synthetic auth-log storm.
+- Legacy fallback remains covered by the existing watcher regression `build_log_source_plans_keeps_legacy_files_without_journald`, while the systemd preference path remains covered by `build_log_source_plans_prefers_single_journald_auth_stream` and the live runtime harness above.
+- Live-host caveat: the currently installed `/usr/local/bin/bannkenn-agent run` service on this host is still consuming about `42.5%` CPU and repeatedly polling stale Docker JSON log paths, so the deployment itself needs a refresh or config cleanup even though the workspace build passed the verification harness.
+- Verification for this pass: `cargo test -p bannkenn-agent protected_path_activity_stays_observed -- --nocapture`, `cargo test -p bannkenn-agent build_log_source_plans -- --nocapture`, and `bash scripts/verify-runtime-checks.sh`.

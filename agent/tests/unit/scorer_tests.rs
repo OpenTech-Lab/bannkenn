@@ -371,6 +371,154 @@ fn trusted_maintenance_activity_is_downgraded() {
 }
 
 #[test]
+fn package_update_protected_path_activity_stays_observed() {
+    let scorer = CompositeBehaviorScorer::from_config(&ContainmentConfig::default());
+    let batch = FileActivityBatch {
+        timestamp: Utc::now(),
+        source: "userspace_polling".to_string(),
+        watched_root: "/var/lib/dpkg".to_string(),
+        poll_interval_ms: 1000,
+        file_ops: FileOperationCounts {
+            modified: 6,
+            ..Default::default()
+        },
+        touched_paths: vec!["/var/lib/dpkg/status".to_string()],
+        protected_paths_touched: vec!["/var/lib/dpkg/status".to_string()],
+        rename_extension_targets: Vec::new(),
+        content_indicators: Default::default(),
+        bytes_written: 2 * 1_048_576,
+        io_rate_bytes_per_sec: 2 * 1_048_576,
+    };
+    let correlation = CorrelationResult {
+        process: Some({
+            let mut proc = process(
+                102,
+                "apt-get",
+                "/usr/bin/apt-get",
+                "/usr/bin/apt-get upgrade",
+            );
+            proc.parent_process_name = Some("systemd".to_string());
+            proc.parent_command_line = Some("systemd".to_string());
+            proc.service_unit = Some("apt-daily-upgrade.service".to_string());
+            proc.trust_class = ProcessTrustClass::TrustedPackageManaged;
+            proc.maintenance_activity = Some(MaintenanceActivity::PackageManagerHelper);
+            proc
+        }),
+        protected_hits: 1,
+    };
+
+    let event = scorer.score(&batch, &correlation);
+
+    assert_eq!(
+        event.level,
+        BehaviorLevel::Observed,
+        "score={} reasons={:?}",
+        event.score,
+        event.reasons
+    );
+}
+
+#[test]
+fn snapd_protected_path_activity_stays_observed() {
+    let scorer = CompositeBehaviorScorer::from_config(&ContainmentConfig::default());
+    let batch = FileActivityBatch {
+        timestamp: Utc::now(),
+        source: "userspace_polling".to_string(),
+        watched_root: "/var/lib/snapd".to_string(),
+        poll_interval_ms: 1000,
+        file_ops: FileOperationCounts {
+            modified: 4,
+            ..Default::default()
+        },
+        touched_paths: vec!["/var/lib/snapd/state.json".to_string()],
+        protected_paths_touched: vec!["/var/lib/snapd/state.json".to_string()],
+        rename_extension_targets: Vec::new(),
+        content_indicators: Default::default(),
+        bytes_written: 1_048_576,
+        io_rate_bytes_per_sec: 1_048_576,
+    };
+    let correlation = CorrelationResult {
+        process: Some({
+            let mut proc = process(
+                103,
+                "snapd",
+                "/usr/lib/snapd/snapd",
+                "/usr/lib/snapd/snapd",
+            );
+            proc.parent_process_name = Some("systemd".to_string());
+            proc.parent_command_line = Some("systemd".to_string());
+            proc.service_unit = Some("snapd.service".to_string());
+            proc.trust_class = ProcessTrustClass::TrustedPackageManaged;
+            proc.maintenance_activity = Some(MaintenanceActivity::TrustedMaintenance);
+            proc
+        }),
+        protected_hits: 1,
+    };
+
+    let event = scorer.score(&batch, &correlation);
+
+    assert_eq!(
+        event.level,
+        BehaviorLevel::Observed,
+        "score={} reasons={:?}",
+        event.score,
+        event.reasons
+    );
+    assert!(event
+        .reasons
+        .iter()
+        .any(|reason| reason == "trusted maintenance activity"));
+}
+
+#[test]
+fn unattended_upgrade_protected_path_activity_stays_observed() {
+    let scorer = CompositeBehaviorScorer::from_config(&ContainmentConfig::default());
+    let batch = FileActivityBatch {
+        timestamp: Utc::now(),
+        source: "userspace_polling".to_string(),
+        watched_root: "/var/lib/apt".to_string(),
+        poll_interval_ms: 1000,
+        file_ops: FileOperationCounts {
+            modified: 5,
+            ..Default::default()
+        },
+        touched_paths: vec!["/var/lib/apt/lists/partial/pkg".to_string()],
+        protected_paths_touched: vec!["/var/lib/apt/lists/partial/pkg".to_string()],
+        rename_extension_targets: Vec::new(),
+        content_indicators: Default::default(),
+        bytes_written: 1_048_576,
+        io_rate_bytes_per_sec: 1_048_576,
+    };
+    let correlation = CorrelationResult {
+        process: Some({
+            let mut proc = process(
+                104,
+                "unattended-upgrade",
+                "/usr/bin/unattended-upgrade",
+                "/usr/bin/unattended-upgrade --download-only",
+            );
+            proc.parent_process_name = Some("systemd".to_string());
+            proc.parent_command_line = Some("systemd".to_string());
+            proc.service_unit = Some("apt-daily-upgrade.service".to_string());
+            proc.trust_class = ProcessTrustClass::TrustedPackageManaged;
+            proc.maintenance_activity = Some(MaintenanceActivity::PackageManagerHelper);
+            proc
+        }),
+        protected_hits: 1,
+    };
+
+    let event = scorer.score(&batch, &correlation);
+
+    assert_eq!(
+        event.level,
+        BehaviorLevel::Observed,
+        "score={} reasons={:?}",
+        event.score,
+        event.reasons
+    );
+}
+
+#[test]
 fn trusted_containerized_service_temp_activity_is_downgraded() {
     let scorer = CompositeBehaviorScorer::from_config(&ContainmentConfig::default());
     let batch = batch_with_ops(
