@@ -33,7 +33,7 @@ pub enum OutboxPayload {
         timestamp: Option<String>,
     },
     BehaviorEvent {
-        report: BehaviorEventUpload,
+        report: Box<BehaviorEventUpload>,
     },
     ContainmentStatus {
         report: ContainmentStatusUpload,
@@ -127,7 +127,7 @@ impl Outbox {
 impl OutboxPayload {
     pub fn from_behavior_event(event: &BehaviorEvent) -> Self {
         Self::BehaviorEvent {
-            report: BehaviorEventUpload::from(event),
+            report: Box::new(BehaviorEventUpload::from(event)),
         }
     }
 

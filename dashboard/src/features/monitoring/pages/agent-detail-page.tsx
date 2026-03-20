@@ -56,6 +56,43 @@ type LogBlockTab = 'behavior' | 'ip';
 type EventTab = 'behavior' | 'containment';
 type IpTab = 'telemetry' | 'decisions';
 
+function formatParentChain(chain: BehaviorEvent['parent_chain']) {
+  if (!chain.length) {
+    return 'unknown';
+  }
+
+  return chain
+    .map((entry) => {
+      const label = entry.process_name ?? entry.exe_path ?? `pid ${entry.pid}`;
+      const details = [
+        entry.exe_path ? `exe: ${entry.exe_path}` : null,
+        entry.command_line ? `cmd: ${entry.command_line}` : null,
+      ].filter((value): value is string => Boolean(value));
+      return details.length ? `${label} (${details.join(' / ')})` : label;
+    })
+    .join(' -> ');
+}
+
+function formatOrchestrator(orchestrator: BehaviorEvent['orchestrator']) {
+  const parts = [orchestrator.platform, orchestrator.namespace, orchestrator.workload].filter(
+    (value): value is string => Boolean(value)
+  );
+  return parts.length ? parts.join(' / ') : 'none';
+}
+
+function formatContainerMounts(mounts: BehaviorEvent['container_mounts']) {
+  if (!mounts.length) {
+    return 'none';
+  }
+
+  return mounts
+    .map((mount) => {
+      const source = mount.source ?? mount.name ?? 'unknown';
+      return `${mount.mount_type}: ${source} -> ${mount.destination}`;
+    })
+    .join(' ; ');
+}
+
 export function AgentDetailPage() {
   const params = useParams<{ id: string }>();
   const id = params?.id;
@@ -468,8 +505,67 @@ export function AgentDetailPage() {
                       <TableBody>
                         {behaviorEvents.map((event) => (
                           <TableRow key={event.id}>
-                            <TableCell className="max-w-[160px] truncate font-medium text-white">
-                              {event.process_name ?? event.exe_path ?? 'unknown'}
+                            <TableCell className="max-w-[240px]">
+                              <div className="space-y-1">
+                                <p className="truncate font-medium text-white">
+                                  {event.process_name ?? event.exe_path ?? 'unknown'}
+                                </p>
+                                <p className="truncate text-xs text-muted-foreground">
+                                  exe: {event.exe_path ?? 'unknown'}
+                                </p>
+                                <p className="truncate text-xs text-muted-foreground">
+                                  parent:{' '}
+                                  {event.parent_process_name ??
+                                    event.parent_command_line ??
+                                    'unknown'}
+                                </p>
+                                <p className="truncate text-xs text-muted-foreground">
+                                  trust: {event.trust_class ?? 'unknown'}
+                                  {event.service_unit ? ` / unit: ${event.service_unit}` : ''}
+                                  {event.trust_policy_name
+                                    ? ` / policy: ${event.trust_policy_name}`
+                                    : ''}
+                                </p>
+                                <p className="truncate text-xs text-muted-foreground">
+                                  maintenance: {event.maintenance_activity ?? 'none'}
+                                </p>
+                                <p className="truncate text-xs text-muted-foreground">
+                                  package: {event.package_name ?? 'unknown'}
+                                  {event.package_manager
+                                    ? ` / manager: ${event.package_manager}`
+                                    : ''}
+                                </p>
+                                <p className="break-words text-xs text-muted-foreground">
+                                  ancestry: {formatParentChain(event.parent_chain)}
+                                </p>
+                                <p className="truncate text-xs text-muted-foreground">
+                                  ids: pid {event.pid ?? '—'} / ppid {event.parent_pid ?? '—'} / uid
+                                  :gid {event.uid ?? '—'}:{event.gid ?? '—'}
+                                </p>
+                                <p className="truncate text-xs text-muted-foreground">
+                                  first seen:{' '}
+                                  {event.first_seen_at
+                                    ? formatTimestamp(event.first_seen_at)
+                                    : 'unknown'}
+                                </p>
+                                <p className="truncate text-xs text-muted-foreground">
+                                  container:{' '}
+                                  {event.container_runtime && event.container_id
+                                    ? `${event.container_runtime}:${event.container_id}`
+                                    : event.container_image
+                                      ? 'runtime unknown'
+                                      : 'host'}
+                                </p>
+                                <p className="truncate text-xs text-muted-foreground">
+                                  image: {event.container_image ?? 'unknown'}
+                                </p>
+                                <p className="truncate text-xs text-muted-foreground">
+                                  orchestrator: {formatOrchestrator(event.orchestrator)}
+                                </p>
+                                <p className="break-words text-xs text-muted-foreground">
+                                  mounts: {formatContainerMounts(event.container_mounts)}
+                                </p>
+                              </div>
                             </TableCell>
                             <TableCell>
                               <Badge

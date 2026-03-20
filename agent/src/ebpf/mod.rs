@@ -9,7 +9,8 @@ use crate::ebpf::events::{
 #[cfg(any(target_os = "linux", test))]
 use crate::ebpf::events::{RawBehaviorEventKind, RawBehaviorRingEvent};
 use crate::ebpf::lifecycle::{LifecycleEvent, ProcessLifecycleTracker};
-use crate::scorer::{CompositeBehaviorScorer, Scorer};
+use crate::scorer::CompositeBehaviorScorer;
+use crate::shared_risk::SharedRiskSnapshot;
 #[cfg(target_os = "linux")]
 use anyhow::anyhow;
 use anyhow::{Context, Result};
@@ -22,13 +23,15 @@ use aya::{
 #[cfg(target_os = "linux")]
 use aya_log::EbpfLogger;
 use chrono::Utc;
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{hash_map::Entry, BTreeSet, HashMap};
 use std::fs;
 use std::future::Future;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
+use std::sync::Arc;
 use std::time::Instant;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, RwLock};
 use tokio::time::{interval, Duration};
 
 #[cfg(unix)]
@@ -63,6 +66,12 @@ const AYA_TRACE_ATTACHMENTS: &[(&str, &str, &str)] = &[
     ("bk_file_unlinkat", "syscalls", "sys_enter_unlinkat"),
 ];
 const RECENT_TEMP_WRITE_WINDOW_SECS: u64 = 60;
+const USERSPACE_MAX_IDLE_SKIP_POLLS: u32 = 15;
+const AYA_MAX_RING_EVENTS_PER_POLL: usize = 512;
+const AYA_BACKPRESSURE_WARNING_COOLDOWN_SECS: u64 = 30;
+const CONTENT_PROFILE_MIN_SAMPLE_BYTES: usize = 256;
+const HIGH_ENTROPY_THRESHOLD_X100: u16 = 720;
+const HIGH_ENTROPY_DELTA_X100: u16 = 80;
 type BackendPollFuture<'a> = Pin<Box<dyn Future<Output = Result<BackendPollResult>> + Send + 'a>>;
 
 trait BehaviorSensorBackend: Send + std::fmt::Debug {
@@ -84,7 +93,9 @@ pub struct SensorManager {
     lifecycle: ProcessLifecycleTracker,
     correlator: ProcessCorrelator,
     scorer: CompositeBehaviorScorer,
+    shared_risk_snapshot: Arc<RwLock<SharedRiskSnapshot>>,
     recent_temp_writes: HashMap<String, RecentTempWrite>,
+    content_profile_tracker: Option<ContentProfileTracker>,
 }
 
 #[derive(Debug)]
@@ -100,6 +111,7 @@ struct AyaSensorBackend {
     ebpf: Ebpf,
     ring_buf: RingBuf<MapData>,
     logger: Option<EbpfLogger>,
+    backpressure_warning: RateLimitedWarning,
 }
 
 #[cfg(target_os = "linux")]
@@ -116,6 +128,8 @@ impl std::fmt::Debug for AyaSensorBackend {
 struct PollingRootState {
     root: PathBuf,
     previous: Option<HashMap<FileIdentity, FileSnapshot>>,
+    idle_scan_streak: u32,
+    skip_polls_remaining: u32,
 }
 
 #[repr(C)]
@@ -134,7 +148,7 @@ struct FileIdentity {
     ino: u64,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct FileSnapshot {
     path: PathBuf,
     len: u64,
@@ -145,6 +159,28 @@ struct FileSnapshot {
 struct RecentTempWrite {
     recorded_at: Instant,
     watched_root: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct FileContentProfile {
+    sample_bytes: u16,
+    entropy_x100: u16,
+    utf8_valid: bool,
+}
+
+#[derive(Debug)]
+struct ContentProfileTracker {
+    roots: Vec<PathBuf>,
+    sample_bytes: usize,
+    initialized: bool,
+    profiles: HashMap<String, FileContentProfile>,
+}
+
+#[derive(Debug, Clone)]
+struct RateLimitedWarning {
+    cooldown: Duration,
+    last_emitted: Option<Instant>,
+    suppressed: u32,
 }
 
 impl Default for RawPathPrefixEntry {
@@ -170,9 +206,66 @@ impl RawPathPrefixEntry {
     }
 }
 
+impl PollingRootState {
+    fn should_scan(&mut self) -> bool {
+        if self.skip_polls_remaining == 0 {
+            return true;
+        }
+
+        self.skip_polls_remaining = self.skip_polls_remaining.saturating_sub(1);
+        false
+    }
+
+    fn record_idle_scan(&mut self) {
+        self.idle_scan_streak = self.idle_scan_streak.saturating_add(1);
+        self.skip_polls_remaining = idle_skip_polls(self.idle_scan_streak);
+    }
+
+    fn record_activity(&mut self) {
+        self.idle_scan_streak = 0;
+        self.skip_polls_remaining = 0;
+    }
+}
+
+impl RateLimitedWarning {
+    fn new(cooldown: Duration) -> Self {
+        Self {
+            cooldown,
+            last_emitted: None,
+            suppressed: 0,
+        }
+    }
+
+    fn next_message(&mut self, message: impl Into<String>) -> Option<String> {
+        let now = Instant::now();
+        if let Some(last_emitted) = self.last_emitted {
+            if now.duration_since(last_emitted) < self.cooldown {
+                self.suppressed = self.suppressed.saturating_add(1);
+                return None;
+            }
+        }
+
+        let message = message.into();
+        let rendered = if self.suppressed == 0 {
+            message
+        } else {
+            format!(
+                "{} (suppressed {} similar warning(s))",
+                message, self.suppressed
+            )
+        };
+        self.last_emitted = Some(now);
+        self.suppressed = 0;
+        Some(rendered)
+    }
+}
+
 impl SensorManager {
     #[allow(unreachable_code)]
-    pub fn from_config(config: &ContainmentConfig) -> Option<Self> {
+    pub fn from_config(
+        config: &ContainmentConfig,
+        shared_risk_snapshot: Arc<RwLock<SharedRiskSnapshot>>,
+    ) -> Option<Self> {
         if !config.enabled {
             return None;
         }
@@ -194,6 +287,7 @@ impl SensorManager {
         if roots.is_empty() {
             return None;
         }
+        let content_profile_roots = roots.clone();
 
         Some(Self {
             poll_interval: Duration::from_millis(config.poll_interval_ms.max(100)),
@@ -206,7 +300,12 @@ impl SensorManager {
             lifecycle: ProcessLifecycleTracker::new(config),
             correlator: ProcessCorrelator::new(),
             scorer: CompositeBehaviorScorer::from_config(config),
+            shared_risk_snapshot,
             recent_temp_writes: HashMap::new(),
+            content_profile_tracker: Some(ContentProfileTracker::new(
+                content_profile_roots,
+                config.content_profile_sample_bytes,
+            )),
         })
     }
 
@@ -230,7 +329,10 @@ impl SensorManager {
 
     pub async fn poll_once(&mut self) -> Result<Vec<BehaviorEvent>> {
         let mut lifecycle = self.lifecycle.refresh().await?;
-        let polled = self.backend.poll_batches(&self.protected_paths).await?;
+        let mut polled = self.backend.poll_batches(&self.protected_paths).await?;
+        polled.batches = coalesce_activity_batches(polled.batches);
+        self.annotate_content_indicators(&mut polled.batches)
+            .await?;
         merge_lifecycle_events(&mut lifecycle.events, polled.lifecycle_events);
         let now = Instant::now();
         self.prune_recent_temp_writes(now);
@@ -246,19 +348,44 @@ impl SensorManager {
         }
 
         let mut events = self.build_temp_exec_events(&lifecycle);
+        let shared_risk_snapshot = self.shared_risk_snapshot.read().await.clone();
         for batch in polled.batches {
             let correlation = self.correlator.correlate(&batch, &lifecycle);
             if correlation.process.is_none() && correlation.protected_hits > 0 {
                 continue;
             }
 
-            let event = self.scorer.score(&batch, &correlation);
+            let event =
+                self.scorer
+                    .score_with_shared_risk(&batch, &correlation, &shared_risk_snapshot);
             if !event.file_ops.is_empty() {
                 events.push(event);
             }
         }
 
         Ok(events)
+    }
+
+    async fn annotate_content_indicators(
+        &mut self,
+        batches: &mut Vec<FileActivityBatch>,
+    ) -> Result<()> {
+        let Some(mut tracker) = self.content_profile_tracker.take() else {
+            return Ok(());
+        };
+        let mut local_batches = std::mem::take(batches);
+        let (tracker, local_batches) = tokio::task::spawn_blocking(
+            move || -> (ContentProfileTracker, Vec<FileActivityBatch>) {
+                tracker.ensure_initialized();
+                tracker.annotate_batches(&mut local_batches);
+                (tracker, local_batches)
+            },
+        )
+        .await
+        .context("content profile task join failed")?;
+        self.content_profile_tracker = Some(tracker);
+        *batches = local_batches;
+        Ok(())
     }
 
     fn prune_recent_temp_writes(&mut self, now: Instant) {
@@ -333,20 +460,40 @@ impl BehaviorSensorBackend for UserspacePollingBackend {
             let mut result = BackendPollResult::default();
 
             for root_state in &mut self.roots {
+                if !root_state.should_scan() {
+                    continue;
+                }
+
                 let root = root_state.root.clone();
                 let snapshot = tokio::task::spawn_blocking(move || snapshot_root(&root))
                     .await
                     .context("snapshot task join failed")??;
 
-                let Some(previous) = root_state.previous.replace(snapshot.clone()) else {
+                let Some(previous) = root_state.previous.replace(snapshot) else {
                     continue;
                 };
+                let changed = root_state
+                    .previous
+                    .as_ref()
+                    .map(|current| &previous != current)
+                    .unwrap_or(false);
+
+                if !changed {
+                    root_state.record_idle_scan();
+                    continue;
+                }
+
+                root_state.record_activity();
+                let current = root_state
+                    .previous
+                    .as_ref()
+                    .expect("current snapshot should be present");
 
                 let Some(batch) = build_activity_batch(
                     USERSPACE_SENSOR_SOURCE,
                     &root_state.root,
                     &previous,
-                    &snapshot,
+                    current,
                     protected_paths,
                     self.poll_interval_ms,
                 ) else {
@@ -393,6 +540,9 @@ impl AyaSensorBackend {
             ebpf,
             ring_buf,
             logger,
+            backpressure_warning: RateLimitedWarning::new(Duration::from_secs(
+                AYA_BACKPRESSURE_WARNING_COOLDOWN_SECS,
+            )),
         })
     }
 }
@@ -408,7 +558,12 @@ impl BehaviorSensorBackend for AyaSensorBackend {
             let _ = self.ebpf.maps().count();
             let _ = self.logger.as_ref();
             let mut result = BackendPollResult::default();
-            while let Some(item) = self.ring_buf.next() {
+            let mut drained = 0usize;
+            while drained < AYA_MAX_RING_EVENTS_PER_POLL {
+                let Some(item) = self.ring_buf.next() else {
+                    break;
+                };
+                drained = drained.saturating_add(1);
                 if let Some(raw) = RawBehaviorRingEvent::from_bytes(&item) {
                     if let Some(lifecycle_event) = raw_ring_event_to_lifecycle_event(raw) {
                         result.lifecycle_events.push(lifecycle_event);
@@ -419,6 +574,14 @@ impl BehaviorSensorBackend for AyaSensorBackend {
                     {
                         result.batches.push(batch);
                     }
+                }
+            }
+            if drained == AYA_MAX_RING_EVENTS_PER_POLL {
+                if let Some(message) = self.backpressure_warning.next_message(format!(
+                    "Containment ring buffer drain hit the per-poll cap of {}; continuing on the next tick",
+                    AYA_MAX_RING_EVENTS_PER_POLL
+                )) {
+                    tracing::warn!("{}", message);
                 }
             }
             Ok(result)
@@ -458,6 +621,8 @@ fn build_backend(
             .map(|root| PollingRootState {
                 root,
                 previous: None,
+                idle_scan_streak: 0,
+                skip_polls_remaining: 0,
             })
             .collect(),
     })
@@ -544,6 +709,79 @@ fn merge_lifecycle_events(
     }
 }
 
+fn idle_skip_polls(idle_scan_streak: u32) -> u32 {
+    ((1u32 << idle_scan_streak.min(4)) - 1).min(USERSPACE_MAX_IDLE_SKIP_POLLS)
+}
+
+fn coalesce_activity_batches(batches: Vec<FileActivityBatch>) -> Vec<FileActivityBatch> {
+    if batches.len() <= 1 {
+        return batches;
+    }
+
+    let mut merged = HashMap::<(String, String), FileActivityBatch>::new();
+    for batch in batches {
+        let key = (batch.source.clone(), batch.watched_root.clone());
+        match merged.entry(key) {
+            Entry::Occupied(mut entry) => merge_activity_batch(entry.get_mut(), batch),
+            Entry::Vacant(entry) => {
+                entry.insert(batch);
+            }
+        }
+    }
+
+    let mut coalesced = merged.into_values().collect::<Vec<_>>();
+    coalesced.sort_by(|left, right| {
+        left.watched_root
+            .cmp(&right.watched_root)
+            .then_with(|| left.source.cmp(&right.source))
+    });
+    coalesced
+}
+
+fn merge_activity_batch(target: &mut FileActivityBatch, mut incoming: FileActivityBatch) {
+    target.timestamp = target.timestamp.max(incoming.timestamp);
+    target.poll_interval_ms = target.poll_interval_ms.max(incoming.poll_interval_ms);
+    target.file_ops.created = target
+        .file_ops
+        .created
+        .saturating_add(incoming.file_ops.created);
+    target.file_ops.modified = target
+        .file_ops
+        .modified
+        .saturating_add(incoming.file_ops.modified);
+    target.file_ops.renamed = target
+        .file_ops
+        .renamed
+        .saturating_add(incoming.file_ops.renamed);
+    target.file_ops.deleted = target
+        .file_ops
+        .deleted
+        .saturating_add(incoming.file_ops.deleted);
+    target.bytes_written = target.bytes_written.saturating_add(incoming.bytes_written);
+    target.io_rate_bytes_per_sec = target
+        .io_rate_bytes_per_sec
+        .saturating_add(incoming.io_rate_bytes_per_sec);
+    target.touched_paths.append(&mut incoming.touched_paths);
+    target.touched_paths.sort();
+    target.touched_paths.dedup();
+    target
+        .protected_paths_touched
+        .append(&mut incoming.protected_paths_touched);
+    target.protected_paths_touched.sort();
+    target.protected_paths_touched.dedup();
+    target
+        .rename_extension_targets
+        .append(&mut incoming.rename_extension_targets);
+    target.content_indicators.unreadable_rewrites = target
+        .content_indicators
+        .unreadable_rewrites
+        .saturating_add(incoming.content_indicators.unreadable_rewrites);
+    target.content_indicators.high_entropy_rewrites = target
+        .content_indicators
+        .high_entropy_rewrites
+        .saturating_add(incoming.content_indicators.high_entropy_rewrites);
+}
+
 #[cfg(target_os = "linux")]
 fn raw_ring_event_to_lifecycle_event(raw: RawBehaviorRingEvent) -> Option<LifecycleEvent> {
     let process_name = raw.process_name_string();
@@ -607,6 +845,8 @@ fn raw_ring_event_to_batch(
         file_ops,
         touched_paths,
         protected_paths_touched,
+        rename_extension_targets: Vec::new(),
+        content_indicators: Default::default(),
         bytes_written: raw.bytes_written,
         io_rate_bytes_per_sec: if poll_interval_ms == 0 {
             raw.bytes_written
@@ -627,6 +867,7 @@ fn build_activity_batch(
     let mut file_ops = FileOperationCounts::default();
     let mut touched_paths = BTreeSet::new();
     let mut protected_touched = BTreeSet::new();
+    let mut rename_extension_targets = Vec::new();
     let mut bytes_written = 0u64;
 
     for (identity, now) in current {
@@ -634,6 +875,11 @@ fn build_activity_batch(
             Some(before) => {
                 if before.path != now.path {
                     file_ops.renamed = file_ops.renamed.saturating_add(1);
+                    if let Some(extension) =
+                        renamed_extension_target(before.path.as_path(), now.path.as_path())
+                    {
+                        rename_extension_targets.push(extension);
+                    }
                     insert_touched_path(
                         before.path.as_path(),
                         protected_paths,
@@ -702,9 +948,169 @@ fn build_activity_batch(
         file_ops,
         touched_paths: touched_paths.into_iter().collect(),
         protected_paths_touched: protected_touched.into_iter().collect(),
+        rename_extension_targets,
+        content_indicators: Default::default(),
         bytes_written,
         io_rate_bytes_per_sec,
     })
+}
+
+fn renamed_extension_target(before: &Path, after: &Path) -> Option<String> {
+    let previous = normalized_extension(before)?;
+    let current = normalized_extension(after)?;
+    (previous != current).then_some(current)
+}
+
+fn normalized_extension(path: &Path) -> Option<String> {
+    let extension = path.extension()?.to_str()?.trim().to_ascii_lowercase();
+    (!extension.is_empty()).then_some(extension)
+}
+
+impl ContentProfileTracker {
+    fn new(roots: Vec<PathBuf>, sample_bytes: u64) -> Self {
+        let sample_bytes = usize::try_from(sample_bytes)
+            .ok()
+            .filter(|value| *value >= CONTENT_PROFILE_MIN_SAMPLE_BYTES)
+            .unwrap_or(CONTENT_PROFILE_MIN_SAMPLE_BYTES);
+
+        Self {
+            roots,
+            sample_bytes,
+            initialized: false,
+            profiles: HashMap::new(),
+        }
+    }
+
+    fn ensure_initialized(&mut self) {
+        if self.initialized {
+            return;
+        }
+
+        let mut profiles = HashMap::new();
+        for root in &self.roots {
+            collect_content_profiles(root, self.sample_bytes, &mut profiles);
+        }
+        self.profiles = profiles;
+        self.initialized = true;
+    }
+
+    fn annotate_batches(&mut self, batches: &mut [FileActivityBatch]) {
+        for batch in batches {
+            self.annotate_batch(batch);
+        }
+    }
+
+    fn annotate_batch(&mut self, batch: &mut FileActivityBatch) {
+        let mut content_indicators = crate::ebpf::events::FileContentIndicators::default();
+        let touched_paths = batch
+            .touched_paths
+            .iter()
+            .chain(batch.protected_paths_touched.iter())
+            .cloned()
+            .collect::<BTreeSet<_>>();
+
+        for path in touched_paths {
+            let previous = self.profiles.get(&path).copied();
+            match sample_file_content_profile(Path::new(&path), self.sample_bytes) {
+                Some(current) => {
+                    if let Some(previous) = previous {
+                        if is_unreadable_rewrite(previous, current) {
+                            content_indicators.unreadable_rewrites =
+                                content_indicators.unreadable_rewrites.saturating_add(1);
+                        }
+                        if is_high_entropy_rewrite(previous, current) {
+                            content_indicators.high_entropy_rewrites =
+                                content_indicators.high_entropy_rewrites.saturating_add(1);
+                        }
+                    }
+                    self.profiles.insert(path, current);
+                }
+                None => {
+                    self.profiles.remove(&path);
+                }
+            }
+        }
+
+        batch.content_indicators = content_indicators;
+    }
+}
+
+fn collect_content_profiles(
+    root: &Path,
+    sample_bytes: usize,
+    out: &mut HashMap<String, FileContentProfile>,
+) {
+    let Ok(metadata) = fs::symlink_metadata(root) else {
+        return;
+    };
+
+    if metadata.file_type().is_symlink() {
+        return;
+    }
+
+    if metadata.is_file() {
+        if let Some(profile) = sample_file_content_profile(root, sample_bytes) {
+            out.insert(root.display().to_string(), profile);
+        }
+        return;
+    }
+
+    if !metadata.is_dir() {
+        return;
+    }
+
+    let Ok(entries) = fs::read_dir(root) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        collect_content_profiles(&entry.path(), sample_bytes, out);
+    }
+}
+
+fn sample_file_content_profile(path: &Path, sample_bytes: usize) -> Option<FileContentProfile> {
+    let mut file = fs::File::open(path).ok()?;
+    let mut sample = vec![0u8; sample_bytes];
+    let read = file.read(&mut sample).ok()?;
+    if read < CONTENT_PROFILE_MIN_SAMPLE_BYTES {
+        return None;
+    }
+    sample.truncate(read);
+
+    Some(FileContentProfile {
+        sample_bytes: read.min(u16::MAX as usize) as u16,
+        entropy_x100: shannon_entropy_x100(&sample),
+        utf8_valid: std::str::from_utf8(&sample).is_ok(),
+    })
+}
+
+fn shannon_entropy_x100(sample: &[u8]) -> u16 {
+    let mut counts = [0u32; 256];
+    for byte in sample {
+        counts[*byte as usize] = counts[*byte as usize].saturating_add(1);
+    }
+
+    let total = sample.len() as f64;
+    let mut entropy = 0.0f64;
+    for count in counts.into_iter().filter(|count| *count > 0) {
+        let probability = f64::from(count) / total;
+        entropy -= probability * probability.log2();
+    }
+
+    (entropy * 100.0).round().clamp(0.0, f64::from(u16::MAX)) as u16
+}
+
+fn is_unreadable_rewrite(previous: FileContentProfile, current: FileContentProfile) -> bool {
+    previous.utf8_valid && !current.utf8_valid
+}
+
+fn is_high_entropy_rewrite(previous: FileContentProfile, current: FileContentProfile) -> bool {
+    previous.sample_bytes >= CONTENT_PROFILE_MIN_SAMPLE_BYTES as u16
+        && current.sample_bytes >= CONTENT_PROFILE_MIN_SAMPLE_BYTES as u16
+        && current.entropy_x100 >= HIGH_ENTROPY_THRESHOLD_X100
+        && current.entropy_x100
+            >= previous
+                .entropy_x100
+                .saturating_add(HIGH_ENTROPY_DELTA_X100)
 }
 
 fn process_info_from_tracked(
@@ -712,14 +1118,29 @@ fn process_info_from_tracked(
 ) -> crate::ebpf::events::ProcessInfo {
     crate::ebpf::events::ProcessInfo {
         pid: process.pid,
+        parent_pid: process.parent_pid,
+        uid: process.uid,
+        gid: process.gid,
+        service_unit: process.service_unit.clone(),
+        first_seen_at: process.first_seen_at,
+        trust_class: process.trust_class,
+        trust_policy_name: process.trust_policy_name.clone(),
+        maintenance_activity: process.maintenance_activity,
+        trust_policy_visibility: process.trust_policy_visibility,
+        package_name: process.package_name.clone(),
+        package_manager: process.package_manager.clone(),
         process_name: process.process_name.clone(),
         exe_path: process.exe_path.clone(),
         command_line: process.command_line.clone(),
         correlation_hits: 0,
         parent_process_name: process.parent_process_name.clone(),
         parent_command_line: process.parent_command_line.clone(),
+        parent_chain: process.parent_chain.clone(),
         container_runtime: process.container_runtime.clone(),
         container_id: process.container_id.clone(),
+        container_image: process.container_image.clone(),
+        orchestrator: process.orchestrator.clone(),
+        container_mounts: process.container_mounts.clone(),
     }
 }
 

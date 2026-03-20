@@ -193,6 +193,10 @@
 - If a phase summary calls out concrete remaining gaps, add them as explicit tasks in `tasks/todo.md` before picking the work back up.
 - Do not leave actionable follow-up only in prose or final-answer caveats; keep the repo task log aligned with the implementation queue.
 
+### "Keep going" work must re-check older open prerequisites before jumping to a later phase
+- If an earlier phase still has a concrete unfinished prerequisite, do not keep advancing a later phase just because newer work is available.
+- Before continuing implementation, scan `tasks/todo.md` for older unchecked items that block or weaken the later phase and either finish them first or state explicitly why they are deferred.
+
 ### Deferred runtime-validation caveats belong in optional tasks, not only in handoff text
 - If work is complete except for privileged/live-host validation, add that gap to the optional follow-up section in `tasks/todo.md`.
 - That keeps future execution work discoverable and avoids losing an important validation step in reply text alone.
@@ -204,6 +208,10 @@
 ### When the user asks to scrub sensitive data, clean current files before discussing history rewrite
 - Do not stop at explaining `git filter-repo` if the working tree still contains the exposed value in docs, tests, scripts, or task notes.
 - First remove the live occurrences the user can still see in the repo, then handle history rewrite as a second step.
+
+### When a user calls out a warning or caveat, decide whether it is a repo task and track it before moving on
+- Do not leave build warnings or operational caveats only in reply text once the user highlights them as issues to fix.
+- If the warning is actionable in the repo, add it to `tasks/todo.md`, fix it, and only leave truly environment-bound validation as an open verification task.
 
 ### Installer and setup scripts must take operator-specific network values from local config, not repo defaults
 - Do not hard-code live IPs, hostnames, tokens, or deployment-specific paths into install/setup flows when a local `.env` or explicit CLI input is more appropriate.
@@ -250,6 +258,8 @@
 - Add a regression test for the exact cgroup shape reported in review whenever a new runtime prefix is supported.
 
 ### Overlapping score suppressors must aggregate by component, not by reason bucket
+- When updating `.coderabbit.yaml`, validate against the current CodeRabbit schema instead of reusing old examples or inventing generic top-level keys.
+- In this repo, invalid top-level keys like `version`, `auto_review`, and `instructions` should be replaced with supported fields such as `language`, `tone_instructions`, and `reviews.auto_review`.
 - If multiple benign contexts suppress the same rename/write/delete/throughput burst, compute suppression once per component and then attach all matching reasons.
 - Do not let independent "known benign" branches each subtract the full component set, or one process can be downgraded more than intended just because contexts overlap.
 - Add a regression test for at least one realistic overlap case whenever a new benign-context suppressor is introduced.

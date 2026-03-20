@@ -1,7 +1,8 @@
 #![allow(dead_code)]
 
 use bannkenn_server::db::{
-    BehaviorFileOpsRow, ContainmentOutcomeRow, Db, NewBehaviorEvent, NewContainmentEvent,
+    BehaviorContainerMountRow, BehaviorFileOpsRow, BehaviorOrchestratorRow,
+    BehaviorParentChainEntry, ContainmentOutcomeRow, Db, NewBehaviorEvent, NewContainmentEvent,
 };
 
 pub async fn test_db() -> Db {
@@ -18,9 +19,49 @@ pub fn sample_behavior_event(
         source: "ebpf_ringbuf".to_string(),
         watched_root: watched_root.to_string(),
         pid: Some(42),
+        parent_pid: Some(1),
+        uid: Some(1000),
+        gid: Some(1000),
+        service_unit: Some("backup.service".to_string()),
+        first_seen_at: Some("2026-03-14T08:30:00+00:00".to_string()),
+        trust_class: Some("allowed_local_process".to_string()),
+        trust_policy_name: Some("backup-window".to_string()),
+        maintenance_activity: Some("trusted_maintenance".to_string()),
+        package_name: Some("python3".to_string()),
+        package_manager: Some("dpkg".to_string()),
+        parent_chain: vec![
+            BehaviorParentChainEntry {
+                pid: 1,
+                process_name: Some("systemd".to_string()),
+                exe_path: Some("/usr/lib/systemd/systemd".to_string()),
+                command_line: Some("systemd".to_string()),
+            },
+            BehaviorParentChainEntry {
+                pid: 42,
+                process_name: Some("backup-wrapper".to_string()),
+                exe_path: Some("/usr/local/bin/backup-wrapper".to_string()),
+                command_line: Some("backup-wrapper --run".to_string()),
+            },
+        ],
         process_name: Some("python3".to_string()),
         exe_path: Some("/usr/bin/python3".to_string()),
         command_line: Some("python3 encrypt.py".to_string()),
+        parent_process_name: Some("systemd".to_string()),
+        parent_command_line: Some("systemd".to_string()),
+        container_runtime: Some("docker".to_string()),
+        container_id: Some("0123456789abcdef0123456789abcdef".to_string()),
+        container_image: Some("ghcr.io/acme/backup:1.2.3".to_string()),
+        orchestrator: BehaviorOrchestratorRow {
+            platform: Some("kubernetes".to_string()),
+            namespace: Some("prod".to_string()),
+            workload: Some("backup-pod".to_string()),
+        },
+        container_mounts: vec![BehaviorContainerMountRow {
+            mount_type: "bind".to_string(),
+            source: Some(watched_root.to_string()),
+            destination: "/data".to_string(),
+            name: None,
+        }],
         correlation_hits: 3,
         file_ops: BehaviorFileOpsRow {
             created: 1,
@@ -34,7 +75,7 @@ pub fn sample_behavior_event(
         io_rate_bytes_per_sec: 4096,
         score: 58,
         reasons: vec!["rename burst".to_string()],
-        level: "throttle_candidate".to_string(),
+        level: "high_risk".to_string(),
         timestamp: Some(timestamp.to_string()),
     }
 }

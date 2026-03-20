@@ -36,15 +36,64 @@ pub struct BehaviorFileOpsRow {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BehaviorParentChainEntry {
+    pub pid: u32,
+    #[serde(default)]
+    pub process_name: Option<String>,
+    #[serde(default)]
+    pub exe_path: Option<String>,
+    #[serde(default)]
+    pub command_line: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BehaviorOrchestratorRow {
+    #[serde(default)]
+    pub platform: Option<String>,
+    #[serde(default)]
+    pub namespace: Option<String>,
+    #[serde(default)]
+    pub workload: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BehaviorContainerMountRow {
+    pub mount_type: String,
+    #[serde(default)]
+    pub source: Option<String>,
+    pub destination: String,
+    #[serde(default)]
+    pub name: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct BehaviorEventRow {
     pub id: i64,
     pub agent_name: String,
     pub source: String,
     pub watched_root: String,
     pub pid: Option<u32>,
+    pub parent_pid: Option<u32>,
+    pub uid: Option<u32>,
+    pub gid: Option<u32>,
+    pub service_unit: Option<String>,
+    pub first_seen_at: Option<String>,
+    pub trust_class: Option<String>,
+    pub trust_policy_name: Option<String>,
+    pub maintenance_activity: Option<String>,
+    pub package_name: Option<String>,
+    pub package_manager: Option<String>,
+    pub parent_chain: Vec<BehaviorParentChainEntry>,
     pub process_name: Option<String>,
     pub exe_path: Option<String>,
     pub command_line: Option<String>,
+    pub parent_process_name: Option<String>,
+    pub parent_command_line: Option<String>,
+    pub container_runtime: Option<String>,
+    pub container_id: Option<String>,
+    pub container_image: Option<String>,
+    pub orchestrator: BehaviorOrchestratorRow,
+    pub container_mounts: Vec<BehaviorContainerMountRow>,
     pub correlation_hits: u32,
     pub file_ops: BehaviorFileOpsRow,
     pub touched_paths: Vec<String>,
@@ -170,9 +219,27 @@ pub struct NewBehaviorEvent {
     pub source: String,
     pub watched_root: String,
     pub pid: Option<u32>,
+    pub parent_pid: Option<u32>,
+    pub uid: Option<u32>,
+    pub gid: Option<u32>,
+    pub service_unit: Option<String>,
+    pub first_seen_at: Option<String>,
+    pub trust_class: Option<String>,
+    pub trust_policy_name: Option<String>,
+    pub maintenance_activity: Option<String>,
+    pub package_name: Option<String>,
+    pub package_manager: Option<String>,
+    pub parent_chain: Vec<BehaviorParentChainEntry>,
     pub process_name: Option<String>,
     pub exe_path: Option<String>,
     pub command_line: Option<String>,
+    pub parent_process_name: Option<String>,
+    pub parent_command_line: Option<String>,
+    pub container_runtime: Option<String>,
+    pub container_id: Option<String>,
+    pub container_image: Option<String>,
+    pub orchestrator: BehaviorOrchestratorRow,
+    pub container_mounts: Vec<BehaviorContainerMountRow>,
     pub correlation_hits: u32,
     pub file_ops: BehaviorFileOpsRow,
     pub touched_paths: Vec<String>,
@@ -351,6 +418,20 @@ pub struct SharedRiskCategoryRow {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SharedProcessProfileRow {
+    pub identity: String,
+    pub exe_path: String,
+    pub service_unit: Option<String>,
+    pub package_name: Option<String>,
+    pub container_image: Option<String>,
+    pub trust_class: String,
+    pub distinct_agents: u32,
+    pub event_count: u32,
+    pub highest_level: String,
+    pub label: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct WhitelistEntryRow {
     pub id: i64,
     pub ip: String,
@@ -365,4 +446,5 @@ pub struct SharedRiskProfileRow {
     pub global_risk_score: f64,
     pub global_threshold_multiplier: f64,
     pub categories: Vec<SharedRiskCategoryRow>,
+    pub process_profiles: Vec<SharedProcessProfileRow>,
 }

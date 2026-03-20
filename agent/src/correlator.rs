@@ -48,14 +48,29 @@ impl ProcessCorrelator {
                 best_hits = correlation_hits;
                 best_process = Some(ProcessInfo {
                     pid: proc_info.pid,
+                    parent_pid: proc_info.parent_pid,
+                    uid: proc_info.uid,
+                    gid: proc_info.gid,
+                    service_unit: proc_info.service_unit.clone(),
+                    first_seen_at: proc_info.first_seen_at,
+                    trust_class: proc_info.trust_class,
+                    trust_policy_name: proc_info.trust_policy_name.clone(),
+                    maintenance_activity: proc_info.maintenance_activity,
+                    trust_policy_visibility: proc_info.trust_policy_visibility,
+                    package_name: proc_info.package_name.clone(),
+                    package_manager: proc_info.package_manager.clone(),
                     process_name: proc_info.process_name.clone(),
                     exe_path: proc_info.exe_path.clone(),
                     command_line: proc_info.command_line.clone(),
                     correlation_hits,
                     parent_process_name: proc_info.parent_process_name.clone(),
                     parent_command_line: proc_info.parent_command_line.clone(),
+                    parent_chain: proc_info.parent_chain.clone(),
                     container_runtime: proc_info.container_runtime.clone(),
                     container_id: proc_info.container_id.clone(),
+                    container_image: proc_info.container_image.clone(),
+                    orchestrator: proc_info.orchestrator.clone(),
+                    container_mounts: proc_info.container_mounts.clone(),
                 });
             }
         }

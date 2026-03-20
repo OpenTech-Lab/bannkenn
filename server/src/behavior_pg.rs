@@ -13,9 +13,27 @@ CREATE TABLE IF NOT EXISTS behavior_events_archive (
     source TEXT NOT NULL,
     watched_root TEXT NOT NULL,
     pid INTEGER,
+    parent_pid INTEGER,
+    uid INTEGER,
+    gid INTEGER,
+    service_unit TEXT,
+    first_seen_at TIMESTAMPTZ,
+    trust_class TEXT,
+    trust_policy_name TEXT,
+    maintenance_activity TEXT,
+    package_name TEXT,
+    package_manager TEXT,
+    parent_chain_json TEXT NOT NULL DEFAULT '[]',
     process_name TEXT,
     exe_path TEXT,
     command_line TEXT,
+    parent_process_name TEXT,
+    parent_command_line TEXT,
+    container_runtime TEXT,
+    container_id TEXT,
+    container_image TEXT,
+    orchestrator_json TEXT NOT NULL DEFAULT '{}',
+    container_mounts_json TEXT NOT NULL DEFAULT '[]',
     correlation_hits BIGINT NOT NULL,
     file_ops_created BIGINT NOT NULL,
     file_ops_modified BIGINT NOT NULL,
@@ -62,9 +80,27 @@ pub struct BehaviorArchiveRecord {
     pub source: String,
     pub watched_root: String,
     pub pid: Option<u32>,
+    pub parent_pid: Option<u32>,
+    pub uid: Option<u32>,
+    pub gid: Option<u32>,
+    pub service_unit: Option<String>,
+    pub first_seen_at: Option<String>,
+    pub trust_class: Option<String>,
+    pub trust_policy_name: Option<String>,
+    pub maintenance_activity: Option<String>,
+    pub package_name: Option<String>,
+    pub package_manager: Option<String>,
+    pub parent_chain_json: String,
     pub process_name: Option<String>,
     pub exe_path: Option<String>,
     pub command_line: Option<String>,
+    pub parent_process_name: Option<String>,
+    pub parent_command_line: Option<String>,
+    pub container_runtime: Option<String>,
+    pub container_id: Option<String>,
+    pub container_image: Option<String>,
+    pub orchestrator_json: String,
+    pub container_mounts_json: String,
     pub correlation_hits: u32,
     pub file_ops_created: u32,
     pub file_ops_modified: u32,
@@ -94,9 +130,27 @@ impl BehaviorArchiveRecord {
             source: event.source.clone(),
             watched_root: event.watched_root.clone(),
             pid: event.pid,
+            parent_pid: event.parent_pid,
+            uid: event.uid,
+            gid: event.gid,
+            service_unit: event.service_unit.clone(),
+            first_seen_at: event.first_seen_at.clone(),
+            trust_class: event.trust_class.clone(),
+            trust_policy_name: event.trust_policy_name.clone(),
+            maintenance_activity: event.maintenance_activity.clone(),
+            package_name: event.package_name.clone(),
+            package_manager: event.package_manager.clone(),
+            parent_chain_json: serde_json::to_string(&event.parent_chain)?,
             process_name: event.process_name.clone(),
             exe_path: event.exe_path.clone(),
             command_line: event.command_line.clone(),
+            parent_process_name: event.parent_process_name.clone(),
+            parent_command_line: event.parent_command_line.clone(),
+            container_runtime: event.container_runtime.clone(),
+            container_id: event.container_id.clone(),
+            container_image: event.container_image.clone(),
+            orchestrator_json: serde_json::to_string(&event.orchestrator)?,
+            container_mounts_json: serde_json::to_string(&event.container_mounts)?,
             correlation_hits: event.correlation_hits,
             file_ops_created: event.file_ops.created,
             file_ops_modified: event.file_ops.modified,
@@ -132,6 +186,92 @@ impl BehaviorPgArchive {
         sqlx::query(CREATE_BEHAVIOR_ARCHIVE_SQL)
             .execute(&self.pool)
             .await?;
+        sqlx::query(
+            "ALTER TABLE behavior_events_archive ADD COLUMN IF NOT EXISTS parent_process_name TEXT",
+        )
+        .execute(&self.pool)
+        .await?;
+        sqlx::query(
+            "ALTER TABLE behavior_events_archive ADD COLUMN IF NOT EXISTS parent_command_line TEXT",
+        )
+        .execute(&self.pool)
+        .await?;
+        sqlx::query(
+            "ALTER TABLE behavior_events_archive ADD COLUMN IF NOT EXISTS parent_pid INTEGER",
+        )
+        .execute(&self.pool)
+        .await?;
+        sqlx::query("ALTER TABLE behavior_events_archive ADD COLUMN IF NOT EXISTS uid INTEGER")
+            .execute(&self.pool)
+            .await?;
+        sqlx::query("ALTER TABLE behavior_events_archive ADD COLUMN IF NOT EXISTS gid INTEGER")
+            .execute(&self.pool)
+            .await?;
+        sqlx::query(
+            "ALTER TABLE behavior_events_archive ADD COLUMN IF NOT EXISTS service_unit TEXT",
+        )
+        .execute(&self.pool)
+        .await?;
+        sqlx::query(
+            "ALTER TABLE behavior_events_archive ADD COLUMN IF NOT EXISTS first_seen_at TIMESTAMPTZ",
+        )
+        .execute(&self.pool)
+        .await?;
+        sqlx::query(
+            "ALTER TABLE behavior_events_archive ADD COLUMN IF NOT EXISTS trust_class TEXT",
+        )
+        .execute(&self.pool)
+        .await?;
+        sqlx::query(
+            "ALTER TABLE behavior_events_archive ADD COLUMN IF NOT EXISTS trust_policy_name TEXT",
+        )
+        .execute(&self.pool)
+        .await?;
+        sqlx::query(
+            "ALTER TABLE behavior_events_archive ADD COLUMN IF NOT EXISTS maintenance_activity TEXT",
+        )
+        .execute(&self.pool)
+        .await?;
+        sqlx::query(
+            "ALTER TABLE behavior_events_archive ADD COLUMN IF NOT EXISTS package_name TEXT",
+        )
+        .execute(&self.pool)
+        .await?;
+        sqlx::query(
+            "ALTER TABLE behavior_events_archive ADD COLUMN IF NOT EXISTS package_manager TEXT",
+        )
+        .execute(&self.pool)
+        .await?;
+        sqlx::query(
+            "ALTER TABLE behavior_events_archive ADD COLUMN IF NOT EXISTS parent_chain_json TEXT NOT NULL DEFAULT '[]'",
+        )
+        .execute(&self.pool)
+        .await?;
+        sqlx::query(
+            "ALTER TABLE behavior_events_archive ADD COLUMN IF NOT EXISTS container_runtime TEXT",
+        )
+        .execute(&self.pool)
+        .await?;
+        sqlx::query(
+            "ALTER TABLE behavior_events_archive ADD COLUMN IF NOT EXISTS container_id TEXT",
+        )
+        .execute(&self.pool)
+        .await?;
+        sqlx::query(
+            "ALTER TABLE behavior_events_archive ADD COLUMN IF NOT EXISTS container_image TEXT",
+        )
+        .execute(&self.pool)
+        .await?;
+        sqlx::query(
+            "ALTER TABLE behavior_events_archive ADD COLUMN IF NOT EXISTS orchestrator_json TEXT NOT NULL DEFAULT '{}'",
+        )
+        .execute(&self.pool)
+        .await?;
+        sqlx::query(
+            "ALTER TABLE behavior_events_archive ADD COLUMN IF NOT EXISTS container_mounts_json TEXT NOT NULL DEFAULT '[]'",
+        )
+        .execute(&self.pool)
+        .await?;
         for statement in BEHAVIOR_ARCHIVE_INDEXES {
             sqlx::query(statement).execute(&self.pool).await?;
         }
@@ -148,9 +288,27 @@ impl BehaviorPgArchive {
                 source,
                 watched_root,
                 pid,
+                parent_pid,
+                uid,
+                gid,
+                service_unit,
+                first_seen_at,
+                trust_class,
+                trust_policy_name,
+                maintenance_activity,
+                package_name,
+                package_manager,
+                parent_chain_json,
                 process_name,
                 exe_path,
                 command_line,
+                parent_process_name,
+                parent_command_line,
+                container_runtime,
+                container_id,
+                container_image,
+                orchestrator_json,
+                container_mounts_json,
                 correlation_hits,
                 file_ops_created,
                 file_ops_modified,
@@ -167,7 +325,8 @@ impl BehaviorPgArchive {
             )
             VALUES (
                 $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14,
-                $15, $16, $17, $18, $19, $20, $21, $22
+                $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26,
+                $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39
             )
             ON CONFLICT (sqlite_event_id) DO NOTHING
             "#,
@@ -178,9 +337,27 @@ impl BehaviorPgArchive {
         .bind(&record.source)
         .bind(&record.watched_root)
         .bind(record.pid.map(|value| value as i32))
+        .bind(record.parent_pid.map(|value| value as i32))
+        .bind(record.uid.map(|value| value as i32))
+        .bind(record.gid.map(|value| value as i32))
+        .bind(&record.service_unit)
+        .bind(&record.first_seen_at)
+        .bind(&record.trust_class)
+        .bind(&record.trust_policy_name)
+        .bind(&record.maintenance_activity)
+        .bind(&record.package_name)
+        .bind(&record.package_manager)
+        .bind(&record.parent_chain_json)
         .bind(&record.process_name)
         .bind(&record.exe_path)
         .bind(&record.command_line)
+        .bind(&record.parent_process_name)
+        .bind(&record.parent_command_line)
+        .bind(&record.container_runtime)
+        .bind(&record.container_id)
+        .bind(&record.container_image)
+        .bind(&record.orchestrator_json)
+        .bind(&record.container_mounts_json)
         .bind(i64::from(record.correlation_hits))
         .bind(i64::from(record.file_ops_created))
         .bind(i64::from(record.file_ops_modified))

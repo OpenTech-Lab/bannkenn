@@ -16,7 +16,7 @@ async fn behavior_events_round_trip_structured_payloads() {
     event.protected_paths_touched = vec!["/srv/data/secret.txt".to_string()];
     event.score = 67;
     event.reasons = vec!["rename burst".to_string(), "protected path".to_string()];
-    event.level = "throttle_candidate".to_string();
+    event.level = "high_risk".to_string();
 
     let id = db.insert_behavior_event(&event).await.unwrap();
     assert!(id > 0);
@@ -26,7 +26,57 @@ async fn behavior_events_round_trip_structured_payloads() {
     assert_eq!(rows[0].agent_name, "agent-a");
     assert_eq!(rows[0].file_ops.renamed, 3);
     assert_eq!(rows[0].protected_paths_touched.len(), 1);
-    assert_eq!(rows[0].level, "throttle_candidate");
+    assert_eq!(rows[0].parent_pid, Some(1));
+    assert_eq!(rows[0].uid, Some(1000));
+    assert_eq!(rows[0].gid, Some(1000));
+    assert_eq!(rows[0].service_unit.as_deref(), Some("backup.service"));
+    assert_eq!(
+        rows[0].first_seen_at.as_deref(),
+        Some("2026-03-14T08:30:00+00:00")
+    );
+    assert_eq!(
+        rows[0].trust_class.as_deref(),
+        Some("allowed_local_process")
+    );
+    assert_eq!(rows[0].trust_policy_name.as_deref(), Some("backup-window"));
+    assert_eq!(
+        rows[0].maintenance_activity.as_deref(),
+        Some("trusted_maintenance")
+    );
+    assert_eq!(rows[0].package_name.as_deref(), Some("python3"));
+    assert_eq!(rows[0].package_manager.as_deref(), Some("dpkg"));
+    assert_eq!(rows[0].parent_chain.len(), 2);
+    assert_eq!(rows[0].parent_chain[0].pid, 1);
+    assert_eq!(
+        rows[0].parent_chain[0].process_name.as_deref(),
+        Some("systemd")
+    );
+    assert_eq!(
+        rows[0].parent_chain[1].exe_path.as_deref(),
+        Some("/usr/local/bin/backup-wrapper")
+    );
+    assert_eq!(rows[0].parent_process_name.as_deref(), Some("systemd"));
+    assert_eq!(rows[0].parent_command_line.as_deref(), Some("systemd"));
+    assert_eq!(rows[0].container_runtime.as_deref(), Some("docker"));
+    assert_eq!(
+        rows[0].container_id.as_deref(),
+        Some("0123456789abcdef0123456789abcdef")
+    );
+    assert_eq!(
+        rows[0].container_image.as_deref(),
+        Some("ghcr.io/acme/backup:1.2.3")
+    );
+    assert_eq!(rows[0].orchestrator.platform.as_deref(), Some("kubernetes"));
+    assert_eq!(rows[0].orchestrator.namespace.as_deref(), Some("prod"));
+    assert_eq!(rows[0].orchestrator.workload.as_deref(), Some("backup-pod"));
+    assert_eq!(rows[0].container_mounts.len(), 1);
+    assert_eq!(rows[0].container_mounts[0].mount_type, "bind");
+    assert_eq!(
+        rows[0].container_mounts[0].source.as_deref(),
+        Some("/srv/data")
+    );
+    assert_eq!(rows[0].container_mounts[0].destination, "/data");
+    assert_eq!(rows[0].level, "high_risk");
 
     let agent_rows = db
         .list_behavior_events_by_agent("agent-a", 10)

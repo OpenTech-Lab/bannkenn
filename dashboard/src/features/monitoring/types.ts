@@ -21,15 +21,53 @@ export type BehaviorFileOps = {
   deleted: number;
 };
 
+export type BehaviorParentChainEntry = {
+  pid: number;
+  process_name?: string | null;
+  exe_path?: string | null;
+  command_line?: string | null;
+};
+
+export type BehaviorOrchestrator = {
+  platform?: string | null;
+  namespace?: string | null;
+  workload?: string | null;
+};
+
+export type BehaviorContainerMount = {
+  mount_type: string;
+  source?: string | null;
+  destination: string;
+  name?: string | null;
+};
+
 export type BehaviorEvent = {
   id: number;
   agent_name: string;
   source: string;
   watched_root: string;
   pid?: number | null;
+  parent_pid?: number | null;
+  uid?: number | null;
+  gid?: number | null;
+  service_unit?: string | null;
+  first_seen_at?: string | null;
+  trust_class?: string | null;
+  trust_policy_name?: string | null;
+  maintenance_activity?: string | null;
+  package_name?: string | null;
+  package_manager?: string | null;
+  parent_chain: BehaviorParentChainEntry[];
   process_name?: string | null;
   exe_path?: string | null;
   command_line?: string | null;
+  parent_process_name?: string | null;
+  parent_command_line?: string | null;
+  container_runtime?: string | null;
+  container_id?: string | null;
+  container_image?: string | null;
+  orchestrator: BehaviorOrchestrator;
+  container_mounts: BehaviorContainerMount[];
   correlation_hits: number;
   file_ops: BehaviorFileOps;
   touched_paths: string[];

@@ -1,37 +1,51 @@
 use crate::config::ContainmentConfig;
 use crate::correlator::CorrelationResult;
 use crate::ebpf::events::{
-    BehaviorEvent, BehaviorLevel, FileActivityBatch, FileOperationCounts, ProcessInfo,
+    BehaviorEvent, BehaviorLevel, FileActivityBatch, FileOperationCounts, MaintenanceActivity,
+    ProcessInfo, ProcessTrustClass,
 };
+use crate::shared_risk::{SharedProcessTrustMatch, SharedRiskSnapshot};
 use chrono::{DateTime, Utc};
-use std::collections::HashSet;
+use std::cell::RefCell;
+use std::collections::{HashSet, VecDeque};
 use std::path::Path;
 
 const TEMP_ROOTS: &[&str] = &["/tmp", "/var/tmp"];
-const PACKAGE_HELPER_PATTERNS: &[&str] = &[
-    "apt",
-    "apt-get",
-    "aptitude",
-    "dpkg",
-    "dpkg-preconfigure",
-    "dpkg-deb",
-    "unattended-upgrade",
-    "depmod",
-    "cryptroot",
-    "update-initramfs",
-    "mkinitramfs",
-    "ldconfig",
-    "dracut",
-    "rpm",
-    "dnf",
-    "yum",
-    "apk",
-    "pacman",
-];
 const KNOWN_JAVA_RUNTIME_MARKERS: &[&str] =
     &["opensearch", "wazuh-indexer", "org.opensearch", "solr"];
 const SHELL_LIKE_PARENT_PATTERNS: &[&str] = &["sh", "bash", "dash", "zsh", "ash", "busybox"];
 const TRUSTED_EXEC_PREFIXES: &[&str] = &["/usr/", "/bin/", "/sbin/", "/lib/", "/nix/store/"];
+const MAINTENANCE_PATH_PREFIXES: &[&str] = &[
+    "/usr",
+    "/etc",
+    "/lib",
+    "/boot",
+    "/run/systemd",
+    "/var/lib/dpkg",
+    "/var/lib/apt",
+    "/var/cache/apt",
+    "/var/lib/snapd",
+    "/var/lib/fwupd",
+    "/snap",
+];
+const USER_DATA_PATH_PREFIXES: &[&str] = &[
+    "/home", "/srv", "/var/www", "/var/lib", "/opt", "/data", "/mnt", "/media",
+];
+const AGENT_INTERNAL_PATTERNS: &[&str] = &["bannkenn-agent"];
+const AGENT_INTERNAL_PATH_PREFIXES: &[&str] = &[
+    "/etc/bannkenn",
+    "/var/lib/bannkenn",
+    "/usr/lib/bannkenn",
+    "/usr/local/lib/bannkenn",
+    "/opt/bannkenn",
+    "/.config/bannkenn",
+];
+const BENIGN_RENAME_EXTENSION_TARGETS: &[&str] = &[
+    "tmp", "temp", "bak", "backup", "old", "new", "part", "partial", "swp", "swx", "dpkg-new",
+    "dpkg-old", "rpmnew", "rpmsave", "pacnew", "pacsave",
+];
+const RENAME_BURST_GRACE: u32 = 3;
+const DELETE_BURST_GRACE: u32 = 2;
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 struct ScoreAdjustment {
@@ -40,43 +54,225 @@ struct ScoreAdjustment {
     reasons: Vec<String>,
 }
 
-pub trait Scorer {
-    fn score(&self, batch: &FileActivityBatch, correlation: &CorrelationResult) -> BehaviorEvent;
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct ScoreComponents {
+    protected_path: u32,
+    rename: u32,
+    write: u32,
+    delete: u32,
+    throughput: u32,
+    directory_spread: u32,
+    high_entropy_rewrite: u32,
+    unreadable_rewrite: u32,
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct BehaviorChainInputs {
+    extension_anomaly_component: u32,
+    high_entropy_rewrite_component: u32,
+    unreadable_rewrite_component: u32,
+    user_data_component: u32,
+    directory_spread_component: u32,
+    throughput_component: u32,
+    recurrence_component: u32,
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct ContextFlags {
+    known_java_temp_extraction: bool,
+    package_manager_helper_activity: bool,
+    trusted_maintenance_activity: bool,
+    containerized_service_temp_activity: bool,
+    agent_internal_activity: bool,
+    process_name_mismatch: bool,
+    shell_like_parent: bool,
+    temp_path_executable: bool,
+}
+
+impl ContextFlags {
+    fn maintenance_context(self) -> bool {
+        self.known_java_temp_extraction
+            || self.package_manager_helper_activity
+            || self.trusted_maintenance_activity
+            || self.containerized_service_temp_activity
+            || self.agent_internal_activity
+    }
+
+    fn suspicious_lineage(self) -> bool {
+        self.process_name_mismatch || self.shell_like_parent || self.temp_path_executable
+    }
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+struct BehaviorChainAssessment {
+    signal_count: u32,
+    weak_identity: bool,
+    meaningful_rename: bool,
+    extension_anomaly: bool,
+    high_entropy_rewrite: bool,
+    unreadable_rewrite: bool,
+    repeated_writes: bool,
+    user_data_targeting: bool,
+    suspicious_lineage: bool,
+    directory_spread: bool,
+    rapid_delete: bool,
+    recurrence_history: bool,
+    maintenance_context: bool,
+    signal_names: Vec<&'static str>,
+}
+
+impl BehaviorChainAssessment {
+    fn qualifies_for_high_risk(&self, min_signals: u32) -> bool {
+        !self.maintenance_context
+            && self.signal_count >= min_signals
+            && self.weak_identity
+            && self.repeated_writes
+            && self.user_data_targeting
+            && (self.meaningful_rename
+                || self.extension_anomaly
+                || self.high_entropy_rewrite
+                || self.unreadable_rewrite
+                || self.recurrence_history)
+    }
+
+    fn qualifies_for_containment_candidate(
+        &self,
+        high_risk_min_signals: u32,
+        containment_candidate_min_signals: u32,
+    ) -> bool {
+        self.qualifies_for_high_risk(high_risk_min_signals)
+            && self.signal_count >= containment_candidate_min_signals
+            && (self.meaningful_rename
+                || self.extension_anomaly
+                || self.high_entropy_rewrite
+                || self.unreadable_rewrite)
+            && (self.suspicious_lineage
+                || self.directory_spread
+                || self.rapid_delete
+                || self.recurrence_history)
+    }
+
+    fn summary_reason(&self) -> Option<String> {
+        (!self.signal_names.is_empty())
+            .then(|| format!("behavior chain signals: {}", self.signal_names.join(", ")))
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RecentBehaviorObservation {
+    timestamp: DateTime<Utc>,
+    watched_root: String,
+    process_identity: Option<String>,
+    dominant_extension: Option<String>,
+    weak_identity: bool,
+    user_data_targeting: bool,
+    suspicious_lineage: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ObservationContext {
+    dominant_extension: Option<String>,
+    weak_identity: bool,
+    user_data_targeting: bool,
+    suspicious_lineage: bool,
+    score: u32,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct EffectiveTrustContext {
+    trust_class: Option<ProcessTrustClass>,
+    shared_reason: Option<String>,
 }
 
 #[derive(Debug, Clone)]
 pub struct CompositeBehaviorScorer {
     suspicious_score: u32,
-    throttle_score: u32,
-    fuse_score: u32,
+    high_risk_score: u32,
+    containment_candidate_score: u32,
     rename_score: u32,
     write_score: u32,
     delete_score: u32,
+    high_entropy_rewrite_score: u32,
+    unreadable_rewrite_score: u32,
+    extension_anomaly_score: u32,
+    extension_anomaly_min_count: u32,
     protected_path_bonus: u32,
+    user_data_bonus: u32,
     unknown_process_bonus: u32,
+    trusted_process_penalty: u32,
+    allowed_local_penalty: u32,
+    directory_spread_score: u32,
+    shell_parent_bonus: u32,
+    recent_process_bonus: u32,
+    recent_process_window_secs: u64,
+    meaningful_rename_count: u32,
+    meaningful_write_count: u32,
+    high_risk_min_signals: u32,
+    containment_candidate_min_signals: u32,
+    recurrence_score: u32,
+    recurrence_window_secs: u64,
+    recurrence_min_events: u32,
     bytes_per_score: u64,
+    recent_observations: RefCell<VecDeque<RecentBehaviorObservation>>,
 }
 
 impl CompositeBehaviorScorer {
     pub fn from_config(config: &ContainmentConfig) -> Self {
+        let suspicious_score =
+            adjust_threshold_for_profile(config.suspicious_score, config.environment_profile, 5);
+        let high_risk_score =
+            adjust_threshold_for_profile(config.throttle_score, config.environment_profile, 10);
+        let containment_candidate_score =
+            adjust_threshold_for_profile(config.fuse_score, config.environment_profile, 10);
+        let high_risk_min_signals = adjust_signal_requirement_for_profile(
+            config.high_risk_min_signals.max(1),
+            config.environment_profile,
+        );
+        let containment_candidate_min_signals = adjust_signal_requirement_for_profile(
+            config
+                .containment_candidate_min_signals
+                .max(config.high_risk_min_signals.max(1)),
+            config.environment_profile,
+        )
+        .max(high_risk_min_signals);
+
         Self {
-            suspicious_score: config.suspicious_score,
-            throttle_score: config.throttle_score,
-            fuse_score: config.fuse_score,
+            suspicious_score,
+            high_risk_score,
+            containment_candidate_score,
             rename_score: config.rename_score,
             write_score: config.write_score,
             delete_score: config.delete_score,
+            high_entropy_rewrite_score: config.high_entropy_rewrite_score,
+            unreadable_rewrite_score: config.unreadable_rewrite_score,
+            extension_anomaly_score: config.extension_anomaly_score,
+            extension_anomaly_min_count: config.extension_anomaly_min_count.max(1),
             protected_path_bonus: config.protected_path_bonus,
+            user_data_bonus: config.user_data_bonus,
             unknown_process_bonus: config.unknown_process_bonus,
+            trusted_process_penalty: config.trusted_process_penalty,
+            allowed_local_penalty: config.allowed_local_penalty,
+            directory_spread_score: config.directory_spread_score,
+            shell_parent_bonus: config.shell_parent_bonus,
+            recent_process_bonus: config.recent_process_bonus,
+            recent_process_window_secs: config.recent_process_window_secs,
+            meaningful_rename_count: config.meaningful_rename_count.max(RENAME_BURST_GRACE + 1),
+            meaningful_write_count: config.meaningful_write_count.max(1),
+            high_risk_min_signals,
+            containment_candidate_min_signals,
+            recurrence_score: config.recurrence_score,
+            recurrence_window_secs: config.recurrence_window_secs.max(1),
+            recurrence_min_events: config.recurrence_min_events.max(2),
             bytes_per_score: config.bytes_per_score.max(1),
+            recent_observations: RefCell::new(VecDeque::new()),
         }
     }
 
     fn classify_level(&self, score: u32) -> BehaviorLevel {
-        if score >= self.fuse_score {
-            BehaviorLevel::FuseCandidate
-        } else if score >= self.throttle_score {
-            BehaviorLevel::ThrottleCandidate
+        if score >= self.containment_candidate_score {
+            BehaviorLevel::ContainmentCandidate
+        } else if score >= self.high_risk_score {
+            BehaviorLevel::HighRisk
         } else if score >= self.suspicious_score {
             BehaviorLevel::Suspicious
         } else {
@@ -98,75 +294,432 @@ impl CompositeBehaviorScorer {
                 || throughput_score > 0)
     }
 
-    fn context_adjustment(
+    fn protected_path_component(&self, batch: &FileActivityBatch) -> Option<(u32, String)> {
+        if !batch.protected_paths_touched.is_empty() {
+            return Some((
+                self.protected_path_bonus,
+                "protected path touched".to_string(),
+            ));
+        }
+        None
+    }
+
+    fn user_data_component(
+        &self,
+        batch: &FileActivityBatch,
+        activity_score: u32,
+    ) -> Option<(u32, String)> {
+        if activity_score == 0 || !batch_targets_user_data(batch) {
+            return None;
+        }
+
+        Some((
+            self.user_data_bonus,
+            "user/application data targeted".to_string(),
+        ))
+    }
+
+    fn directory_spread_component(
+        &self,
+        batch: &FileActivityBatch,
+        activity_score: u32,
+    ) -> Option<(u32, String)> {
+        if activity_score == 0 {
+            return None;
+        }
+
+        let directory_count = distinct_parent_dir_count(batch);
+        let extra_directories = directory_count.saturating_sub(2).min(4);
+        if extra_directories == 0 {
+            return None;
+        }
+
+        Some((
+            extra_directories.saturating_mul(self.directory_spread_score),
+            format!("directory spread x{}", directory_count),
+        ))
+    }
+
+    fn high_entropy_rewrite_component(
+        &self,
+        batch: &FileActivityBatch,
+        activity_score: u32,
+    ) -> Option<(u32, String)> {
+        if activity_score == 0 || batch.content_indicators.high_entropy_rewrites == 0 {
+            return None;
+        }
+
+        let count = batch.content_indicators.high_entropy_rewrites;
+        Some((
+            count.saturating_mul(self.high_entropy_rewrite_score),
+            format!("high-entropy rewrite x{}", count),
+        ))
+    }
+
+    fn unreadable_rewrite_component(
+        &self,
+        batch: &FileActivityBatch,
+        activity_score: u32,
+    ) -> Option<(u32, String)> {
+        if activity_score == 0 || batch.content_indicators.unreadable_rewrites == 0 {
+            return None;
+        }
+
+        let count = batch.content_indicators.unreadable_rewrites;
+        Some((
+            count.saturating_mul(self.unreadable_rewrite_score),
+            format!("unreadable rewrite x{}", count),
+        ))
+    }
+
+    fn extension_anomaly_component(
+        &self,
+        batch: &FileActivityBatch,
+        activity_score: u32,
+    ) -> Option<(u32, String, String)> {
+        if activity_score == 0 {
+            return None;
+        }
+
+        let (extension, count) = dominant_rename_extension(batch)?;
+        if count < self.extension_anomaly_min_count
+            || BENIGN_RENAME_EXTENSION_TARGETS.contains(&extension.as_str())
+        {
+            return None;
+        }
+
+        Some((
+            count.saturating_mul(self.extension_anomaly_score),
+            format!("rename extension anomaly .{} x{}", extension, count),
+            extension,
+        ))
+    }
+
+    fn trust_adjustment(
         &self,
         batch: &FileActivityBatch,
         process: Option<&ProcessInfo>,
-        rename_component: u32,
-        write_component: u32,
-        delete_component: u32,
-        throughput_component: u32,
+        effective_trust: &EffectiveTrustContext,
+        identity_bonus_signal: bool,
+        activity_score: u32,
     ) -> ScoreAdjustment {
+        let mut adjustment = ScoreAdjustment::default();
+
         let Some(process) = process else {
+            if identity_bonus_signal {
+                adjustment.bonus = adjustment.bonus.saturating_add(self.unknown_process_bonus);
+                adjustment
+                    .reasons
+                    .push("unknown process activity".to_string());
+            }
+            return adjustment;
+        };
+
+        if identity_bonus_signal {
+            match effective_trust
+                .trust_class
+                .unwrap_or(crate::ebpf::events::ProcessTrustClass::Unknown)
+            {
+                crate::ebpf::events::ProcessTrustClass::Unknown => {
+                    adjustment.bonus = adjustment.bonus.saturating_add(self.unknown_process_bonus);
+                    adjustment
+                        .reasons
+                        .push("unknown process identity".to_string());
+                }
+                crate::ebpf::events::ProcessTrustClass::Suspicious => {
+                    adjustment.bonus = adjustment
+                        .bonus
+                        .saturating_add(self.unknown_process_bonus)
+                        .saturating_add(self.protected_path_bonus / 2);
+                    adjustment
+                        .reasons
+                        .push("suspicious process identity".to_string());
+                }
+                _ => {}
+            }
+        }
+
+        if activity_score > 0 {
+            match effective_trust
+                .trust_class
+                .unwrap_or(crate::ebpf::events::ProcessTrustClass::Unknown)
+            {
+                crate::ebpf::events::ProcessTrustClass::TrustedSystem
+                | crate::ebpf::events::ProcessTrustClass::TrustedPackageManaged => {
+                    adjustment.penalty = adjustment
+                        .penalty
+                        .saturating_add(self.trusted_process_penalty);
+                    adjustment
+                        .reasons
+                        .push("trusted process lineage".to_string());
+                }
+                crate::ebpf::events::ProcessTrustClass::AllowedLocal => {
+                    if !identity_bonus_signal {
+                        adjustment.penalty = adjustment
+                            .penalty
+                            .saturating_add(self.allowed_local_penalty);
+                        adjustment.reasons.push("allowed local lineage".to_string());
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        if activity_score > 0 {
+            if let Some(reason) = effective_trust.shared_reason.as_ref() {
+                adjustment.reasons.push(reason.clone());
+            }
+        }
+
+        if identity_bonus_signal
+            && activity_score > 0
+            && matches!(
+                effective_trust
+                    .trust_class
+                    .unwrap_or(crate::ebpf::events::ProcessTrustClass::Unknown),
+                crate::ebpf::events::ProcessTrustClass::Unknown
+                    | crate::ebpf::events::ProcessTrustClass::Suspicious
+            )
+            && is_recent_process(process, batch.timestamp, self.recent_process_window_secs)
+        {
+            adjustment.bonus = adjustment.bonus.saturating_add(self.recent_process_bonus);
+            adjustment
+                .reasons
+                .push("newly observed process".to_string());
+        }
+
+        adjustment
+    }
+
+    fn assess_behavior_chain(
+        &self,
+        batch: &FileActivityBatch,
+        weak_identity: bool,
+        flags: ContextFlags,
+        inputs: BehaviorChainInputs,
+    ) -> BehaviorChainAssessment {
+        let meaningful_rename = batch.file_ops.renamed >= self.meaningful_rename_count;
+        let extension_anomaly = inputs.extension_anomaly_component > 0;
+        let high_entropy_rewrite = inputs.high_entropy_rewrite_component > 0;
+        let unreadable_rewrite = inputs.unreadable_rewrite_component > 0;
+        let repeated_writes = batch.file_ops.modified >= self.meaningful_write_count
+            || inputs.throughput_component > 0;
+        let user_data_targeting = inputs.user_data_component > 0;
+        let suspicious_lineage = flags.suspicious_lineage();
+        let directory_spread = inputs.directory_spread_component > 0;
+        let rapid_delete = batch.file_ops.deleted > DELETE_BURST_GRACE;
+        let recurrence_history = inputs.recurrence_component > 0;
+        let maintenance_context = flags.maintenance_context();
+        let mut signal_names = Vec::new();
+
+        if weak_identity {
+            signal_names.push("weak_identity");
+        }
+        if meaningful_rename {
+            signal_names.push("meaningful_rename");
+        }
+        if extension_anomaly {
+            signal_names.push("extension_anomaly");
+        }
+        if high_entropy_rewrite {
+            signal_names.push("high_entropy_rewrite");
+        }
+        if unreadable_rewrite {
+            signal_names.push("unreadable_rewrite");
+        }
+        if repeated_writes {
+            signal_names.push("repeated_writes");
+        }
+        if user_data_targeting {
+            signal_names.push("user_data_targeting");
+        }
+        if suspicious_lineage {
+            signal_names.push("suspicious_lineage");
+        }
+        if directory_spread {
+            signal_names.push("directory_spread");
+        }
+        if rapid_delete {
+            signal_names.push("rapid_delete");
+        }
+        if recurrence_history {
+            signal_names.push("recurrence_history");
+        }
+
+        BehaviorChainAssessment {
+            signal_count: signal_names.len().min(u32::MAX as usize) as u32,
+            weak_identity,
+            meaningful_rename,
+            extension_anomaly,
+            high_entropy_rewrite,
+            unreadable_rewrite,
+            repeated_writes,
+            user_data_targeting,
+            suspicious_lineage,
+            directory_spread,
+            rapid_delete,
+            recurrence_history,
+            maintenance_context,
+            signal_names,
+        }
+    }
+
+    fn correlated_level(
+        &self,
+        raw_level: BehaviorLevel,
+        chain: &BehaviorChainAssessment,
+    ) -> (BehaviorLevel, Option<String>) {
+        match raw_level {
+            BehaviorLevel::ContainmentCandidate => {
+                if chain.qualifies_for_containment_candidate(
+                    self.high_risk_min_signals,
+                    self.containment_candidate_min_signals,
+                ) {
+                    (BehaviorLevel::ContainmentCandidate, None)
+                } else if chain.qualifies_for_high_risk(self.high_risk_min_signals) {
+                    (
+                        BehaviorLevel::HighRisk,
+                        Some(
+                            "insufficient correlated ransomware-style signals for containment-candidate escalation"
+                                .to_string(),
+                        ),
+                    )
+                } else {
+                    (
+                        BehaviorLevel::Suspicious,
+                        Some(
+                            "insufficient correlated ransomware-style signals for high-risk escalation"
+                                .to_string(),
+                        ),
+                    )
+                }
+            }
+            BehaviorLevel::HighRisk => {
+                if chain.qualifies_for_high_risk(self.high_risk_min_signals) {
+                    (BehaviorLevel::HighRisk, None)
+                } else {
+                    (
+                        BehaviorLevel::Suspicious,
+                        Some(
+                            "insufficient correlated ransomware-style signals for high-risk escalation"
+                                .to_string(),
+                        ),
+                    )
+                }
+            }
+            level => (level, None),
+        }
+    }
+
+    fn context_adjustment(
+        &self,
+        process: Option<&ProcessInfo>,
+        components: ScoreComponents,
+        flags: ContextFlags,
+    ) -> ScoreAdjustment {
+        let Some(_process) = process else {
             return ScoreAdjustment::default();
         };
 
         let mut adjustment = ScoreAdjustment::default();
-        let known_java_temp_extraction = is_known_java_temp_extraction(process, batch);
-        let package_manager_helper_activity = is_package_manager_helper_activity(process, batch);
-        let containerized_service_temp_activity =
-            is_containerized_service_temp_activity(process, batch);
-        let process_name_mismatch = has_process_name_mismatch(process);
-        let suppress_rename =
-            package_manager_helper_activity || containerized_service_temp_activity;
-        let suppress_write = known_java_temp_extraction
-            || package_manager_helper_activity
-            || containerized_service_temp_activity;
-        let suppress_delete = known_java_temp_extraction
-            || package_manager_helper_activity
-            || containerized_service_temp_activity;
-        let suppress_throughput = known_java_temp_extraction
-            || package_manager_helper_activity
-            || containerized_service_temp_activity;
+        let suppress_rename = flags.package_manager_helper_activity
+            || flags.trusted_maintenance_activity
+            || flags.containerized_service_temp_activity
+            || flags.agent_internal_activity;
+        let suppress_write = flags.known_java_temp_extraction
+            || flags.package_manager_helper_activity
+            || flags.trusted_maintenance_activity
+            || flags.containerized_service_temp_activity;
+        let suppress_delete = flags.known_java_temp_extraction
+            || flags.package_manager_helper_activity
+            || flags.trusted_maintenance_activity
+            || flags.containerized_service_temp_activity
+            || flags.agent_internal_activity;
+        let suppress_throughput = flags.known_java_temp_extraction
+            || flags.package_manager_helper_activity
+            || flags.trusted_maintenance_activity
+            || flags.containerized_service_temp_activity;
+        let suppress_protected_path =
+            flags.trusted_maintenance_activity || flags.agent_internal_activity;
+        let suppress_directory_spread = flags.known_java_temp_extraction
+            || flags.package_manager_helper_activity
+            || flags.trusted_maintenance_activity
+            || flags.containerized_service_temp_activity
+            || flags.agent_internal_activity;
+        let suppress_content_rewrite = flags.package_manager_helper_activity
+            || flags.trusted_maintenance_activity
+            || flags.containerized_service_temp_activity
+            || flags.agent_internal_activity;
 
         if suppress_rename {
-            adjustment.penalty = adjustment.penalty.saturating_add(rename_component);
+            adjustment.penalty = adjustment.penalty.saturating_add(components.rename);
         }
 
         if suppress_write {
-            adjustment.penalty = adjustment.penalty.saturating_add(write_component);
+            adjustment.penalty = adjustment.penalty.saturating_add(components.write);
         }
 
         if suppress_delete {
-            adjustment.penalty = adjustment.penalty.saturating_add(delete_component);
+            adjustment.penalty = adjustment.penalty.saturating_add(components.delete);
         }
 
         if suppress_throughput {
-            adjustment.penalty = adjustment.penalty.saturating_add(throughput_component);
+            adjustment.penalty = adjustment.penalty.saturating_add(components.throughput);
         }
 
-        if known_java_temp_extraction {
+        if suppress_protected_path {
+            adjustment.penalty = adjustment.penalty.saturating_add(components.protected_path);
+        }
+
+        if suppress_directory_spread {
+            adjustment.penalty = adjustment
+                .penalty
+                .saturating_add(components.directory_spread);
+        }
+
+        if suppress_content_rewrite {
+            adjustment.penalty = adjustment
+                .penalty
+                .saturating_add(components.high_entropy_rewrite)
+                .saturating_add(components.unreadable_rewrite);
+        }
+
+        if flags.known_java_temp_extraction {
             adjustment
                 .reasons
                 .push("known JVM temp extraction pattern".to_string());
         }
 
-        if package_manager_helper_activity {
+        if flags.package_manager_helper_activity {
             adjustment
                 .reasons
                 .push("package-manager helper activity".to_string());
         }
 
-        if containerized_service_temp_activity {
+        if flags.trusted_maintenance_activity {
+            adjustment
+                .reasons
+                .push("trusted maintenance activity".to_string());
+        }
+
+        if flags.containerized_service_temp_activity {
             adjustment
                 .reasons
                 .push("containerized service temp activity".to_string());
         }
 
-        if is_temp_path(&process.exe_path)
-            && !known_java_temp_extraction
-            && !package_manager_helper_activity
-            && !containerized_service_temp_activity
+        if flags.agent_internal_activity {
+            adjustment
+                .reasons
+                .push("agent internal activity".to_string());
+        }
+
+        if flags.temp_path_executable
+            && !flags.known_java_temp_extraction
+            && !flags.package_manager_helper_activity
+            && !flags.trusted_maintenance_activity
+            && !flags.containerized_service_temp_activity
+            && !flags.agent_internal_activity
         {
             adjustment.bonus = adjustment
                 .bonus
@@ -175,7 +728,7 @@ impl CompositeBehaviorScorer {
             adjustment.reasons.push("temp-path executable".to_string());
         }
 
-        if process_name_mismatch {
+        if flags.process_name_mismatch {
             adjustment.bonus = adjustment.bonus.saturating_add(self.protected_path_bonus);
             adjustment
                 .reasons
@@ -183,6 +736,46 @@ impl CompositeBehaviorScorer {
         }
 
         adjustment
+    }
+
+    fn effective_trust_context(
+        &self,
+        process: Option<&ProcessInfo>,
+        shared_risk: &SharedRiskSnapshot,
+        flags: ContextFlags,
+    ) -> EffectiveTrustContext {
+        let Some(process) = process else {
+            return EffectiveTrustContext::default();
+        };
+
+        let mut effective = EffectiveTrustContext {
+            trust_class: Some(process.trust_class),
+            shared_reason: None,
+        };
+
+        if flags.suspicious_lineage() {
+            return effective;
+        }
+
+        let Some(shared_match) = shared_risk.shared_process_trust(process) else {
+            return effective;
+        };
+        let Some(promoted) = promoted_trust_class(process.trust_class, &shared_match) else {
+            return effective;
+        };
+
+        effective.trust_class = Some(promoted);
+        effective.shared_reason = Some(shared_trust_reason(promoted, &shared_match));
+        effective
+    }
+
+    pub fn score_with_shared_risk(
+        &self,
+        batch: &FileActivityBatch,
+        correlation: &CorrelationResult,
+        shared_risk: &SharedRiskSnapshot,
+    ) -> BehaviorEvent {
+        self.score_impl(batch, correlation, shared_risk)
     }
 
     pub fn score_temp_exec_trigger(
@@ -211,9 +804,38 @@ impl CompositeBehaviorScorer {
             source: source.to_string(),
             watched_root: watched_root.to_string(),
             pid: process.map(|proc_info| proc_info.pid),
+            parent_pid: process.and_then(|proc_info| proc_info.parent_pid),
+            uid: process.and_then(|proc_info| proc_info.uid),
+            gid: process.and_then(|proc_info| proc_info.gid),
+            service_unit: process.and_then(|proc_info| proc_info.service_unit.clone()),
+            first_seen_at: process.map(|proc_info| proc_info.first_seen_at),
+            trust_class: process.map(|proc_info| proc_info.trust_class),
+            trust_policy_name: process.and_then(|proc_info| proc_info.trust_policy_name.clone()),
+            maintenance_activity: process.and_then(|proc_info| proc_info.maintenance_activity),
+            trust_policy_visibility: process
+                .map(|proc_info| proc_info.trust_policy_visibility)
+                .unwrap_or_default(),
+            package_name: process.and_then(|proc_info| proc_info.package_name.clone()),
+            package_manager: process.and_then(|proc_info| proc_info.package_manager.clone()),
             process_name: process.map(|proc_info| proc_info.process_name.clone()),
             exe_path: process.map(|proc_info| proc_info.exe_path.clone()),
             command_line: process.map(|proc_info| proc_info.command_line.clone()),
+            parent_process_name: process
+                .and_then(|proc_info| proc_info.parent_process_name.clone()),
+            parent_command_line: process
+                .and_then(|proc_info| proc_info.parent_command_line.clone()),
+            parent_chain: process
+                .map(|proc_info| proc_info.parent_chain.clone())
+                .unwrap_or_default(),
+            container_runtime: process.and_then(|proc_info| proc_info.container_runtime.clone()),
+            container_id: process.and_then(|proc_info| proc_info.container_id.clone()),
+            container_image: process.and_then(|proc_info| proc_info.container_image.clone()),
+            orchestrator: process
+                .map(|proc_info| proc_info.orchestrator.clone())
+                .unwrap_or_default(),
+            container_mounts: process
+                .map(|proc_info| proc_info.container_mounts.clone())
+                .unwrap_or_default(),
             correlation_hits: process
                 .map(|proc_info| proc_info.correlation_hits)
                 .unwrap_or(0),
@@ -229,12 +851,31 @@ impl CompositeBehaviorScorer {
     }
 }
 
-impl Scorer for CompositeBehaviorScorer {
-    fn score(&self, batch: &FileActivityBatch, correlation: &CorrelationResult) -> BehaviorEvent {
+impl CompositeBehaviorScorer {
+    #[allow(dead_code)]
+    pub fn score(
+        &self,
+        batch: &FileActivityBatch,
+        correlation: &CorrelationResult,
+    ) -> BehaviorEvent {
+        self.score_impl(batch, correlation, &SharedRiskSnapshot::default())
+    }
+    fn score_impl(
+        &self,
+        batch: &FileActivityBatch,
+        correlation: &CorrelationResult,
+        shared_risk: &SharedRiskSnapshot,
+    ) -> BehaviorEvent {
+        self.prune_recent_observations(batch.timestamp);
+
         let mut score = 0u32;
         let mut reasons = Vec::new();
 
-        let rename_component = batch.file_ops.renamed.saturating_mul(self.rename_score);
+        let rename_component = effective_burst_score(
+            batch.file_ops.renamed,
+            RENAME_BURST_GRACE,
+            self.rename_score,
+        );
         if batch.file_ops.renamed > 0 {
             score = score.saturating_add(rename_component);
             reasons.push(format!("rename burst x{}", batch.file_ops.renamed));
@@ -246,23 +887,69 @@ impl Scorer for CompositeBehaviorScorer {
             reasons.push(format!("write burst x{}", batch.file_ops.modified));
         }
 
-        let delete_component = batch.file_ops.deleted.saturating_mul(self.delete_score);
+        let delete_component = effective_burst_score(
+            batch.file_ops.deleted,
+            DELETE_BURST_GRACE,
+            self.delete_score,
+        );
         if batch.file_ops.deleted > 0 {
             score = score.saturating_add(delete_component);
             reasons.push(format!("delete burst x{}", batch.file_ops.deleted));
         }
 
-        if !batch.protected_paths_touched.is_empty() {
-            score = score.saturating_add(self.protected_path_bonus);
-            reasons.push("protected path touched".to_string());
-        }
-
         let throughput_component =
             (batch.bytes_written / self.bytes_per_score).min(u64::from(u32::MAX)) as u32;
+        let pre_path_activity_score = score.saturating_add(throughput_component);
+        let (extension_anomaly_component, extension_anomaly_reason, dominant_extension) = self
+            .extension_anomaly_component(batch, pre_path_activity_score)
+            .map(|(component, reason, extension)| (component, Some(reason), Some(extension)))
+            .unwrap_or((0, None, None));
+        if extension_anomaly_component > 0 {
+            score = score.saturating_add(extension_anomaly_component);
+        }
+        if let Some(reason) = extension_anomaly_reason {
+            reasons.push(reason);
+        }
 
-        if self.should_add_unknown_process_bonus(batch, throughput_component, correlation) {
-            score = score.saturating_add(self.unknown_process_bonus);
-            reasons.push("unknown process activity".to_string());
+        let (protected_path_component, protected_path_reason) = self
+            .protected_path_component(batch)
+            .map(|(component, reason)| (component, Some(reason)))
+            .unwrap_or((0, None));
+        if protected_path_component > 0 {
+            score = score.saturating_add(protected_path_component);
+        }
+        if let Some(reason) = protected_path_reason {
+            reasons.push(reason);
+        }
+        let (user_data_component, user_data_reason) = self
+            .user_data_component(batch, pre_path_activity_score)
+            .map(|(component, reason)| (component, Some(reason)))
+            .unwrap_or((0, None));
+        if user_data_component > 0 {
+            score = score.saturating_add(user_data_component);
+        }
+        if let Some(reason) = user_data_reason {
+            reasons.push(reason);
+        }
+        let (high_entropy_rewrite_component, high_entropy_rewrite_reason) = self
+            .high_entropy_rewrite_component(batch, pre_path_activity_score)
+            .map(|(component, reason)| (component, Some(reason)))
+            .unwrap_or((0, None));
+        if high_entropy_rewrite_component > 0 {
+            score = score.saturating_add(high_entropy_rewrite_component);
+        }
+        if let Some(reason) = high_entropy_rewrite_reason {
+            reasons.push(reason);
+        }
+        let (unreadable_rewrite_component, unreadable_rewrite_reason) = self
+            .unreadable_rewrite_component(batch, pre_path_activity_score)
+            .map(|(component, reason)| (component, Some(reason)))
+            .unwrap_or((0, None));
+        if unreadable_rewrite_component > 0 {
+            score = score.saturating_add(unreadable_rewrite_component);
+        }
+        if let Some(reason) = unreadable_rewrite_reason {
+            reasons.push(reason);
         }
 
         if throughput_component > 0 {
@@ -274,28 +961,160 @@ impl Scorer for CompositeBehaviorScorer {
         }
 
         let process = correlation.process.as_ref();
-        let adjustment = self.context_adjustment(
+        let flags = build_context_flags(batch, process);
+        let effective_trust = self.effective_trust_context(process, shared_risk, flags);
+        let user_data_targeting = user_data_component > 0;
+        let weak_identity = effective_trust.trust_class.is_none_or(|trust_class| {
+            matches!(
+                trust_class,
+                ProcessTrustClass::Unknown | ProcessTrustClass::Suspicious
+            )
+        });
+        let recurrence_component = self
+            .recurrence_component(
+                batch,
+                process,
+                dominant_extension.as_deref(),
+                weak_identity,
+                user_data_targeting,
+                flags.suspicious_lineage(),
+            )
+            .map(|(component, reason)| {
+                reasons.push(reason);
+                component
+            })
+            .unwrap_or(0);
+        if recurrence_component > 0 {
+            score = score.saturating_add(recurrence_component);
+        }
+        let (directory_spread_component, directory_spread_reason) = self
+            .directory_spread_component(batch, score)
+            .map(|(component, reason)| (component, Some(reason)))
+            .unwrap_or((0, None));
+        if directory_spread_component > 0 {
+            score = score.saturating_add(directory_spread_component);
+        }
+        if let Some(reason) = directory_spread_reason {
+            reasons.push(reason);
+        }
+
+        let shell_parent_component = if score > 0 && flags.shell_like_parent {
+            self.shell_parent_bonus
+        } else {
+            0
+        };
+        if shell_parent_component > 0 {
+            score = score.saturating_add(shell_parent_component);
+            reasons.push("shell-like parent lineage".to_string());
+        }
+
+        let identity_bonus_signal = shell_parent_component > 0
+            || self.should_add_unknown_process_bonus(batch, throughput_component, correlation)
+            || rename_component > 0
+            || delete_component > 0
+            || throughput_component > 0
+            || extension_anomaly_component > 0
+            || high_entropy_rewrite_component > 0
+            || unreadable_rewrite_component > 0
+            || protected_path_component > 0
+            || user_data_component > 0
+            || recurrence_component > 0
+            || directory_spread_component > 0;
+        let behavior_chain = self.assess_behavior_chain(
+            batch,
+            weak_identity,
+            flags,
+            BehaviorChainInputs {
+                extension_anomaly_component,
+                high_entropy_rewrite_component,
+                unreadable_rewrite_component,
+                user_data_component,
+                directory_spread_component,
+                throughput_component,
+                recurrence_component,
+            },
+        );
+        let trust_adjustment = self.trust_adjustment(
             batch,
             process,
-            rename_component,
-            write_component,
-            delete_component,
-            throughput_component,
+            &effective_trust,
+            identity_bonus_signal,
+            score,
+        );
+        let adjustment = self.context_adjustment(
+            process,
+            ScoreComponents {
+                protected_path: protected_path_component,
+                rename: rename_component,
+                write: write_component,
+                delete: delete_component,
+                throughput: throughput_component,
+                directory_spread: directory_spread_component,
+                high_entropy_rewrite: high_entropy_rewrite_component,
+                unreadable_rewrite: unreadable_rewrite_component,
+            },
+            flags,
         );
         score = score
             .saturating_sub(adjustment.penalty)
-            .saturating_add(adjustment.bonus);
+            .saturating_sub(trust_adjustment.penalty)
+            .saturating_add(adjustment.bonus)
+            .saturating_add(trust_adjustment.bonus);
         reasons.extend(adjustment.reasons);
-        let level = self.classify_level(score);
+        reasons.extend(trust_adjustment.reasons);
+        let raw_level = self.classify_level(score);
+        let (level, downgrade_reason) = self.correlated_level(raw_level, &behavior_chain);
+        if (level != raw_level)
+            || matches!(
+                level,
+                BehaviorLevel::HighRisk | BehaviorLevel::ContainmentCandidate
+            )
+        {
+            if let Some(reason) = behavior_chain.summary_reason() {
+                reasons.push(reason);
+            }
+        }
+        if let Some(reason) = downgrade_reason {
+            reasons.push(reason);
+        }
 
-        BehaviorEvent {
+        let event = BehaviorEvent {
             timestamp: batch.timestamp,
             source: batch.source.clone(),
             watched_root: batch.watched_root.clone(),
             pid: process.map(|proc_info| proc_info.pid),
+            parent_pid: process.and_then(|proc_info| proc_info.parent_pid),
+            uid: process.and_then(|proc_info| proc_info.uid),
+            gid: process.and_then(|proc_info| proc_info.gid),
+            service_unit: process.and_then(|proc_info| proc_info.service_unit.clone()),
+            first_seen_at: process.map(|proc_info| proc_info.first_seen_at),
+            trust_class: process.map(|proc_info| proc_info.trust_class),
+            trust_policy_name: process.and_then(|proc_info| proc_info.trust_policy_name.clone()),
+            maintenance_activity: process.and_then(|proc_info| proc_info.maintenance_activity),
+            trust_policy_visibility: process
+                .map(|proc_info| proc_info.trust_policy_visibility)
+                .unwrap_or_default(),
+            package_name: process.and_then(|proc_info| proc_info.package_name.clone()),
+            package_manager: process.and_then(|proc_info| proc_info.package_manager.clone()),
             process_name: process.map(|proc_info| proc_info.process_name.clone()),
             exe_path: process.map(|proc_info| proc_info.exe_path.clone()),
             command_line: process.map(|proc_info| proc_info.command_line.clone()),
+            parent_process_name: process
+                .and_then(|proc_info| proc_info.parent_process_name.clone()),
+            parent_command_line: process
+                .and_then(|proc_info| proc_info.parent_command_line.clone()),
+            parent_chain: process
+                .map(|proc_info| proc_info.parent_chain.clone())
+                .unwrap_or_default(),
+            container_runtime: process.and_then(|proc_info| proc_info.container_runtime.clone()),
+            container_id: process.and_then(|proc_info| proc_info.container_id.clone()),
+            container_image: process.and_then(|proc_info| proc_info.container_image.clone()),
+            orchestrator: process
+                .map(|proc_info| proc_info.orchestrator.clone())
+                .unwrap_or_default(),
+            container_mounts: process
+                .map(|proc_info| proc_info.container_mounts.clone())
+                .unwrap_or_default(),
             correlation_hits: process
                 .map(|proc_info| proc_info.correlation_hits)
                 .unwrap_or(0),
@@ -307,7 +1126,109 @@ impl Scorer for CompositeBehaviorScorer {
             score,
             reasons,
             level,
+        };
+
+        self.remember_observation(
+            batch,
+            process,
+            ObservationContext {
+                dominant_extension,
+                weak_identity,
+                user_data_targeting,
+                suspicious_lineage: flags.suspicious_lineage(),
+                score: event.score,
+            },
+        );
+
+        event
+    }
+
+    fn prune_recent_observations(&self, now: DateTime<Utc>) {
+        let mut recent_observations = self.recent_observations.borrow_mut();
+        while recent_observations.front().is_some_and(|entry| {
+            now.signed_duration_since(entry.timestamp).num_seconds()
+                > self.recurrence_window_secs as i64
+        }) {
+            recent_observations.pop_front();
         }
+    }
+
+    fn recurrence_component(
+        &self,
+        batch: &FileActivityBatch,
+        process: Option<&ProcessInfo>,
+        dominant_extension: Option<&str>,
+        weak_identity: bool,
+        user_data_targeting: bool,
+        suspicious_lineage: bool,
+    ) -> Option<(u32, String)> {
+        if !user_data_targeting {
+            return None;
+        }
+
+        let recent_observations = self.recent_observations.borrow();
+        let watched_root = normalize_history_value(&batch.watched_root);
+        let process_identity = process_history_identity(process);
+        let matching_history = recent_observations
+            .iter()
+            .filter(|entry| {
+                if entry.watched_root != watched_root {
+                    return false;
+                }
+                if !entry.user_data_targeting {
+                    return false;
+                }
+
+                let process_match = process_identity
+                    .as_ref()
+                    .zip(entry.process_identity.as_ref())
+                    .is_some_and(|(current, previous)| current == previous);
+                let extension_match = dominant_extension
+                    .zip(entry.dominant_extension.as_deref())
+                    .is_some_and(|(current, previous)| current == previous);
+                let suspicious_context_match = weak_identity
+                    && entry.weak_identity
+                    && suspicious_lineage
+                    && entry.suspicious_lineage;
+
+                process_match || extension_match || suspicious_context_match
+            })
+            .count()
+            .min(u32::MAX as usize) as u32;
+        let total_occurrences = matching_history.saturating_add(1);
+        if total_occurrences < self.recurrence_min_events {
+            return None;
+        }
+
+        Some((
+            matching_history
+                .max(1)
+                .saturating_mul(self.recurrence_score),
+            format!("recent recurrent activity x{}", total_occurrences),
+        ))
+    }
+
+    fn remember_observation(
+        &self,
+        batch: &FileActivityBatch,
+        process: Option<&ProcessInfo>,
+        context: ObservationContext,
+    ) {
+        if context.score == 0 {
+            return;
+        }
+
+        self.recent_observations
+            .borrow_mut()
+            .push_back(RecentBehaviorObservation {
+                timestamp: batch.timestamp,
+                watched_root: normalize_history_value(&batch.watched_root),
+                process_identity: process_history_identity(process),
+                dominant_extension: context.dominant_extension,
+                weak_identity: context.weak_identity,
+                user_data_targeting: context.user_data_targeting,
+                suspicious_lineage: context.suspicious_lineage,
+            });
     }
 }
 
@@ -336,6 +1257,188 @@ fn batch_touches_only_temp_paths(batch: &FileActivityBatch) -> bool {
         true
     } else {
         is_temp_path(&batch.watched_root)
+    }
+}
+
+fn batch_touches_only_paths(batch: &FileActivityBatch, prefixes: &[&str]) -> bool {
+    let mut saw_path = false;
+
+    for path in batch
+        .touched_paths
+        .iter()
+        .chain(batch.protected_paths_touched.iter())
+    {
+        saw_path = true;
+        if !path_matches_any_prefix(path, prefixes) {
+            return false;
+        }
+    }
+
+    if saw_path {
+        true
+    } else {
+        path_matches_any_prefix(&batch.watched_root, prefixes)
+    }
+}
+
+fn build_context_flags(batch: &FileActivityBatch, process: Option<&ProcessInfo>) -> ContextFlags {
+    let Some(process) = process else {
+        return ContextFlags::default();
+    };
+
+    ContextFlags {
+        known_java_temp_extraction: is_known_java_temp_extraction(process, batch),
+        package_manager_helper_activity: is_package_manager_helper_activity(process, batch),
+        trusted_maintenance_activity: is_trusted_maintenance_activity(process, batch),
+        containerized_service_temp_activity: is_containerized_service_temp_activity(process, batch),
+        agent_internal_activity: is_agent_internal_activity(process, batch),
+        process_name_mismatch: has_process_name_mismatch(process),
+        shell_like_parent: has_shell_like_parent(process),
+        temp_path_executable: is_temp_path(&process.exe_path),
+    }
+}
+
+fn batch_targets_user_data(batch: &FileActivityBatch) -> bool {
+    let mut saw_path = false;
+
+    for path in batch
+        .touched_paths
+        .iter()
+        .chain(batch.protected_paths_touched.iter())
+    {
+        saw_path = true;
+        if is_temp_path(path)
+            || path_matches_any_prefix(path, MAINTENANCE_PATH_PREFIXES)
+            || path_matches_any_prefix(path, AGENT_INTERNAL_PATH_PREFIXES)
+        {
+            continue;
+        }
+
+        if path_matches_any_prefix(path, USER_DATA_PATH_PREFIXES) {
+            return true;
+        }
+    }
+
+    !saw_path && path_matches_any_prefix(&batch.watched_root, USER_DATA_PATH_PREFIXES)
+}
+
+fn distinct_parent_dir_count(batch: &FileActivityBatch) -> u32 {
+    let directories = batch
+        .touched_paths
+        .iter()
+        .chain(batch.protected_paths_touched.iter())
+        .map(|path| {
+            Path::new(path)
+                .parent()
+                .unwrap_or_else(|| Path::new(path))
+                .display()
+                .to_string()
+        })
+        .collect::<HashSet<_>>();
+
+    if directories.is_empty() {
+        0
+    } else {
+        directories.len().min(u32::MAX as usize) as u32
+    }
+}
+
+fn dominant_rename_extension(batch: &FileActivityBatch) -> Option<(String, u32)> {
+    let mut counts = std::collections::HashMap::<String, u32>::new();
+
+    for extension in &batch.rename_extension_targets {
+        let normalized = extension.trim().to_ascii_lowercase();
+        if normalized.is_empty() {
+            continue;
+        }
+        *counts.entry(normalized).or_insert(0) += 1;
+    }
+
+    counts
+        .into_iter()
+        .max_by(|left, right| left.1.cmp(&right.1).then_with(|| right.0.cmp(&left.0)))
+}
+
+fn normalize_history_value(value: &str) -> String {
+    value.trim().to_ascii_lowercase()
+}
+
+fn process_history_identity(process: Option<&ProcessInfo>) -> Option<String> {
+    let process = process?;
+    let identity = process.exe_path.trim().to_ascii_lowercase();
+    if identity.is_empty() {
+        return None;
+    }
+
+    let service_unit = process
+        .service_unit
+        .as_deref()
+        .map(normalize_history_value)
+        .unwrap_or_else(|| "-".to_string());
+    let container = process
+        .container_image
+        .as_deref()
+        .or(process.container_id.as_deref())
+        .map(normalize_history_value)
+        .unwrap_or_else(|| "-".to_string());
+    Some(format!("{identity}|{service_unit}|{container}"))
+}
+
+fn promoted_trust_class(
+    local: ProcessTrustClass,
+    shared_match: &SharedProcessTrustMatch,
+) -> Option<ProcessTrustClass> {
+    if matches!(local, ProcessTrustClass::Suspicious) {
+        return None;
+    }
+
+    (trust_rank(shared_match.trust_class) > trust_rank(local)).then_some(shared_match.trust_class)
+}
+
+fn trust_rank(trust_class: ProcessTrustClass) -> u8 {
+    match trust_class {
+        ProcessTrustClass::Suspicious => 0,
+        ProcessTrustClass::Unknown => 1,
+        ProcessTrustClass::AllowedLocal => 2,
+        ProcessTrustClass::TrustedPackageManaged => 3,
+        ProcessTrustClass::TrustedSystem => 4,
+    }
+}
+
+fn shared_trust_reason(
+    effective_trust_class: ProcessTrustClass,
+    shared_match: &SharedProcessTrustMatch,
+) -> String {
+    let baseline = match effective_trust_class {
+        ProcessTrustClass::TrustedSystem => "fleet-shared trusted system lineage",
+        ProcessTrustClass::TrustedPackageManaged => "fleet-shared trusted package lineage",
+        ProcessTrustClass::AllowedLocal => "fleet-shared allowed lineage",
+        ProcessTrustClass::Unknown => "fleet-shared observed lineage",
+        ProcessTrustClass::Suspicious => "fleet-shared suspicious lineage",
+    };
+    format!("{baseline} ({})", shared_match.label)
+}
+
+fn adjust_threshold_for_profile(
+    base: u32,
+    profile: crate::config::ContainmentEnvironmentProfile,
+    delta: u32,
+) -> u32 {
+    match profile {
+        crate::config::ContainmentEnvironmentProfile::Conservative => base.saturating_add(delta),
+        crate::config::ContainmentEnvironmentProfile::Balanced => base,
+        crate::config::ContainmentEnvironmentProfile::Aggressive => base.saturating_sub(delta),
+    }
+}
+
+fn adjust_signal_requirement_for_profile(
+    base: u32,
+    profile: crate::config::ContainmentEnvironmentProfile,
+) -> u32 {
+    match profile {
+        crate::config::ContainmentEnvironmentProfile::Conservative => base.saturating_add(1),
+        crate::config::ContainmentEnvironmentProfile::Balanced => base,
+        crate::config::ContainmentEnvironmentProfile::Aggressive => base.saturating_sub(1).max(1),
     }
 }
 
@@ -370,7 +1473,23 @@ fn is_known_java_temp_extraction(process: &ProcessInfo, batch: &FileActivityBatc
 
 fn is_package_manager_helper_activity(process: &ProcessInfo, batch: &FileActivityBatch) -> bool {
     batch_touches_only_temp_paths(batch)
-        && process_matches_any_command_name(process, PACKAGE_HELPER_PATTERNS)
+        && matches!(
+            process.maintenance_activity,
+            Some(MaintenanceActivity::PackageManagerHelper)
+        )
+}
+
+fn is_trusted_maintenance_activity(process: &ProcessInfo, batch: &FileActivityBatch) -> bool {
+    batch_touches_only_paths(batch, MAINTENANCE_PATH_PREFIXES)
+        && matches!(
+            process.maintenance_activity,
+            Some(MaintenanceActivity::TrustedMaintenance)
+        )
+}
+
+fn is_agent_internal_activity(process: &ProcessInfo, batch: &FileActivityBatch) -> bool {
+    process_matches_any_command_name(process, AGENT_INTERNAL_PATTERNS)
+        || batch_touches_only_paths(batch, AGENT_INTERNAL_PATH_PREFIXES)
 }
 
 fn is_containerized_service_temp_activity(
@@ -386,7 +1505,18 @@ fn is_containerized_service_temp_activity(
 }
 
 fn has_shell_like_parent(process: &ProcessInfo) -> bool {
-    matches_any_command_name(
+    process.parent_chain.iter().any(|parent| {
+        matches_any_command_name(
+            [
+                parent.process_name.as_deref(),
+                parent.exe_path.as_deref().and_then(path_basename),
+                parent.command_line.as_deref().and_then(argv0_basename),
+            ]
+            .into_iter()
+            .flatten(),
+            SHELL_LIKE_PARENT_PATTERNS,
+        )
+    }) || matches_any_command_name(
         [
             process.parent_process_name.as_deref(),
             process
@@ -404,6 +1534,16 @@ fn is_trusted_system_executable(path: &str) -> bool {
     TRUSTED_EXEC_PREFIXES
         .iter()
         .any(|prefix| path.starts_with(prefix))
+}
+
+fn path_matches_any_prefix(path: &str, prefixes: &[&str]) -> bool {
+    prefixes.iter().any(|prefix| {
+        if *prefix == "/.config/bannkenn" {
+            path.contains(prefix)
+        } else {
+            path == *prefix || path.starts_with(&format!("{prefix}/"))
+        }
+    })
 }
 
 fn matches_any_command_name<'a>(
@@ -502,12 +1642,24 @@ fn has_process_name_mismatch(process: &ProcessInfo) -> bool {
         && !exe_name.contains(&process_name)
 }
 
+fn is_recent_process(process: &ProcessInfo, now: DateTime<Utc>, window_secs: u64) -> bool {
+    let window_secs = window_secs.max(1);
+    let age = now
+        .signed_duration_since(process.first_seen_at)
+        .num_seconds();
+    age >= 0 && age <= i64::try_from(window_secs).unwrap_or(i64::MAX)
+}
+
 fn normalize_process_name(value: &str) -> String {
     value
         .chars()
         .filter(|ch| ch.is_ascii_alphanumeric())
         .flat_map(char::to_lowercase)
         .collect()
+}
+
+fn effective_burst_score(count: u32, grace: u32, score_per_event: u32) -> u32 {
+    count.saturating_sub(grace).saturating_mul(score_per_event)
 }
 
 #[cfg(test)]

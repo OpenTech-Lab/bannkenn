@@ -107,6 +107,7 @@ pub struct SharedRiskResponse {
     pub global_risk_score: f64,
     pub global_threshold_multiplier: f64,
     pub categories: Vec<crate::db::SharedRiskCategoryRow>,
+    pub process_profiles: Vec<crate::db::SharedProcessProfileRow>,
 }
 
 #[derive(Debug, Serialize)]
@@ -213,6 +214,7 @@ pub async fn shared_risk_profile(
         global_risk_score: profile.global_risk_score,
         global_threshold_multiplier: profile.global_threshold_multiplier,
         categories: profile.categories,
+        process_profiles: profile.process_profiles,
     }))
 }
 

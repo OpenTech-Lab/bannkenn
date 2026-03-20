@@ -8,18 +8,38 @@ use crate::firewall::{
     should_skip_local_firewall_enforcement,
 };
 use crate::geoip;
-use crate::patterns::{all_patterns, all_ssh_login_patterns};
+use crate::patterns::{all_patterns, all_ssh_login_patterns, DetectionPattern, SshLoginPattern};
 use crate::risk_level::HostRiskLevel;
 use crate::shared_risk::SharedRiskSnapshot;
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::path::Path;
+use std::process::Stdio;
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::fs::File;
-use tokio::io::{AsyncReadExt, AsyncSeekExt};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncSeekExt, BufReader};
+use tokio::process::Command;
 use tokio::sync::{mpsc, RwLock};
 use tokio::time::{sleep, Duration};
+
+const TAIL_POLL_INTERVAL_MS: u64 = 200;
+const TAIL_ROTATION_CHECK_IDLE_POLLS: u32 = 5;
+const LOG_OPEN_INITIAL_BACKOFF_SECS: u64 = 2;
+const LOG_OPEN_MAX_BACKOFF_SECS: u64 = 60;
+const LOG_WARNING_COOLDOWN_SECS: u64 = 60;
+const JOURNALD_AUTH_SOURCE_LABEL: &str = "journald:auth";
+const JOURNALCTL_AUTH_FOLLOW_ARGS: &[&str] = &[
+    "--follow",
+    "--no-pager",
+    "--quiet",
+    "--output",
+    "cat",
+    "--lines",
+    "0",
+    "--facility=auth,authpriv",
+];
 
 #[derive(Debug, Clone)]
 struct RawDetection {
@@ -34,6 +54,70 @@ struct RawSshLogin {
     ip: String,
     username: String,
     log_path: String,
+}
+
+#[derive(Debug, Clone)]
+struct RateLimitedWarning {
+    cooldown: Duration,
+    last_emitted: Option<Instant>,
+    suppressed: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum LogSourcePlan {
+    File {
+        path: String,
+    },
+    JournaldAuth {
+        display_path: String,
+        fallback_path: String,
+    },
+}
+
+impl LogSourcePlan {
+    fn display_path(&self) -> &str {
+        match self {
+            Self::File { path } => path,
+            Self::JournaldAuth { display_path, .. } => display_path,
+        }
+    }
+}
+
+impl RateLimitedWarning {
+    fn new(cooldown: Duration) -> Self {
+        Self {
+            cooldown,
+            last_emitted: None,
+            suppressed: 0,
+        }
+    }
+
+    fn record(&mut self, now: Instant, message: impl Into<String>) -> Option<String> {
+        if let Some(last_emitted) = self.last_emitted {
+            if now.duration_since(last_emitted) < self.cooldown {
+                self.suppressed = self.suppressed.saturating_add(1);
+                return None;
+            }
+        }
+
+        let message = message.into();
+        let rendered = if self.suppressed == 0 {
+            message
+        } else {
+            format!(
+                "{} (suppressed {} similar warning(s))",
+                message, self.suppressed
+            )
+        };
+        self.last_emitted = Some(now);
+        self.suppressed = 0;
+        Some(rendered)
+    }
+
+    fn reset(&mut self) {
+        self.last_emitted = None;
+        self.suppressed = 0;
+    }
 }
 
 /// A risk event generated for every matched log line.
@@ -76,20 +160,21 @@ pub async fn watch(
     shared_risk_snapshot: Arc<RwLock<SharedRiskSnapshot>>,
     mut block_outcomes_rx: mpsc::Receiver<BlockOutcome>,
 ) -> Result<()> {
-    let log_paths = config.effective_log_paths();
-    if log_paths.is_empty() {
+    let log_sources = build_log_source_plans(config.effective_log_paths(), journald_is_available());
+    if log_sources.is_empty() {
         return Err(anyhow::anyhow!("No log paths configured"));
     }
 
     let (raw_tx, mut raw_rx) = mpsc::channel::<RawDetection>(1000);
     let (ssh_login_tx, mut ssh_login_rx) = mpsc::channel::<RawSshLogin>(200);
 
-    for log_path in log_paths {
+    for log_source in log_sources {
         let tx_clone = raw_tx.clone();
         let ssh_tx_clone = ssh_login_tx.clone();
+        let display_path = log_source.display_path().to_string();
         tokio::spawn(async move {
-            if let Err(err) = tail_log_path(log_path.clone(), tx_clone, ssh_tx_clone).await {
-                tracing::error!("Tailer stopped for {}: {}", log_path, err);
+            if let Err(err) = tail_log_source(log_source, tx_clone, ssh_tx_clone).await {
+                tracing::error!("Tailer stopped for {}: {}", display_path, err);
             }
         });
     }
@@ -180,6 +265,54 @@ pub async fn watch(
     Ok(())
 }
 
+fn build_log_source_plans(log_paths: Vec<String>, journald_available: bool) -> Vec<LogSourcePlan> {
+    let mut sources = Vec::new();
+    let mut journald_auth_added = false;
+
+    for path in log_paths {
+        if journald_available && is_legacy_auth_log_path(&path) {
+            if !journald_auth_added {
+                sources.push(LogSourcePlan::JournaldAuth {
+                    display_path: JOURNALD_AUTH_SOURCE_LABEL.to_string(),
+                    fallback_path: path,
+                });
+                journald_auth_added = true;
+            }
+            continue;
+        }
+
+        sources.push(LogSourcePlan::File { path });
+    }
+
+    sources
+}
+
+async fn tail_log_source(
+    source: LogSourcePlan,
+    tx: mpsc::Sender<RawDetection>,
+    ssh_login_tx: mpsc::Sender<RawSshLogin>,
+) -> Result<()> {
+    match source {
+        LogSourcePlan::File { path } => tail_log_path(path, tx, ssh_login_tx).await,
+        LogSourcePlan::JournaldAuth {
+            display_path,
+            fallback_path,
+        } => match tail_auth_journald(display_path.clone(), tx.clone(), ssh_login_tx.clone()).await
+        {
+            Ok(()) => Ok(()),
+            Err(err) => {
+                tracing::warn!(
+                    "Failed to start {} stream: {}. Falling back to {}",
+                    display_path,
+                    err,
+                    fallback_path
+                );
+                tail_log_path(fallback_path, tx, ssh_login_tx).await
+            }
+        },
+    }
+}
+
 async fn tail_log_path(
     log_path: String,
     tx: mpsc::Sender<RawDetection>,
@@ -187,33 +320,57 @@ async fn tail_log_path(
 ) -> Result<()> {
     let patterns = all_patterns()?;
     let ssh_login_patterns = all_ssh_login_patterns()?;
-    let poll_interval = Duration::from_millis(200);
+    let poll_interval = Duration::from_millis(TAIL_POLL_INTERVAL_MS);
+    let warning_cooldown = Duration::from_secs(LOG_WARNING_COOLDOWN_SECS);
+    let mut open_warning = RateLimitedWarning::new(warning_cooldown);
+    let mut read_warning = RateLimitedWarning::new(warning_cooldown);
+    let mut reopen_warning = RateLimitedWarning::new(warning_cooldown);
+    let mut open_backoff = Duration::from_secs(LOG_OPEN_INITIAL_BACKOFF_SECS);
 
     loop {
         let mut file = match open_log_at_end(&log_path).await {
-            Ok(file) => file,
+            Ok(file) => {
+                open_warning.reset();
+                read_warning.reset();
+                reopen_warning.reset();
+                open_backoff = Duration::from_secs(LOG_OPEN_INITIAL_BACKOFF_SECS);
+                file
+            }
             Err(err) => {
-                tracing::warn!("Failed to open {}: {}", log_path, err);
-                sleep(Duration::from_secs(2)).await;
+                let message = missing_log_warning_message(&log_path, &err, open_backoff);
+                emit_rate_limited_warning(&mut open_warning, message);
+                sleep(open_backoff).await;
+                open_backoff = next_retry_backoff(open_backoff);
                 continue;
             }
         };
 
         let mut file_pos = file.seek(std::io::SeekFrom::Current(0)).await?;
         let mut buffer = String::new();
+        let mut idle_polls = 0u32;
 
         loop {
-            if let Ok(meta) = tokio::fs::metadata(&log_path).await {
-                if meta.len() < file_pos {
-                    tracing::info!("Log rotation detected, reopening {}", log_path);
-                    match open_log_from_start(&log_path).await {
-                        Ok(new_file) => {
-                            file = new_file;
-                            file_pos = 0;
-                        }
-                        Err(err) => {
-                            tracing::warn!("Failed to reopen {} after rotation: {}", log_path, err);
-                            break;
+            if idle_polls.is_multiple_of(TAIL_ROTATION_CHECK_IDLE_POLLS) {
+                if let Ok(meta) = tokio::fs::metadata(&log_path).await {
+                    if meta.len() < file_pos {
+                        tracing::info!("Log rotation detected, reopening {}", log_path);
+                        match open_log_from_start(&log_path).await {
+                            Ok(new_file) => {
+                                file = new_file;
+                                file_pos = 0;
+                                reopen_warning.reset();
+                                idle_polls = 0;
+                            }
+                            Err(err) => {
+                                emit_rate_limited_warning(
+                                    &mut reopen_warning,
+                                    format!(
+                                        "Failed to reopen {} after rotation: {}",
+                                        log_path, err
+                                    ),
+                                );
+                                break;
+                            }
                         }
                     }
                 }
@@ -222,65 +379,242 @@ async fn tail_log_path(
             buffer.clear();
             match file.read_to_string(&mut buffer).await {
                 Ok(0) => {
+                    idle_polls = idle_polls.saturating_add(1);
                     sleep(poll_interval).await;
                     continue;
                 }
                 Ok(_) => {
+                    idle_polls = 0;
                     file_pos = file.seek(std::io::SeekFrom::Current(0)).await?;
 
                     for line in buffer.lines() {
-                        // Unwrap Docker json-file log envelope if present so
-                        // patterns match the actual log content inside it.
-                        let effective_line = extract_log_line(line);
-
-                        // Check SSH successful-login patterns first.
-                        // A successful login is informational — it must NOT
-                        // enter the attack pipeline.  If matched, send via the
-                        // dedicated ssh_login channel and skip attack patterns.
-                        let mut matched_login = false;
-                        for lp in &ssh_login_patterns {
-                            if let Some(caps) = lp.regex.captures(effective_line.as_ref()) {
-                                if let (Some(user), Some(ip)) = (caps.get(1), caps.get(2)) {
-                                    let _ = ssh_login_tx
-                                        .send(RawSshLogin {
-                                            ip: ip.as_str().to_string(),
-                                            username: user.as_str().to_string(),
-                                            log_path: log_path.clone(),
-                                        })
-                                        .await;
-                                    matched_login = true;
-                                    break;
-                                }
-                            }
-                        }
-                        if matched_login {
-                            continue;
-                        }
-
-                        for pattern in &patterns {
-                            if let Some(caps) = pattern.regex.captures(effective_line.as_ref()) {
-                                if let Some(m) = caps.get(1) {
-                                    let _ = tx
-                                        .send(RawDetection {
-                                            ip: m.as_str().to_string(),
-                                            reason: pattern.reason.to_string(),
-                                            log_path: log_path.clone(),
-                                        })
-                                        .await;
-                                }
-                            }
-                        }
+                        dispatch_log_line(
+                            line,
+                            &log_path,
+                            &patterns,
+                            &ssh_login_patterns,
+                            &tx,
+                            &ssh_login_tx,
+                        )
+                        .await;
                     }
                 }
                 Err(err) => {
-                    tracing::warn!("Error reading {}: {}", log_path, err);
+                    emit_rate_limited_warning(
+                        &mut read_warning,
+                        format!("Error reading {}: {}", log_path, err),
+                    );
                     break;
                 }
             }
         }
 
-        sleep(Duration::from_secs(1)).await;
+        sleep(open_backoff).await;
+        open_backoff = next_retry_backoff(open_backoff);
     }
+}
+
+async fn tail_auth_journald(
+    display_path: String,
+    tx: mpsc::Sender<RawDetection>,
+    ssh_login_tx: mpsc::Sender<RawSshLogin>,
+) -> Result<()> {
+    let patterns = all_patterns()?;
+    let ssh_login_patterns = all_ssh_login_patterns()?;
+    let warning_cooldown = Duration::from_secs(LOG_WARNING_COOLDOWN_SECS);
+    let mut stream_warning = RateLimitedWarning::new(warning_cooldown);
+    let mut restart_backoff = Duration::from_secs(LOG_OPEN_INITIAL_BACKOFF_SECS);
+    let mut started_once = false;
+
+    loop {
+        let mut child = match spawn_auth_journalctl_follow() {
+            Ok(child) => {
+                if !started_once {
+                    tracing::info!(
+                        "Using journald auth stream {} instead of legacy auth file polling",
+                        display_path
+                    );
+                }
+                started_once = true;
+                stream_warning.reset();
+                restart_backoff = Duration::from_secs(LOG_OPEN_INITIAL_BACKOFF_SECS);
+                child
+            }
+            Err(err) if !started_once => return Err(err),
+            Err(err) => {
+                emit_rate_limited_warning(
+                    &mut stream_warning,
+                    format!(
+                        "Failed to restart {} stream: {}. Retrying in {}s",
+                        display_path,
+                        err,
+                        restart_backoff.as_secs().max(1)
+                    ),
+                );
+                sleep(restart_backoff).await;
+                restart_backoff = next_retry_backoff(restart_backoff);
+                continue;
+            }
+        };
+
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| anyhow::anyhow!("journalctl follow did not expose stdout"))?;
+        let mut lines = BufReader::new(stdout).lines();
+
+        loop {
+            match lines.next_line().await {
+                Ok(Some(line)) => {
+                    dispatch_log_line(
+                        &line,
+                        &display_path,
+                        &patterns,
+                        &ssh_login_patterns,
+                        &tx,
+                        &ssh_login_tx,
+                    )
+                    .await;
+                }
+                Ok(None) => {
+                    let status = child.wait().await?;
+                    emit_rate_limited_warning(
+                        &mut stream_warning,
+                        format!(
+                            "{} stream exited with status {}. Restarting in {}s",
+                            display_path,
+                            status,
+                            restart_backoff.as_secs().max(1)
+                        ),
+                    );
+                    break;
+                }
+                Err(err) => {
+                    emit_rate_limited_warning(
+                        &mut stream_warning,
+                        format!(
+                            "Error reading {} stream: {}. Restarting in {}s",
+                            display_path,
+                            err,
+                            restart_backoff.as_secs().max(1)
+                        ),
+                    );
+                    let _ = child.kill().await;
+                    let _ = child.wait().await;
+                    break;
+                }
+            }
+        }
+
+        sleep(restart_backoff).await;
+        restart_backoff = next_retry_backoff(restart_backoff);
+    }
+}
+
+fn spawn_auth_journalctl_follow() -> Result<tokio::process::Child> {
+    let mut command = Command::new("journalctl");
+    command
+        .args(JOURNALCTL_AUTH_FOLLOW_ARGS)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .stdin(Stdio::null())
+        .kill_on_drop(true);
+    Ok(command.spawn()?)
+}
+
+async fn dispatch_log_line(
+    line: &str,
+    log_path: &str,
+    patterns: &[DetectionPattern],
+    ssh_login_patterns: &[SshLoginPattern],
+    tx: &mpsc::Sender<RawDetection>,
+    ssh_login_tx: &mpsc::Sender<RawSshLogin>,
+) {
+    let effective_line = extract_log_line(line);
+
+    for login_pattern in ssh_login_patterns {
+        if let Some(caps) = login_pattern.regex.captures(effective_line.as_ref()) {
+            if let (Some(user), Some(ip)) = (caps.get(1), caps.get(2)) {
+                let _ = ssh_login_tx
+                    .send(RawSshLogin {
+                        ip: ip.as_str().to_string(),
+                        username: user.as_str().to_string(),
+                        log_path: log_path.to_string(),
+                    })
+                    .await;
+                return;
+            }
+        }
+    }
+
+    for pattern in patterns {
+        if let Some(caps) = pattern.regex.captures(effective_line.as_ref()) {
+            if let Some(m) = caps.get(1) {
+                let _ = tx
+                    .send(RawDetection {
+                        ip: m.as_str().to_string(),
+                        reason: pattern.reason.to_string(),
+                        log_path: log_path.to_string(),
+                    })
+                    .await;
+            }
+        }
+    }
+}
+
+fn emit_rate_limited_warning(limiter: &mut RateLimitedWarning, message: String) {
+    if let Some(rendered) = limiter.record(Instant::now(), message) {
+        tracing::warn!("{}", rendered);
+    }
+}
+
+fn missing_log_warning_message(
+    log_path: &str,
+    error: &anyhow::Error,
+    retry_delay: Duration,
+) -> String {
+    let retry_secs = retry_delay.as_secs().max(1);
+    if should_hint_journald(log_path, error) {
+        format!(
+            "Failed to open {}: {}. journald appears to be available, so file polling will back off for {}s until the path exists",
+            log_path, error, retry_secs
+        )
+    } else {
+        format!(
+            "Failed to open {}: {}. Backing off file polling for {}s",
+            log_path, error, retry_secs
+        )
+    }
+}
+
+fn should_hint_journald(log_path: &str, error: &anyhow::Error) -> bool {
+    matches!(
+        error
+            .downcast_ref::<std::io::Error>()
+            .map(std::io::Error::kind),
+        Some(std::io::ErrorKind::NotFound)
+    ) && is_legacy_auth_log_path(log_path)
+        && journald_is_available()
+}
+
+fn is_legacy_auth_log_path(log_path: &str) -> bool {
+    matches!(
+        log_path,
+        "/var/log/auth.log" | "/var/log/secure" | "/var/log/syslog" | "/var/log/messages"
+    )
+}
+
+fn journald_is_available() -> bool {
+    Path::new("/run/systemd/journal/socket").exists() || Path::new("/var/log/journal").is_dir()
+}
+
+fn next_retry_backoff(current: Duration) -> Duration {
+    let current_secs = current.as_secs().max(1);
+    Duration::from_secs(
+        current_secs
+            .saturating_mul(2)
+            .min(LOG_OPEN_MAX_BACKOFF_SECS),
+    )
 }
 
 /// Convert an internal source identifier to a human-readable feed/database name.

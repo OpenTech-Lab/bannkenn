@@ -46,9 +46,27 @@ pub(crate) async fn migrate(pool: &SqlitePool) -> anyhow::Result<()> {
             source TEXT NOT NULL,
             watched_root TEXT NOT NULL,
             pid INTEGER,
+            parent_pid INTEGER,
+            uid INTEGER,
+            gid INTEGER,
+            service_unit TEXT,
+            first_seen_at TEXT,
+            trust_class TEXT,
+            trust_policy_name TEXT,
+            maintenance_activity TEXT,
+            package_name TEXT,
+            package_manager TEXT,
+            parent_chain_json TEXT NOT NULL DEFAULT '[]',
             process_name TEXT,
             exe_path TEXT,
             command_line TEXT,
+            parent_process_name TEXT,
+            parent_command_line TEXT,
+            container_runtime TEXT,
+            container_id TEXT,
+            container_image TEXT,
+            orchestrator_json TEXT NOT NULL DEFAULT '{}',
+            container_mounts_json TEXT NOT NULL DEFAULT '[]',
             correlation_hits INTEGER NOT NULL DEFAULT 0,
             file_ops_created INTEGER NOT NULL DEFAULT 0,
             file_ops_modified INTEGER NOT NULL DEFAULT 0,
@@ -385,30 +403,36 @@ pub(crate) async fn migrate(pool: &SqlitePool) -> anyhow::Result<()> {
     .execute(pool)
     .await?;
 
-    let _ = sqlx::query("ALTER TABLE agents ADD COLUMN uuid TEXT")
-        .execute(pool)
-        .await;
-    let _ = sqlx::query("ALTER TABLE agents ADD COLUMN nickname TEXT")
-        .execute(pool)
-        .await;
-    let _ = sqlx::query("ALTER TABLE decisions ADD COLUMN country TEXT")
-        .execute(pool)
-        .await;
-    let _ = sqlx::query("ALTER TABLE decisions ADD COLUMN asn_org TEXT")
-        .execute(pool)
-        .await;
-    let _ = sqlx::query("ALTER TABLE behavior_events ADD COLUMN incident_id INTEGER")
-        .execute(pool)
-        .await;
-    let _ = sqlx::query("ALTER TABLE containment_events ADD COLUMN incident_id INTEGER")
-        .execute(pool)
-        .await;
-    let _ = sqlx::query("ALTER TABLE agent_heartbeats ADD COLUMN butterfly_shield_enabled INTEGER")
-        .execute(pool)
-        .await;
-    let _ = sqlx::query("ALTER TABLE agent_heartbeats ADD COLUMN containment_sensor TEXT")
-        .execute(pool)
-        .await;
+    for statement in [
+        "ALTER TABLE agents ADD COLUMN uuid TEXT",
+        "ALTER TABLE agents ADD COLUMN nickname TEXT",
+        "ALTER TABLE decisions ADD COLUMN country TEXT",
+        "ALTER TABLE decisions ADD COLUMN asn_org TEXT",
+        "ALTER TABLE behavior_events ADD COLUMN incident_id INTEGER",
+        "ALTER TABLE behavior_events ADD COLUMN parent_process_name TEXT",
+        "ALTER TABLE behavior_events ADD COLUMN parent_command_line TEXT",
+        "ALTER TABLE behavior_events ADD COLUMN parent_pid INTEGER",
+        "ALTER TABLE behavior_events ADD COLUMN uid INTEGER",
+        "ALTER TABLE behavior_events ADD COLUMN gid INTEGER",
+        "ALTER TABLE behavior_events ADD COLUMN service_unit TEXT",
+        "ALTER TABLE behavior_events ADD COLUMN first_seen_at TEXT",
+        "ALTER TABLE behavior_events ADD COLUMN trust_class TEXT",
+        "ALTER TABLE behavior_events ADD COLUMN trust_policy_name TEXT",
+        "ALTER TABLE behavior_events ADD COLUMN maintenance_activity TEXT",
+        "ALTER TABLE behavior_events ADD COLUMN package_name TEXT",
+        "ALTER TABLE behavior_events ADD COLUMN package_manager TEXT",
+        "ALTER TABLE behavior_events ADD COLUMN parent_chain_json TEXT NOT NULL DEFAULT '[]'",
+        "ALTER TABLE behavior_events ADD COLUMN container_runtime TEXT",
+        "ALTER TABLE behavior_events ADD COLUMN container_id TEXT",
+        "ALTER TABLE behavior_events ADD COLUMN container_image TEXT",
+        "ALTER TABLE behavior_events ADD COLUMN orchestrator_json TEXT NOT NULL DEFAULT '{}'",
+        "ALTER TABLE behavior_events ADD COLUMN container_mounts_json TEXT NOT NULL DEFAULT '[]'",
+        "ALTER TABLE containment_events ADD COLUMN incident_id INTEGER",
+        "ALTER TABLE agent_heartbeats ADD COLUMN butterfly_shield_enabled INTEGER",
+        "ALTER TABLE agent_heartbeats ADD COLUMN containment_sensor TEXT",
+    ] {
+        add_column_if_missing(pool, statement).await?;
+    }
 
     sqlx::query(
         r#"
@@ -452,4 +476,71 @@ pub(crate) async fn migrate(pool: &SqlitePool) -> anyhow::Result<()> {
     .await?;
 
     Ok(())
+}
+
+async fn add_column_if_missing(pool: &SqlitePool, statement: &str) -> anyhow::Result<()> {
+    match sqlx::query(statement).execute(pool).await {
+        Ok(_) => Ok(()),
+        Err(err) if is_duplicate_column_error(&err) => Ok(()),
+        Err(err) => Err(err.into()),
+    }
+}
+
+fn is_duplicate_column_error(err: &sqlx::Error) -> bool {
+    err.as_database_error()
+        .map(|db_err| db_err.message().contains("duplicate column name"))
+        .unwrap_or(false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sqlx::sqlite::SqlitePoolOptions;
+
+    #[tokio::test]
+    async fn add_column_if_missing_ignores_duplicate_column_errors() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("in-memory sqlite pool");
+
+        sqlx::query("CREATE TABLE widgets (id INTEGER PRIMARY KEY)")
+            .execute(&pool)
+            .await
+            .expect("create table");
+
+        add_column_if_missing(&pool, "ALTER TABLE widgets ADD COLUMN name TEXT")
+            .await
+            .expect("first add-column migration");
+        add_column_if_missing(&pool, "ALTER TABLE widgets ADD COLUMN name TEXT")
+            .await
+            .expect("duplicate add-column should be ignored");
+
+        let column_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM pragma_table_info('widgets') WHERE name = 'name'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("count migrated columns");
+        assert_eq!(column_count, 1);
+    }
+
+    #[tokio::test]
+    async fn add_column_if_missing_propagates_non_duplicate_errors() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("in-memory sqlite pool");
+
+        let err = add_column_if_missing(&pool, "ALTER TABLE missing_table ADD COLUMN name TEXT")
+            .await
+            .expect_err("missing-table migration should fail");
+
+        assert!(
+            err.to_string().contains("no such table"),
+            "unexpected migration error: {err:#}"
+        );
+    }
 }

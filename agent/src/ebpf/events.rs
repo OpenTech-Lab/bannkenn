@@ -1,3 +1,4 @@
+use crate::config::TrustPolicyVisibility;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::mem::size_of;
@@ -34,6 +35,14 @@ impl FileOperationCounts {
     }
 }
 
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct FileContentIndicators {
+    #[serde(default)]
+    pub unreadable_rewrites: u32,
+    #[serde(default)]
+    pub high_entropy_rewrites: u32,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct FileActivityBatch {
     pub timestamp: DateTime<Utc>,
@@ -43,6 +52,10 @@ pub struct FileActivityBatch {
     pub file_ops: FileOperationCounts,
     pub touched_paths: Vec<String>,
     pub protected_paths_touched: Vec<String>,
+    #[serde(default)]
+    pub rename_extension_targets: Vec<String>,
+    #[serde(default)]
+    pub content_indicators: FileContentIndicators,
     pub bytes_written: u64,
     pub io_rate_bytes_per_sec: u64,
 }
@@ -50,6 +63,27 @@ pub struct FileActivityBatch {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ProcessInfo {
     pub pid: u32,
+    #[serde(default)]
+    pub parent_pid: Option<u32>,
+    #[serde(default)]
+    pub uid: Option<u32>,
+    #[serde(default)]
+    pub gid: Option<u32>,
+    #[serde(default)]
+    pub service_unit: Option<String>,
+    pub first_seen_at: DateTime<Utc>,
+    #[serde(default)]
+    pub trust_class: ProcessTrustClass,
+    #[serde(default)]
+    pub trust_policy_name: Option<String>,
+    #[serde(default)]
+    pub maintenance_activity: Option<MaintenanceActivity>,
+    #[serde(skip, default)]
+    pub trust_policy_visibility: TrustPolicyVisibility,
+    #[serde(default)]
+    pub package_name: Option<String>,
+    #[serde(default)]
+    pub package_manager: Option<String>,
     pub process_name: String,
     pub exe_path: String,
     pub command_line: String,
@@ -59,9 +93,92 @@ pub struct ProcessInfo {
     #[serde(default)]
     pub parent_command_line: Option<String>,
     #[serde(default)]
+    pub parent_chain: Vec<ProcessAncestor>,
+    #[serde(default)]
     pub container_runtime: Option<String>,
     #[serde(default)]
     pub container_id: Option<String>,
+    #[serde(default)]
+    pub container_image: Option<String>,
+    #[serde(default)]
+    pub orchestrator: OrchestratorMetadata,
+    #[serde(default)]
+    pub container_mounts: Vec<ContainerMount>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProcessAncestor {
+    pub pid: u32,
+    #[serde(default)]
+    pub process_name: Option<String>,
+    #[serde(default)]
+    pub exe_path: Option<String>,
+    #[serde(default)]
+    pub command_line: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct OrchestratorMetadata {
+    #[serde(default)]
+    pub platform: Option<String>,
+    #[serde(default)]
+    pub namespace: Option<String>,
+    #[serde(default)]
+    pub workload: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ContainerMount {
+    pub mount_type: String,
+    #[serde(default)]
+    pub source: Option<String>,
+    pub destination: String,
+    #[serde(default)]
+    pub name: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub enum ProcessTrustClass {
+    #[serde(rename = "trusted_system_process")]
+    TrustedSystem,
+    #[serde(rename = "trusted_package_managed_process")]
+    TrustedPackageManaged,
+    #[serde(rename = "allowed_local_process")]
+    AllowedLocal,
+    #[serde(rename = "unknown_process")]
+    #[default]
+    Unknown,
+    #[serde(rename = "suspicious_process")]
+    Suspicious,
+}
+
+impl ProcessTrustClass {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::TrustedSystem => "trusted_system_process",
+            Self::TrustedPackageManaged => "trusted_package_managed_process",
+            Self::AllowedLocal => "allowed_local_process",
+            Self::Unknown => "unknown_process",
+            Self::Suspicious => "suspicious_process",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub enum MaintenanceActivity {
+    #[serde(rename = "package_manager_helper")]
+    PackageManagerHelper,
+    #[serde(rename = "trusted_maintenance")]
+    TrustedMaintenance,
+}
+
+impl MaintenanceActivity {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::PackageManagerHelper => "package_manager_helper",
+            Self::TrustedMaintenance => "trusted_maintenance",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -69,8 +186,8 @@ pub struct ProcessInfo {
 pub enum BehaviorLevel {
     Observed,
     Suspicious,
-    ThrottleCandidate,
-    FuseCandidate,
+    HighRisk,
+    ContainmentCandidate,
 }
 
 impl BehaviorLevel {
@@ -78,8 +195,8 @@ impl BehaviorLevel {
         match self {
             Self::Observed => "observed",
             Self::Suspicious => "suspicious",
-            Self::ThrottleCandidate => "throttle_candidate",
-            Self::FuseCandidate => "fuse_candidate",
+            Self::HighRisk => "high_risk",
+            Self::ContainmentCandidate => "containment_candidate",
         }
     }
 }
@@ -90,9 +207,33 @@ pub struct BehaviorEvent {
     pub source: String,
     pub watched_root: String,
     pub pid: Option<u32>,
+    pub parent_pid: Option<u32>,
+    pub uid: Option<u32>,
+    pub gid: Option<u32>,
+    pub service_unit: Option<String>,
+    pub first_seen_at: Option<DateTime<Utc>>,
+    pub trust_class: Option<ProcessTrustClass>,
+    pub trust_policy_name: Option<String>,
+    pub maintenance_activity: Option<MaintenanceActivity>,
+    #[serde(skip, default)]
+    pub trust_policy_visibility: TrustPolicyVisibility,
+    pub package_name: Option<String>,
+    pub package_manager: Option<String>,
     pub process_name: Option<String>,
     pub exe_path: Option<String>,
     pub command_line: Option<String>,
+    pub parent_process_name: Option<String>,
+    pub parent_command_line: Option<String>,
+    #[serde(default)]
+    pub parent_chain: Vec<ProcessAncestor>,
+    pub container_runtime: Option<String>,
+    pub container_id: Option<String>,
+    #[serde(default)]
+    pub container_image: Option<String>,
+    #[serde(default)]
+    pub orchestrator: OrchestratorMetadata,
+    #[serde(default)]
+    pub container_mounts: Vec<ContainerMount>,
     pub correlation_hits: u32,
     pub file_ops: FileOperationCounts,
     pub touched_paths: Vec<String>,

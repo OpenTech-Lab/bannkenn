@@ -1,5 +1,7 @@
 use crate::containment::ContainmentDecision;
-use crate::ebpf::events::{BehaviorEvent, FileOperationCounts};
+use crate::ebpf::events::{
+    BehaviorEvent, ContainerMount, FileOperationCounts, OrchestratorMetadata, ProcessAncestor,
+};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -8,9 +10,31 @@ pub struct BehaviorEventUpload {
     pub source: String,
     pub watched_root: String,
     pub pid: Option<u32>,
+    pub parent_pid: Option<u32>,
+    pub uid: Option<u32>,
+    pub gid: Option<u32>,
+    pub service_unit: Option<String>,
+    pub first_seen_at: Option<String>,
+    pub trust_class: Option<String>,
+    pub trust_policy_name: Option<String>,
+    pub maintenance_activity: Option<String>,
+    pub package_name: Option<String>,
+    pub package_manager: Option<String>,
     pub process_name: Option<String>,
     pub exe_path: Option<String>,
     pub command_line: Option<String>,
+    pub parent_process_name: Option<String>,
+    pub parent_command_line: Option<String>,
+    #[serde(default)]
+    pub parent_chain: Vec<ProcessAncestor>,
+    pub container_runtime: Option<String>,
+    pub container_id: Option<String>,
+    #[serde(default)]
+    pub container_image: Option<String>,
+    #[serde(default)]
+    pub orchestrator: OrchestratorMetadata,
+    #[serde(default)]
+    pub container_mounts: Vec<ContainerMount>,
     pub correlation_hits: u32,
     pub file_ops: FileOperationCounts,
     pub touched_paths: Vec<String>,
@@ -50,9 +74,29 @@ impl From<&BehaviorEvent> for BehaviorEventUpload {
             source: event.source.clone(),
             watched_root: event.watched_root.clone(),
             pid: event.pid,
+            parent_pid: event.parent_pid,
+            uid: event.uid,
+            gid: event.gid,
+            service_unit: event.service_unit.clone(),
+            first_seen_at: event.first_seen_at.map(|timestamp| timestamp.to_rfc3339()),
+            trust_class: event.trust_class.map(|class| class.as_str().to_string()),
+            trust_policy_name: event.trust_policy_name.clone(),
+            maintenance_activity: event
+                .maintenance_activity
+                .map(|activity| activity.as_str().to_string()),
+            package_name: event.package_name.clone(),
+            package_manager: event.package_manager.clone(),
             process_name: event.process_name.clone(),
             exe_path: event.exe_path.clone(),
             command_line: event.command_line.clone(),
+            parent_process_name: event.parent_process_name.clone(),
+            parent_command_line: event.parent_command_line.clone(),
+            parent_chain: event.parent_chain.clone(),
+            container_runtime: event.container_runtime.clone(),
+            container_id: event.container_id.clone(),
+            container_image: event.container_image.clone(),
+            orchestrator: event.orchestrator.clone(),
+            container_mounts: event.container_mounts.clone(),
             correlation_hits: event.correlation_hits,
             file_ops: event.file_ops,
             touched_paths: event.touched_paths.clone(),

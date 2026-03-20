@@ -49,9 +49,27 @@ impl Db {
             "source": &event.source,
             "level": &event.level,
             "pid": event.pid,
+            "parent_pid": event.parent_pid,
+            "uid": event.uid,
+            "gid": event.gid,
+            "service_unit": &event.service_unit,
+            "first_seen_at": &event.first_seen_at,
+            "trust_class": &event.trust_class,
+            "trust_policy_name": &event.trust_policy_name,
+            "maintenance_activity": &event.maintenance_activity,
+            "package_name": &event.package_name,
+            "package_manager": &event.package_manager,
+            "parent_chain": &event.parent_chain,
             "process_name": &event.process_name,
             "exe_path": &event.exe_path,
             "command_line": &event.command_line,
+            "parent_process_name": &event.parent_process_name,
+            "parent_command_line": &event.parent_command_line,
+            "container_runtime": &event.container_runtime,
+            "container_id": &event.container_id,
+            "container_image": &event.container_image,
+            "orchestrator": &event.orchestrator,
+            "container_mounts": &event.container_mounts,
             "correlation_hits": event.correlation_hits,
             "file_ops": &event.file_ops,
             "touched_paths": &event.touched_paths,
@@ -145,6 +163,9 @@ impl Db {
         let touched_paths_json = encode_json(&event.touched_paths)?;
         let protected_paths_json = encode_json(&event.protected_paths_touched)?;
         let reasons_json = encode_json(&event.reasons)?;
+        let parent_chain_json = encode_json(&event.parent_chain)?;
+        let orchestrator_json = encode_json(&event.orchestrator)?;
+        let container_mounts_json = encode_json(&event.container_mounts)?;
         let result = sqlx::query(
             r#"
             INSERT INTO behavior_events (
@@ -153,9 +174,27 @@ impl Db {
                 source,
                 watched_root,
                 pid,
+                parent_pid,
+                uid,
+                gid,
+                service_unit,
+                first_seen_at,
+                trust_class,
+                trust_policy_name,
+                maintenance_activity,
+                package_name,
+                package_manager,
+                parent_chain_json,
                 process_name,
                 exe_path,
                 command_line,
+                parent_process_name,
+                parent_command_line,
+                container_runtime,
+                container_id,
+                container_image,
+                orchestrator_json,
+                container_mounts_json,
                 correlation_hits,
                 file_ops_created,
                 file_ops_modified,
@@ -170,7 +209,7 @@ impl Db {
                 level,
                 created_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             "#,
         )
         .bind(incident_id)
@@ -178,9 +217,27 @@ impl Db {
         .bind(&event.source)
         .bind(&event.watched_root)
         .bind(event.pid.map(i64::from))
+        .bind(event.parent_pid.map(i64::from))
+        .bind(event.uid.map(i64::from))
+        .bind(event.gid.map(i64::from))
+        .bind(&event.service_unit)
+        .bind(&event.first_seen_at)
+        .bind(&event.trust_class)
+        .bind(&event.trust_policy_name)
+        .bind(&event.maintenance_activity)
+        .bind(&event.package_name)
+        .bind(&event.package_manager)
+        .bind(parent_chain_json)
         .bind(&event.process_name)
         .bind(&event.exe_path)
         .bind(&event.command_line)
+        .bind(&event.parent_process_name)
+        .bind(&event.parent_command_line)
+        .bind(&event.container_runtime)
+        .bind(&event.container_id)
+        .bind(&event.container_image)
+        .bind(orchestrator_json)
+        .bind(container_mounts_json)
         .bind(i64::from(event.correlation_hits))
         .bind(i64::from(event.file_ops.created))
         .bind(i64::from(event.file_ops.modified))
@@ -212,9 +269,27 @@ impl Db {
                 source,
                 watched_root,
                 pid,
+                parent_pid,
+                uid,
+                gid,
+                service_unit,
+                first_seen_at,
+                trust_class,
+                trust_policy_name,
+                maintenance_activity,
+                package_name,
+                package_manager,
+                parent_chain_json,
                 process_name,
                 exe_path,
                 command_line,
+                parent_process_name,
+                parent_command_line,
+                container_runtime,
+                container_id,
+                container_image,
+                orchestrator_json,
+                container_mounts_json,
                 correlation_hits,
                 file_ops_created,
                 file_ops_modified,
@@ -263,9 +338,27 @@ impl Db {
                 source,
                 watched_root,
                 pid,
+                parent_pid,
+                uid,
+                gid,
+                service_unit,
+                first_seen_at,
+                trust_class,
+                trust_policy_name,
+                maintenance_activity,
+                package_name,
+                package_manager,
+                parent_chain_json,
                 process_name,
                 exe_path,
                 command_line,
+                parent_process_name,
+                parent_command_line,
+                container_runtime,
+                container_id,
+                container_image,
+                orchestrator_json,
+                container_mounts_json,
                 correlation_hits,
                 file_ops_created,
                 file_ops_modified,
@@ -300,6 +393,9 @@ fn map_behavior_event_row(row: sqlx::sqlite::SqliteRow) -> anyhow::Result<Behavi
     let touched_paths_json: String = row.try_get("touched_paths_json")?;
     let protected_paths_json: String = row.try_get("protected_paths_json")?;
     let reasons_json: String = row.try_get("reasons_json")?;
+    let parent_chain_json: Option<String> = row.try_get("parent_chain_json")?;
+    let orchestrator_json: Option<String> = row.try_get("orchestrator_json")?;
+    let container_mounts_json: Option<String> = row.try_get("container_mounts_json")?;
 
     Ok(BehaviorEventRow {
         id: row.try_get("id")?,
@@ -307,9 +403,36 @@ fn map_behavior_event_row(row: sqlx::sqlite::SqliteRow) -> anyhow::Result<Behavi
         source: row.try_get("source")?,
         watched_root: row.try_get("watched_root")?,
         pid: from_i64_opt_u32(row.try_get("pid")?, "behavior_events.pid")?,
+        parent_pid: from_i64_opt_u32(row.try_get("parent_pid")?, "behavior_events.parent_pid")?,
+        uid: from_i64_opt_u32(row.try_get("uid")?, "behavior_events.uid")?,
+        gid: from_i64_opt_u32(row.try_get("gid")?, "behavior_events.gid")?,
+        service_unit: row.try_get("service_unit")?,
+        first_seen_at: row.try_get("first_seen_at")?,
+        trust_class: row.try_get("trust_class")?,
+        trust_policy_name: row.try_get("trust_policy_name")?,
+        maintenance_activity: row.try_get("maintenance_activity")?,
+        package_name: row.try_get("package_name")?,
+        package_manager: row.try_get("package_manager")?,
+        parent_chain: decode_json(
+            &parent_chain_json.unwrap_or_else(|| "[]".to_string()),
+            "behavior_events.parent_chain_json",
+        )?,
         process_name: row.try_get("process_name")?,
         exe_path: row.try_get("exe_path")?,
         command_line: row.try_get("command_line")?,
+        parent_process_name: row.try_get("parent_process_name")?,
+        parent_command_line: row.try_get("parent_command_line")?,
+        container_runtime: row.try_get("container_runtime")?,
+        container_id: row.try_get("container_id")?,
+        container_image: row.try_get("container_image")?,
+        orchestrator: decode_json(
+            &orchestrator_json.unwrap_or_else(|| "{}".to_string()),
+            "behavior_events.orchestrator_json",
+        )?,
+        container_mounts: decode_json(
+            &container_mounts_json.unwrap_or_else(|| "[]".to_string()),
+            "behavior_events.container_mounts_json",
+        )?,
         correlation_hits: from_i64_u32(
             row.try_get("correlation_hits")?,
             "behavior_events.correlation_hits",

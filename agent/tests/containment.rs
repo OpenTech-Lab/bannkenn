@@ -2,20 +2,48 @@ use bannkenn_agent::{
     client::ContainmentActionRow,
     config::ContainmentConfig,
     containment::{ContainmentCoordinator, ContainmentState},
-    ebpf::events::{BehaviorEvent, BehaviorLevel, FileOperationCounts},
+    ebpf::events::{BehaviorEvent, BehaviorLevel, FileOperationCounts, ProcessTrustClass},
     enforcement::EnforcementAction,
 };
 use chrono::{Duration, Utc};
 
 fn event(level: BehaviorLevel, score: u32, pid: Option<u32>) -> BehaviorEvent {
+    event_for_root(level, score, pid, "/srv/data")
+}
+
+fn event_for_root(
+    level: BehaviorLevel,
+    score: u32,
+    pid: Option<u32>,
+    watched_root: &str,
+) -> BehaviorEvent {
     BehaviorEvent {
         timestamp: Utc::now(),
         source: "test".to_string(),
-        watched_root: "/srv/data".to_string(),
+        watched_root: watched_root.to_string(),
         pid,
+        parent_pid: Some(1),
+        uid: Some(1000),
+        gid: Some(1000),
+        service_unit: Some("backup.service".to_string()),
+        first_seen_at: Some(Utc::now()),
+        trust_class: Some(ProcessTrustClass::AllowedLocal),
+        trust_policy_name: None,
+        maintenance_activity: None,
+        trust_policy_visibility: Default::default(),
+        package_name: None,
+        package_manager: None,
         process_name: Some("python3".to_string()),
         exe_path: Some("/usr/bin/python3".to_string()),
         command_line: Some("python3 encrypt.py".to_string()),
+        parent_process_name: Some("systemd".to_string()),
+        parent_command_line: Some("systemd".to_string()),
+        parent_chain: Vec::new(),
+        container_runtime: None,
+        container_id: None,
+        container_image: None,
+        orchestrator: Default::default(),
+        container_mounts: Vec::new(),
         correlation_hits: 10,
         file_ops: FileOperationCounts {
             modified: 1,
@@ -58,9 +86,12 @@ fn action(
 
 #[test]
 fn suspicious_and_throttle_events_escalate_state() {
-    let mut config = ContainmentConfig::default();
-    config.enabled = true;
-    config.throttle_enabled = true;
+    let config = ContainmentConfig {
+        enabled: true,
+        throttle_enabled: true,
+        throttle_action_min_events: 1,
+        ..ContainmentConfig::default()
+    };
     let start = Utc::now();
     let mut coordinator = ContainmentCoordinator::new(&config);
 
@@ -72,7 +103,7 @@ fn suspicious_and_throttle_events_escalate_state() {
 
     let throttle = coordinator
         .handle_event_at(
-            &event(BehaviorLevel::ThrottleCandidate, 70, Some(42)),
+            &event(BehaviorLevel::HighRisk, 70, Some(42)),
             start + Duration::seconds(5),
         )
         .expect("throttle transition");
@@ -90,16 +121,23 @@ fn suspicious_and_throttle_events_escalate_state() {
 
 #[test]
 fn fuse_decay_waits_for_rate_limit_then_releases_to_throttle() {
-    let mut config = ContainmentConfig::default();
-    config.enabled = true;
-    config.throttle_enabled = true;
-    config.fuse_enabled = true;
-    config.auto_fuse_release_min = 0;
+    let config = ContainmentConfig {
+        enabled: true,
+        throttle_enabled: true,
+        fuse_enabled: true,
+        auto_fuse_release_min: 0,
+        throttle_action_min_events: 1,
+        fuse_action_min_events: 1,
+        ..ContainmentConfig::default()
+    };
     let start = Utc::now();
     let mut coordinator = ContainmentCoordinator::new(&config);
 
     let fuse = coordinator
-        .handle_event_at(&event(BehaviorLevel::FuseCandidate, 100, Some(77)), start)
+        .handle_event_at(
+            &event(BehaviorLevel::ContainmentCandidate, 100, Some(77)),
+            start,
+        )
         .expect("fuse transition");
     assert_eq!(fuse.state, ContainmentState::Fuse);
     assert!(matches!(
@@ -127,9 +165,80 @@ fn fuse_decay_waits_for_rate_limit_then_releases_to_throttle() {
 }
 
 #[test]
+fn fused_timer_refresh_keeps_original_suspend_target() {
+    let config = ContainmentConfig {
+        enabled: true,
+        throttle_enabled: true,
+        fuse_enabled: true,
+        auto_fuse_release_min: 0,
+        throttle_action_min_events: 1,
+        fuse_action_min_events: 1,
+        ..ContainmentConfig::default()
+    };
+    let start = Utc::now();
+    let mut coordinator = ContainmentCoordinator::new(&config);
+
+    let fuse = coordinator
+        .handle_event_at(
+            &event_for_root(
+                BehaviorLevel::ContainmentCandidate,
+                100,
+                Some(77),
+                "/srv/data",
+            ),
+            start,
+        )
+        .expect("fuse transition");
+    assert_eq!(fuse.state, ContainmentState::Fuse);
+    assert_eq!(
+        fuse.actions,
+        vec![EnforcementAction::SuspendProcess {
+            pid: 77,
+            watched_root: "/srv/data".to_string(),
+        }]
+    );
+
+    assert!(coordinator
+        .handle_event_at(
+            &event_for_root(
+                BehaviorLevel::ContainmentCandidate,
+                101,
+                Some(88),
+                "/srv/other",
+            ),
+            start + Duration::seconds(5),
+        )
+        .is_none());
+
+    let decay = coordinator
+        .tick_at(start + Duration::seconds(61))
+        .expect("decay transition");
+    assert_eq!(decay.state, ContainmentState::Throttle);
+    assert_eq!(
+        decay.actions,
+        vec![
+            EnforcementAction::ResumeProcess {
+                pid: 77,
+                watched_root: "/srv/data".to_string(),
+            },
+            EnforcementAction::ApplyIoThrottle {
+                pid: Some(77),
+                watched_root: "/srv/data".to_string(),
+            },
+            EnforcementAction::ApplyNetworkThrottle {
+                pid: Some(77),
+                watched_root: "/srv/data".to_string(),
+            },
+        ]
+    );
+}
+
+#[test]
 fn repeated_same_level_events_do_not_retransition() {
-    let mut config = ContainmentConfig::default();
-    config.enabled = true;
+    let config = ContainmentConfig {
+        enabled: true,
+        ..ContainmentConfig::default()
+    };
     let start = Utc::now();
     let mut coordinator = ContainmentCoordinator::new(&config);
 
@@ -147,11 +256,110 @@ fn repeated_same_level_events_do_not_retransition() {
 }
 
 #[test]
+fn high_risk_events_are_held_until_repeated_for_auto_throttle() {
+    let config = ContainmentConfig {
+        enabled: true,
+        throttle_enabled: true,
+        containment_action_window_secs: 120,
+        throttle_action_min_events: 2,
+        ..ContainmentConfig::default()
+    };
+    let start = Utc::now();
+    let mut coordinator = ContainmentCoordinator::new(&config);
+
+    let first = coordinator
+        .handle_event_at(&event(BehaviorLevel::HighRisk, 70, Some(42)), start)
+        .expect("initial suspicious transition");
+    assert_eq!(first.state, ContainmentState::Suspicious);
+    assert!(first.actions.is_empty());
+    assert_eq!(
+        first.transition.as_ref().map(|transition| transition.reason.as_str()),
+        Some("auto containment held until 2 corroborating high-risk-or-higher events are observed in 120s")
+    );
+
+    let second = coordinator
+        .handle_event_at(
+            &event(BehaviorLevel::HighRisk, 72, Some(42)),
+            start + Duration::seconds(5),
+        )
+        .expect("throttle transition");
+    assert_eq!(second.state, ContainmentState::Throttle);
+    assert_eq!(second.actions.len(), 2);
+}
+
+#[test]
+fn containment_candidate_events_require_repeated_candidates_for_fuse() {
+    let config = ContainmentConfig {
+        enabled: true,
+        throttle_enabled: true,
+        fuse_enabled: true,
+        containment_action_window_secs: 120,
+        throttle_action_min_events: 2,
+        fuse_action_min_events: 2,
+        ..ContainmentConfig::default()
+    };
+    let start = Utc::now();
+    let mut coordinator = ContainmentCoordinator::new(&config);
+
+    let first = coordinator
+        .handle_event_at(
+            &event(BehaviorLevel::ContainmentCandidate, 90, Some(77)),
+            start,
+        )
+        .expect("initial suspicious transition");
+    assert_eq!(first.state, ContainmentState::Suspicious);
+    assert!(first.actions.is_empty());
+
+    let second = coordinator
+        .handle_event_at(
+            &event(BehaviorLevel::ContainmentCandidate, 92, Some(77)),
+            start + Duration::seconds(5),
+        )
+        .expect("fuse transition");
+    assert_eq!(second.state, ContainmentState::Fuse);
+    assert!(matches!(
+        second.actions.as_slice(),
+        [EnforcementAction::SuspendProcess { pid: 77, .. }]
+    ));
+}
+
+#[test]
+fn missing_pid_blocks_automatic_containment_actions() {
+    let config = ContainmentConfig {
+        enabled: true,
+        throttle_enabled: true,
+        fuse_enabled: true,
+        throttle_action_min_events: 1,
+        fuse_action_min_events: 1,
+        ..ContainmentConfig::default()
+    };
+    let start = Utc::now();
+    let mut coordinator = ContainmentCoordinator::new(&config);
+
+    let decision = coordinator
+        .handle_event_at(&event(BehaviorLevel::ContainmentCandidate, 95, None), start)
+        .expect("suspicious transition");
+    assert_eq!(decision.state, ContainmentState::Suspicious);
+    assert!(decision.actions.is_empty());
+    assert_eq!(
+        decision
+            .transition
+            .as_ref()
+            .map(|transition| transition.reason.as_str()),
+        Some("auto containment held because the triggering process PID is unavailable")
+    );
+}
+
+#[test]
 fn manual_fuse_trigger_bypasses_rate_limit_and_moves_to_fuse() {
-    let mut config = ContainmentConfig::default();
-    config.enabled = true;
-    config.throttle_enabled = true;
-    config.fuse_enabled = true;
+    let config = ContainmentConfig {
+        enabled: true,
+        throttle_enabled: true,
+        fuse_enabled: true,
+        throttle_action_min_events: 1,
+        fuse_action_min_events: 1,
+        ..ContainmentConfig::default()
+    };
     let start = Utc::now();
     let mut coordinator = ContainmentCoordinator::new(&config);
 
@@ -180,15 +388,22 @@ fn manual_fuse_trigger_bypasses_rate_limit_and_moves_to_fuse() {
 
 #[test]
 fn manual_fuse_release_returns_to_throttle_when_enabled() {
-    let mut config = ContainmentConfig::default();
-    config.enabled = true;
-    config.throttle_enabled = true;
-    config.fuse_enabled = true;
+    let config = ContainmentConfig {
+        enabled: true,
+        throttle_enabled: true,
+        fuse_enabled: true,
+        throttle_action_min_events: 1,
+        fuse_action_min_events: 1,
+        ..ContainmentConfig::default()
+    };
     let start = Utc::now();
     let mut coordinator = ContainmentCoordinator::new(&config);
 
     coordinator
-        .handle_event_at(&event(BehaviorLevel::FuseCandidate, 100, Some(77)), start)
+        .handle_event_at(
+            &event(BehaviorLevel::ContainmentCandidate, 100, Some(77)),
+            start,
+        )
         .expect("fuse transition");
 
     let result = coordinator.apply_operator_action_at(

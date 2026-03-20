@@ -25,9 +25,11 @@ fn linux_major_minor_round_trip() {
 
 #[test]
 fn build_plan_uses_pid_namespace_and_device_limits() {
-    let mut config = ContainmentConfig::default();
-    config.throttle_io_read_bps = 2048;
-    config.throttle_io_write_bps = 1024;
+    let config = ContainmentConfig {
+        throttle_io_read_bps: 2048,
+        throttle_io_write_bps: 1024,
+        ..ContainmentConfig::default()
+    };
 
     let test_root =
         std::env::temp_dir().join(format!("bannkenn-cgroup-plan-{}", uuid::Uuid::new_v4()));

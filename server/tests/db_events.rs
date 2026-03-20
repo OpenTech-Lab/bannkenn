@@ -1,7 +1,7 @@
 mod support;
 
 use chrono::{Duration as ChronoDuration, Utc};
-use support::test_db;
+use support::{sample_behavior_event, test_db};
 
 #[tokio::test]
 async fn insert_and_list_decisions() {
@@ -386,6 +386,72 @@ async fn shared_risk_profile_ignores_telemetry_outside_window() {
         .expect("surge category should exist");
 
     assert_eq!(category.event_count, 5);
+}
+
+#[tokio::test]
+async fn shared_risk_profile_exposes_cross_agent_process_baseline() {
+    let db = test_db().await;
+    let recent = Utc::now() - ChronoDuration::seconds(30);
+
+    let mut first = sample_behavior_event("agent-a", "/srv/data", &recent.to_rfc3339());
+    first.level = "observed".to_string();
+    first.score = 18;
+    first.reasons = vec!["write burst x6".to_string()];
+    db.insert_behavior_event(&first).await.unwrap();
+
+    let mut second = sample_behavior_event("agent-b", "/srv/data", &recent.to_rfc3339());
+    second.level = "observed".to_string();
+    second.score = 17;
+    second.reasons = vec!["write burst x5".to_string()];
+    db.insert_behavior_event(&second).await.unwrap();
+
+    let mut third = sample_behavior_event("agent-a", "/srv/data", &recent.to_rfc3339());
+    third.level = "suspicious".to_string();
+    third.score = 29;
+    third.reasons = vec!["write burst x7".to_string()];
+    db.insert_behavior_event(&third).await.unwrap();
+
+    let profile = db.compute_shared_risk_profile(600).await.unwrap();
+    let process_profile = profile
+        .process_profiles
+        .iter()
+        .find(|row| {
+            row.identity == "/usr/bin/python3|backup.service|python3|ghcr.io/acme/backup:1.2.3"
+        })
+        .expect("shared process baseline should exist");
+
+    assert_eq!(process_profile.trust_class, "allowed_local_process");
+    assert_eq!(process_profile.distinct_agents, 2);
+    assert_eq!(process_profile.event_count, 3);
+    assert_eq!(process_profile.highest_level, "suspicious");
+    assert_eq!(process_profile.label, "shared:allowed-lineage");
+}
+
+#[tokio::test]
+async fn shared_risk_profile_excludes_processes_with_high_risk_history() {
+    let db = test_db().await;
+    let recent = Utc::now() - ChronoDuration::seconds(30);
+
+    let mut first = sample_behavior_event("agent-a", "/srv/data", &recent.to_rfc3339());
+    first.level = "observed".to_string();
+    first.score = 18;
+    db.insert_behavior_event(&first).await.unwrap();
+
+    let mut second = sample_behavior_event("agent-b", "/srv/data", &recent.to_rfc3339());
+    second.level = "high_risk".to_string();
+    second.score = 62;
+    second.reasons = vec!["behavior chain signals: weak_identity".to_string()];
+    db.insert_behavior_event(&second).await.unwrap();
+
+    let mut third = sample_behavior_event("agent-a", "/srv/data", &recent.to_rfc3339());
+    third.level = "observed".to_string();
+    third.score = 20;
+    db.insert_behavior_event(&third).await.unwrap();
+
+    let profile = db.compute_shared_risk_profile(600).await.unwrap();
+    assert!(profile.process_profiles.iter().all(|row| {
+        row.identity != "/usr/bin/python3|backup.service|python3|ghcr.io/acme/backup:1.2.3"
+    }));
 }
 
 #[tokio::test]

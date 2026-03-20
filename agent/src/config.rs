@@ -1,14 +1,110 @@
 use crate::burst::BurstConfig;
 use crate::butterfly::ButterflyShieldConfig;
 use crate::campaign::CampaignConfig;
+use crate::ebpf::events::ProcessTrustClass;
 use crate::event_risk::EventRiskConfig;
 use crate::risk_level::RiskLevelConfig;
 use crate::shared_risk::SharedRiskSnapshot;
 use anyhow::{anyhow, Result};
+use chrono::{DateTime, Datelike, Local, NaiveTime, Utc, Weekday};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
+
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum TrustPolicyVisibility {
+    #[default]
+    Visible,
+    Hidden,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MaintenanceWindow {
+    #[serde(default)]
+    pub weekdays: Vec<String>,
+    pub start: String,
+    pub end: String,
+}
+
+impl MaintenanceWindow {
+    pub fn matches(&self, now: DateTime<Utc>) -> bool {
+        let local = now.with_timezone(&Local);
+        self.matches_weekday_and_time(local.weekday(), local.time())
+    }
+
+    fn matches_weekday_and_time(&self, weekday: Weekday, time: NaiveTime) -> bool {
+        let Some(start) = parse_maintenance_time(&self.start) else {
+            return false;
+        };
+        let Some(end) = parse_maintenance_time(&self.end) else {
+            return false;
+        };
+        let weekdays = self.parsed_weekdays();
+        let matches_day = |day| match &weekdays {
+            Some(days) => days.contains(&day),
+            None => true,
+        };
+
+        if start == end {
+            return matches_day(weekday);
+        }
+
+        if start < end {
+            matches_day(weekday) && time >= start && time < end
+        } else {
+            (matches_day(weekday) && time >= start)
+                || (matches_day(previous_weekday(weekday)) && time < end)
+        }
+    }
+
+    fn parsed_weekdays(&self) -> Option<Vec<Weekday>> {
+        let specified = self
+            .weekdays
+            .iter()
+            .map(|weekday| weekday.trim())
+            .filter(|weekday| !weekday.is_empty())
+            .collect::<Vec<_>>();
+        if specified.is_empty() {
+            None
+        } else {
+            Some(
+                specified
+                    .into_iter()
+                    .filter_map(parse_weekday)
+                    .collect::<Vec<_>>(),
+            )
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TrustPolicyRule {
+    pub name: String,
+    #[serde(default)]
+    pub exe_paths: Vec<String>,
+    #[serde(default)]
+    pub package_names: Vec<String>,
+    #[serde(default)]
+    pub service_units: Vec<String>,
+    #[serde(default)]
+    pub container_images: Vec<String>,
+    pub trust_class: ProcessTrustClass,
+    #[serde(default)]
+    pub visibility: TrustPolicyVisibility,
+    #[serde(default)]
+    pub maintenance_windows: Vec<MaintenanceWindow>,
+}
+
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ContainmentEnvironmentProfile {
+    Conservative,
+    #[default]
+    Balanced,
+    Aggressive,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ContainmentConfig {
@@ -41,9 +137,13 @@ pub struct ContainmentConfig {
     #[serde(default = "default_protected_pid_allowlist")]
     pub protected_pid_allowlist: Vec<String>,
     #[serde(default)]
+    pub trust_policies: Vec<TrustPolicyRule>,
+    #[serde(default)]
     pub ebpf_object_path: Option<String>,
     #[serde(default = "default_ebpf_ringbuf_map")]
     pub ebpf_ringbuf_map: String,
+    #[serde(default)]
+    pub environment_profile: ContainmentEnvironmentProfile,
     #[serde(default = "default_suspicious_score")]
     pub suspicious_score: u32,
     #[serde(default = "default_throttle_score")]
@@ -56,10 +156,56 @@ pub struct ContainmentConfig {
     pub write_score: u32,
     #[serde(default = "default_delete_score")]
     pub delete_score: u32,
+    #[serde(default = "default_high_entropy_rewrite_score")]
+    pub high_entropy_rewrite_score: u32,
+    #[serde(default = "default_unreadable_rewrite_score")]
+    pub unreadable_rewrite_score: u32,
+    #[serde(default = "default_extension_anomaly_score")]
+    pub extension_anomaly_score: u32,
+    #[serde(default = "default_extension_anomaly_min_count")]
+    pub extension_anomaly_min_count: u32,
     #[serde(default = "default_protected_path_bonus")]
     pub protected_path_bonus: u32,
+    #[serde(default = "default_user_data_bonus")]
+    pub user_data_bonus: u32,
     #[serde(default = "default_unknown_process_bonus")]
     pub unknown_process_bonus: u32,
+    #[serde(default = "default_trusted_process_penalty")]
+    pub trusted_process_penalty: u32,
+    #[serde(default = "default_allowed_local_penalty")]
+    pub allowed_local_penalty: u32,
+    #[serde(default = "default_directory_spread_score")]
+    pub directory_spread_score: u32,
+    #[serde(default = "default_shell_parent_bonus")]
+    pub shell_parent_bonus: u32,
+    #[serde(default = "default_recent_process_bonus")]
+    pub recent_process_bonus: u32,
+    #[serde(default = "default_recent_process_window_secs")]
+    pub recent_process_window_secs: u64,
+    #[serde(default = "default_meaningful_rename_count")]
+    pub meaningful_rename_count: u32,
+    #[serde(default = "default_meaningful_write_count")]
+    pub meaningful_write_count: u32,
+    #[serde(default = "default_high_risk_min_signals")]
+    pub high_risk_min_signals: u32,
+    #[serde(default = "default_containment_candidate_min_signals")]
+    pub containment_candidate_min_signals: u32,
+    #[serde(default = "default_recurrence_score")]
+    pub recurrence_score: u32,
+    #[serde(default = "default_recurrence_window_secs")]
+    pub recurrence_window_secs: u64,
+    #[serde(default = "default_recurrence_min_events")]
+    pub recurrence_min_events: u32,
+    #[serde(default = "default_auto_containment_requires_pid")]
+    pub auto_containment_requires_pid: bool,
+    #[serde(default = "default_containment_action_window_secs")]
+    pub containment_action_window_secs: u64,
+    #[serde(default = "default_throttle_action_min_events")]
+    pub throttle_action_min_events: u32,
+    #[serde(default = "default_fuse_action_min_events")]
+    pub fuse_action_min_events: u32,
+    #[serde(default = "default_content_profile_sample_bytes")]
+    pub content_profile_sample_bytes: u64,
     #[serde(default = "default_bytes_per_score")]
     pub bytes_per_score: u64,
 }
@@ -81,16 +227,41 @@ impl Default for ContainmentConfig {
             poll_interval_ms: default_poll_interval_ms(),
             protected_paths: Vec::new(),
             protected_pid_allowlist: default_protected_pid_allowlist(),
+            trust_policies: Vec::new(),
             ebpf_object_path: None,
             ebpf_ringbuf_map: default_ebpf_ringbuf_map(),
+            environment_profile: ContainmentEnvironmentProfile::default(),
             suspicious_score: default_suspicious_score(),
             throttle_score: default_throttle_score(),
             fuse_score: default_fuse_score(),
             rename_score: default_rename_score(),
             write_score: default_write_score(),
             delete_score: default_delete_score(),
+            high_entropy_rewrite_score: default_high_entropy_rewrite_score(),
+            unreadable_rewrite_score: default_unreadable_rewrite_score(),
+            extension_anomaly_score: default_extension_anomaly_score(),
+            extension_anomaly_min_count: default_extension_anomaly_min_count(),
             protected_path_bonus: default_protected_path_bonus(),
+            user_data_bonus: default_user_data_bonus(),
             unknown_process_bonus: default_unknown_process_bonus(),
+            trusted_process_penalty: default_trusted_process_penalty(),
+            allowed_local_penalty: default_allowed_local_penalty(),
+            directory_spread_score: default_directory_spread_score(),
+            shell_parent_bonus: default_shell_parent_bonus(),
+            recent_process_bonus: default_recent_process_bonus(),
+            recent_process_window_secs: default_recent_process_window_secs(),
+            meaningful_rename_count: default_meaningful_rename_count(),
+            meaningful_write_count: default_meaningful_write_count(),
+            high_risk_min_signals: default_high_risk_min_signals(),
+            containment_candidate_min_signals: default_containment_candidate_min_signals(),
+            recurrence_score: default_recurrence_score(),
+            recurrence_window_secs: default_recurrence_window_secs(),
+            recurrence_min_events: default_recurrence_min_events(),
+            auto_containment_requires_pid: default_auto_containment_requires_pid(),
+            containment_action_window_secs: default_containment_action_window_secs(),
+            throttle_action_min_events: default_throttle_action_min_events(),
+            fuse_action_min_events: default_fuse_action_min_events(),
+            content_profile_sample_bytes: default_content_profile_sample_bytes(),
             bytes_per_score: default_bytes_per_score(),
         }
     }
@@ -206,7 +377,7 @@ fn default_fuse_score() -> u32 {
 }
 
 fn default_rename_score() -> u32 {
-    5
+    4
 }
 
 fn default_write_score() -> u32 {
@@ -214,15 +385,107 @@ fn default_write_score() -> u32 {
 }
 
 fn default_delete_score() -> u32 {
-    4
+    3
+}
+
+fn default_high_entropy_rewrite_score() -> u32 {
+    8
+}
+
+fn default_unreadable_rewrite_score() -> u32 {
+    10
+}
+
+fn default_extension_anomaly_score() -> u32 {
+    5
+}
+
+fn default_extension_anomaly_min_count() -> u32 {
+    3
 }
 
 fn default_protected_path_bonus() -> u32 {
     10
 }
 
+fn default_user_data_bonus() -> u32 {
+    8
+}
+
 fn default_unknown_process_bonus() -> u32 {
     8
+}
+
+fn default_trusted_process_penalty() -> u32 {
+    6
+}
+
+fn default_allowed_local_penalty() -> u32 {
+    3
+}
+
+fn default_directory_spread_score() -> u32 {
+    4
+}
+
+fn default_shell_parent_bonus() -> u32 {
+    10
+}
+
+fn default_recent_process_bonus() -> u32 {
+    6
+}
+
+fn default_recent_process_window_secs() -> u64 {
+    600
+}
+
+fn default_meaningful_rename_count() -> u32 {
+    8
+}
+
+fn default_meaningful_write_count() -> u32 {
+    5
+}
+
+fn default_high_risk_min_signals() -> u32 {
+    4
+}
+
+fn default_containment_candidate_min_signals() -> u32 {
+    5
+}
+
+fn default_recurrence_score() -> u32 {
+    6
+}
+
+fn default_recurrence_window_secs() -> u64 {
+    900
+}
+
+fn default_recurrence_min_events() -> u32 {
+    2
+}
+
+fn default_auto_containment_requires_pid() -> bool {
+    true
+}
+
+fn default_containment_action_window_secs() -> u64 {
+    120
+}
+
+fn default_throttle_action_min_events() -> u32 {
+    2
+}
+
+fn default_fuse_action_min_events() -> u32 {
+    2
+}
+
+fn default_content_profile_sample_bytes() -> u64 {
+    2048
 }
 
 fn default_bytes_per_score() -> u64 {
@@ -240,6 +503,35 @@ fn default_protected_pid_allowlist() -> Vec<String> {
 
 fn default_ebpf_ringbuf_map() -> String {
     "BK_EVENTS".to_string()
+}
+
+fn parse_maintenance_time(value: &str) -> Option<NaiveTime> {
+    NaiveTime::parse_from_str(value.trim(), "%H:%M").ok()
+}
+
+fn parse_weekday(value: &str) -> Option<Weekday> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "mon" | "monday" => Some(Weekday::Mon),
+        "tue" | "tues" | "tuesday" => Some(Weekday::Tue),
+        "wed" | "wednesday" => Some(Weekday::Wed),
+        "thu" | "thur" | "thurs" | "thursday" => Some(Weekday::Thu),
+        "fri" | "friday" => Some(Weekday::Fri),
+        "sat" | "saturday" => Some(Weekday::Sat),
+        "sun" | "sunday" => Some(Weekday::Sun),
+        _ => None,
+    }
+}
+
+fn previous_weekday(weekday: Weekday) -> Weekday {
+    match weekday {
+        Weekday::Mon => Weekday::Sun,
+        Weekday::Tue => Weekday::Mon,
+        Weekday::Wed => Weekday::Tue,
+        Weekday::Thu => Weekday::Wed,
+        Weekday::Fri => Weekday::Thu,
+        Weekday::Sat => Weekday::Fri,
+        Weekday::Sun => Weekday::Sat,
+    }
 }
 
 impl Default for AgentConfig {

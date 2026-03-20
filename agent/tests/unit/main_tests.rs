@@ -1,10 +1,15 @@
 use super::{
     apply_containment_setup, invalid_containment_paths, is_cloudflare_response,
-    is_https_plain_http_mismatch_error, parse_containment_path_list, Cli, Commands,
-    ContainmentConfig, HttpProbeResult,
+    is_https_plain_http_mismatch_error, normalize_behavior_reason_category,
+    parse_containment_path_list, should_suppress_behavior_event, BehaviorEventDeduper, Cli,
+    Commands, ContainmentConfig, HttpProbeResult,
 };
+use crate::config::TrustPolicyVisibility;
+use crate::ebpf::events::{BehaviorEvent, BehaviorLevel, FileOperationCounts, ProcessTrustClass};
+use chrono::Utc;
 use clap::Parser;
 use reqwest::StatusCode;
+use std::{thread, time::Duration};
 
 #[test]
 fn plain_http_on_https_error_is_detected() {
@@ -87,4 +92,90 @@ fn containment_setup_enables_dry_run_with_prompted_paths() {
         containment.protected_paths,
         vec!["/srv/data".to_string(), "/srv/backups".to_string()]
     );
+}
+
+fn behavior_event(score: u32, reasons: &[&str]) -> BehaviorEvent {
+    BehaviorEvent {
+        timestamp: Utc::now(),
+        source: "userspace_polling".to_string(),
+        watched_root: "/srv/data".to_string(),
+        pid: Some(42),
+        parent_pid: Some(1),
+        uid: Some(1000),
+        gid: Some(1000),
+        service_unit: Some("backup.service".to_string()),
+        first_seen_at: Some(Utc::now()),
+        trust_class: Some(ProcessTrustClass::AllowedLocal),
+        trust_policy_name: None,
+        maintenance_activity: None,
+        trust_policy_visibility: Default::default(),
+        package_name: None,
+        package_manager: None,
+        process_name: Some("python3".to_string()),
+        exe_path: Some("/usr/bin/python3".to_string()),
+        command_line: Some("python3 encrypt.py".to_string()),
+        parent_process_name: Some("systemd".to_string()),
+        parent_command_line: Some("systemd".to_string()),
+        parent_chain: Vec::new(),
+        container_runtime: None,
+        container_id: None,
+        container_image: None,
+        orchestrator: Default::default(),
+        container_mounts: Vec::new(),
+        correlation_hits: 3,
+        file_ops: FileOperationCounts {
+            renamed: 4,
+            ..Default::default()
+        },
+        touched_paths: vec!["/srv/data/a.txt".to_string()],
+        protected_paths_touched: Vec::new(),
+        bytes_written: 0,
+        io_rate_bytes_per_sec: 0,
+        score,
+        reasons: reasons.iter().map(|reason| (*reason).to_string()).collect(),
+        level: BehaviorLevel::Suspicious,
+    }
+}
+
+#[test]
+fn behavior_reason_normalization_collapses_variable_suffixes() {
+    assert_eq!(
+        normalize_behavior_reason_category("rename burst x11"),
+        "rename burst"
+    );
+    assert_eq!(
+        normalize_behavior_reason_category("write throughput 8192B/s"),
+        "write throughput"
+    );
+}
+
+#[test]
+fn behavior_event_deduper_suppresses_duplicate_reason_categories_within_window() {
+    let mut deduper = BehaviorEventDeduper::new(Duration::from_millis(50));
+    let first = behavior_event(61, &["rename burst x4", "write throughput 4096B/s"]);
+    let second = behavior_event(64, &["rename burst x7", "write throughput 8192B/s"]);
+
+    assert!(deduper.should_report(&first));
+    assert!(!deduper.should_report(&second));
+}
+
+#[test]
+fn behavior_event_deduper_reopens_after_window_expires() {
+    let mut deduper = BehaviorEventDeduper::new(Duration::from_millis(5));
+    let event = behavior_event(61, &["rename burst x4"]);
+
+    assert!(deduper.should_report(&event));
+    thread::sleep(Duration::from_millis(10));
+    assert!(deduper.should_report(&event));
+}
+
+#[test]
+fn hidden_trust_policy_suppresses_behavior_event_reporting() {
+    let mut event = behavior_event(61, &["rename burst x4"]);
+    event.trust_policy_name = Some("backup-window".to_string());
+    event.trust_policy_visibility = TrustPolicyVisibility::Hidden;
+    assert!(should_suppress_behavior_event(&event));
+
+    event.trust_policy_visibility = TrustPolicyVisibility::Visible;
+    assert!(!should_suppress_behavior_event(&event));
 }

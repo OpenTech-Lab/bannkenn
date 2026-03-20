@@ -33,6 +33,7 @@ use std::io::{self, BufRead, IsTerminal, Write};
 use std::net::SocketAddr;
 use std::path::Path;
 use std::sync::Arc;
+use std::time::Instant;
 use tokio::sync::{mpsc, Mutex, Notify, RwLock};
 use tokio::time::{interval, Duration};
 use uuid::Uuid;
@@ -40,7 +41,7 @@ use uuid::Uuid;
 use crate::client::{build_http_client, ApiClient};
 use crate::config::{
     default_runtime_campaign_config, default_runtime_containment_config, AgentConfig,
-    ContainmentConfig, OfflineAgentState,
+    ContainmentConfig, OfflineAgentState, TrustPolicyVisibility,
 };
 use crate::containment::{ContainmentDecision, ContainmentRuntime, CONTAINMENT_TICK_INTERVAL_SECS};
 use crate::ebpf::events::{BehaviorEvent, BehaviorLevel};
@@ -60,6 +61,7 @@ use crate::watcher::{watch, BlockOutcome, SecurityEvent};
 
 const OPERATOR_ACTION_POLL_INTERVAL_SECS: u64 = 10;
 const CONTAINMENT_CONFIG_PATH_DISPLAY: &str = "~/.config/bannkenn/agent.toml";
+const BEHAVIOR_EVENT_DEDUP_WINDOW_SECS: u64 = 30;
 
 #[derive(Parser)]
 #[command(name = "bannkenn-agent")]
@@ -97,6 +99,49 @@ enum Commands {
 #[derive(Debug, Deserialize)]
 struct RegisterAgentResponse {
     token: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct BehaviorEventDedupKey {
+    source: String,
+    watched_root: String,
+    level: String,
+    pid: Option<u32>,
+    process_name: Option<String>,
+    exe_path: Option<String>,
+    parent_process_name: Option<String>,
+    trust_policy_name: Option<String>,
+    reasons_key: String,
+}
+
+#[derive(Debug)]
+struct BehaviorEventDeduper {
+    window: Duration,
+    recent: HashMap<BehaviorEventDedupKey, Instant>,
+}
+
+impl BehaviorEventDeduper {
+    fn new(window: Duration) -> Self {
+        Self {
+            window,
+            recent: HashMap::new(),
+        }
+    }
+
+    fn should_report(&mut self, event: &BehaviorEvent) -> bool {
+        let now = Instant::now();
+        self.recent
+            .retain(|_, seen_at| now.duration_since(*seen_at) <= self.window);
+
+        let key = build_behavior_event_dedup_key(event);
+        match self.recent.get(&key) {
+            Some(seen_at) if now.duration_since(*seen_at) <= self.window => false,
+            _ => {
+                self.recent.insert(key, now);
+                true
+            }
+        }
+    }
 }
 
 fn desired_firewall_patterns(
@@ -531,21 +576,20 @@ async fn run() -> Result<()> {
         }
     });
 
-    let behavior_handle = if let Some(manager) = config_arc
-        .containment
-        .as_ref()
-        .and_then(SensorManager::from_config)
-    {
-        *containment_sensor_name.write().await = Some(manager.backend_name().to_string());
-        Some(tokio::spawn(async move {
-            if let Err(e) = manager.run(behavior_tx).await {
-                tracing::error!("Behavior sensor error: {}", e);
-            }
-        }))
-    } else {
-        drop(behavior_tx);
-        None
-    };
+    let behavior_handle =
+        if let Some(manager) = config_arc.containment.as_ref().and_then(|config| {
+            SensorManager::from_config(config, Arc::clone(&shared_risk_snapshot))
+        }) {
+            *containment_sensor_name.write().await = Some(manager.backend_name().to_string());
+            Some(tokio::spawn(async move {
+                if let Err(e) = manager.run(behavior_tx).await {
+                    tracing::error!("Behavior sensor error: {}", e);
+                }
+            }))
+        } else {
+            drop(behavior_tx);
+            None
+        };
 
     let sync_client = ApiClient::new(
         config_arc.server_url.clone(),
@@ -593,6 +637,8 @@ async fn run() -> Result<()> {
 
     let mut shutdown_reason = None;
     let mut behavior_channel_open = behavior_handle.is_some();
+    let mut behavior_event_deduper =
+        BehaviorEventDeduper::new(Duration::from_secs(BEHAVIOR_EVENT_DEDUP_WINDOW_SECS));
     let shutdown = shutdown_signal();
     tokio::pin!(shutdown);
 
@@ -605,32 +651,58 @@ async fn run() -> Result<()> {
             maybe_behavior = behavior_rx.recv(), if behavior_channel_open => {
                 match maybe_behavior {
                     Some(event) => {
-                        log_behavior_event(&event, config_arc.containment.as_ref());
-                        enqueue_outbox(
-                            &outbox,
-                            OutboxPayload::from_behavior_event(&event),
-                            &outbox_notify,
-                        )
-                        .await;
-                        if let Some(runtime) = containment_runtime.as_ref() {
-                            match runtime.handle_event(&event).await {
-                                Ok(Some(decision)) => {
-                                    log_containment_decision(&decision);
-                                    if let Some(payload) =
-                                        OutboxPayload::from_containment_decision(&decision)
-                                    {
-                                        enqueue_outbox(&outbox, payload, &outbox_notify).await;
+                        if should_suppress_behavior_event(&event) {
+                            tracing::debug!(
+                                "Suppressed behavior event by trust policy name={} root={} process={}",
+                                event.trust_policy_name.as_deref().unwrap_or("unnamed"),
+                                event.watched_root,
+                                event.process_name
+                                    .as_deref()
+                                    .or(event.exe_path.as_deref())
+                                    .unwrap_or("unknown"),
+                            );
+                        } else {
+                            let should_report = behavior_event_deduper.should_report(&event);
+                            if should_report {
+                                log_behavior_event(&event, config_arc.containment.as_ref());
+                                enqueue_outbox(
+                                    &outbox,
+                                    OutboxPayload::from_behavior_event(&event),
+                                    &outbox_notify,
+                                )
+                                .await;
+                            } else {
+                                tracing::debug!(
+                                    "Suppressed duplicate behavior event for root={} process={} reasons={}",
+                                    event.watched_root,
+                                    event.process_name
+                                        .as_deref()
+                                        .or(event.exe_path.as_deref())
+                                        .unwrap_or("unknown"),
+                                    normalize_behavior_reasons_key(&event.reasons)
+                                );
+                            }
+                            if let Some(runtime) = containment_runtime.as_ref() {
+                                match runtime.handle_event(&event).await {
+                                    Ok(Some(decision)) => {
+                                        log_containment_decision(&decision);
+                                        if let Some(payload) =
+                                            OutboxPayload::from_containment_decision(&decision)
+                                        {
+                                            enqueue_outbox(&outbox, payload, &outbox_notify)
+                                                .await;
+                                        }
                                     }
+                                    Ok(None) => {}
+                                    Err(error) => tracing::warn!(
+                                        "Containment runtime failed for behavior event pid={} score={}: {}",
+                                        event.pid
+                                            .map(|pid| pid.to_string())
+                                            .unwrap_or_else(|| "unknown".to_string()),
+                                        event.score,
+                                        error
+                                    ),
                                 }
-                                Ok(None) => {}
-                                Err(error) => tracing::warn!(
-                                    "Containment runtime failed for behavior event pid={} score={}: {}",
-                                    event.pid
-                                        .map(|pid| pid.to_string())
-                                        .unwrap_or_else(|| "unknown".to_string()),
-                                    event.score,
-                                    error
-                                ),
                             }
                         }
                         None
@@ -1025,42 +1097,55 @@ fn log_behavior_event(event: &BehaviorEvent, containment: Option<&ContainmentCon
         .as_deref()
         .or(event.process_name.as_deref())
         .unwrap_or("unknown");
+    let parent = event
+        .parent_process_name
+        .as_deref()
+        .or(event.parent_command_line.as_deref())
+        .unwrap_or("unknown");
     let reasons = if event.reasons.is_empty() {
         "none".to_string()
     } else {
         event.reasons.join(", ")
     };
+    let trust_policy = event.trust_policy_name.as_deref().unwrap_or("none");
+    let maintenance = event
+        .maintenance_activity
+        .map(|activity| activity.as_str())
+        .unwrap_or("none");
     let enforcement_mode = match event.level {
         BehaviorLevel::Observed | BehaviorLevel::Suspicious => "observe-only",
-        BehaviorLevel::ThrottleCandidate => {
+        BehaviorLevel::HighRisk => {
             if containment
                 .map(|cfg| cfg.throttle_enabled && !cfg.dry_run)
                 .unwrap_or(false)
             {
                 "throttle-active"
             } else {
-                "dry-run throttle candidate"
+                "dry-run high-risk candidate"
             }
         }
-        BehaviorLevel::FuseCandidate => {
+        BehaviorLevel::ContainmentCandidate => {
             if containment
                 .map(|cfg| cfg.fuse_enabled && !cfg.dry_run)
                 .unwrap_or(false)
             {
                 "fuse-active"
             } else {
-                "dry-run fuse candidate"
+                "dry-run containment candidate"
             }
         }
     };
 
     match event.level {
         BehaviorLevel::Observed => tracing::debug!(
-            "Behavior activity: level={} score={} pid={} process={} ops=create:{} write:{} rename:{} delete:{} root={} reasons={} mode={}",
+            "Behavior activity: level={} score={} pid={} process={} parent={} policy={} maintenance={} ops=create:{} write:{} rename:{} delete:{} root={} reasons={} mode={}",
             event.level.as_str(),
             event.score,
             event.pid.map(|pid| pid.to_string()).unwrap_or_else(|| "unknown".to_string()),
             process,
+            parent,
+            trust_policy,
+            maintenance,
             event.file_ops.created,
             event.file_ops.modified,
             event.file_ops.renamed,
@@ -1069,12 +1154,15 @@ fn log_behavior_event(event: &BehaviorEvent, containment: Option<&ContainmentCon
             reasons,
             enforcement_mode
         ),
-        BehaviorLevel::Suspicious | BehaviorLevel::ThrottleCandidate => tracing::warn!(
-            "Behavior activity: level={} score={} pid={} process={} ops=create:{} write:{} rename:{} delete:{} root={} reasons={} mode={}",
+        BehaviorLevel::Suspicious | BehaviorLevel::HighRisk => tracing::warn!(
+            "Behavior activity: level={} score={} pid={} process={} parent={} policy={} maintenance={} ops=create:{} write:{} rename:{} delete:{} root={} reasons={} mode={}",
             event.level.as_str(),
             event.score,
             event.pid.map(|pid| pid.to_string()).unwrap_or_else(|| "unknown".to_string()),
             process,
+            parent,
+            trust_policy,
+            maintenance,
             event.file_ops.created,
             event.file_ops.modified,
             event.file_ops.renamed,
@@ -1083,12 +1171,15 @@ fn log_behavior_event(event: &BehaviorEvent, containment: Option<&ContainmentCon
             reasons,
             enforcement_mode
         ),
-        BehaviorLevel::FuseCandidate => tracing::error!(
-            "Behavior activity: level={} score={} pid={} process={} ops=create:{} write:{} rename:{} delete:{} root={} reasons={} mode={}",
+        BehaviorLevel::ContainmentCandidate => tracing::error!(
+            "Behavior activity: level={} score={} pid={} process={} parent={} policy={} maintenance={} ops=create:{} write:{} rename:{} delete:{} root={} reasons={} mode={}",
             event.level.as_str(),
             event.score,
             event.pid.map(|pid| pid.to_string()).unwrap_or_else(|| "unknown".to_string()),
             process,
+            parent,
+            trust_policy,
+            maintenance,
             event.file_ops.created,
             event.file_ops.modified,
             event.file_ops.renamed,
@@ -1098,6 +1189,57 @@ fn log_behavior_event(event: &BehaviorEvent, containment: Option<&ContainmentCon
             enforcement_mode
         ),
     }
+}
+
+fn should_suppress_behavior_event(event: &BehaviorEvent) -> bool {
+    matches!(event.trust_policy_visibility, TrustPolicyVisibility::Hidden)
+}
+
+fn build_behavior_event_dedup_key(event: &BehaviorEvent) -> BehaviorEventDedupKey {
+    BehaviorEventDedupKey {
+        source: event.source.clone(),
+        watched_root: event.watched_root.clone(),
+        level: event.level.as_str().to_string(),
+        pid: event.pid,
+        process_name: event.process_name.clone(),
+        exe_path: event.exe_path.clone(),
+        parent_process_name: event.parent_process_name.clone(),
+        trust_policy_name: event.trust_policy_name.clone(),
+        reasons_key: normalize_behavior_reasons_key(&event.reasons),
+    }
+}
+
+fn normalize_behavior_reasons_key(reasons: &[String]) -> String {
+    let mut normalized = reasons
+        .iter()
+        .map(|reason| normalize_behavior_reason_category(reason))
+        .filter(|reason| !reason.is_empty())
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+
+    if normalized.is_empty() {
+        "behavior".to_string()
+    } else {
+        normalized.sort();
+        normalized.join("|")
+    }
+}
+
+fn normalize_behavior_reason_category(reason: &str) -> String {
+    let normalized = reason.trim().to_ascii_lowercase();
+    if normalized.is_empty() {
+        return String::new();
+    }
+    if normalized.starts_with("write throughput ") {
+        return "write throughput".to_string();
+    }
+    if let Some((prefix, suffix)) = normalized.rsplit_once(" x") {
+        if !prefix.is_empty() && suffix.chars().all(|ch| ch.is_ascii_digit()) {
+            return prefix.to_string();
+        }
+    }
+    normalized
 }
 
 fn log_containment_decision(decision: &ContainmentDecision) {
