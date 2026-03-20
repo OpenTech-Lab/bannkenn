@@ -258,6 +258,8 @@
 - Add a regression test for the exact cgroup shape reported in review whenever a new runtime prefix is supported.
 
 ### Overlapping score suppressors must aggregate by component, not by reason bucket
+- When updating `.coderabbit.yaml`, validate against the current CodeRabbit schema instead of reusing old examples or inventing generic top-level keys.
+- In this repo, invalid top-level keys like `version`, `auto_review`, and `instructions` should be replaced with supported fields such as `language`, `tone_instructions`, and `reviews.auto_review`.
 - If multiple benign contexts suppress the same rename/write/delete/throughput burst, compute suppression once per component and then attach all matching reasons.
 - Do not let independent "known benign" branches each subtract the full component set, or one process can be downgraded more than intended just because contexts overlap.
 - Add a regression test for at least one realistic overlap case whenever a new benign-context suppressor is introduced.
