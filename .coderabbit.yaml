@@ -1,10 +1,14 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+
 # CodeRabbit Configuration
-version: "1.0"
+language: "en-US"
+tone_instructions: >
+  Focus on performance, security, and adherence to clean code principles.
 
 reviews:
   # High-level summary of changes
-  request_review_summary: true
-  # Profile can be 'assertive', 'chill', or 'comprehensive'
+  high_level_summary: true
+  # Profile can be 'assertive' or 'chill'
   profile: assertive
   
   # Fine-tune which files should be ignored
@@ -14,15 +18,10 @@ reviews:
     - "!**/*.lock"
     - "!**/vendor/**"
 
-auto_review:
-  # Disable automatic reviews on every push/PR
-  enabled: false
+  auto_review:
+    # Disable automatic reviews on every push/PR
+    enabled: false
 
 chat:
-  # Keeps the chat feature enabled so you can still talk to the bot
-  enabled: true
-
-instructions: |
-  You are an expert senior software engineer. 
-  When I call you for a review, focus on performance, 
-  security, and adherence to clean code principles.
+  # Keeps the chat feature active without requiring a mention.
+  auto_reply: true
