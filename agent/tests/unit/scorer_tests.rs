@@ -4,6 +4,7 @@ use crate::ebpf::events::{
     FileActivityBatch, FileOperationCounts, MaintenanceActivity, ProcessAncestor, ProcessInfo,
     ProcessTrustClass,
 };
+use crate::shared_risk::{SharedProcessProfile, SharedRiskSnapshot};
 use chrono::Utc;
 
 fn batch_with_ops(
@@ -113,6 +114,71 @@ fn mass_rename_scores_as_suspicious() {
         event.reasons
     );
     assert!(event.score > 30);
+}
+
+#[test]
+fn fleet_shared_process_profile_downgrades_unknown_managed_lineage() {
+    let scorer = CompositeBehaviorScorer::from_config(&ContainmentConfig::default());
+    let batch = FileActivityBatch {
+        timestamp: Utc::now(),
+        source: "aya_ringbuf".to_string(),
+        watched_root: "/srv/data".to_string(),
+        poll_interval_ms: 1000,
+        file_ops: FileOperationCounts {
+            modified: 6,
+            ..Default::default()
+        },
+        touched_paths: vec!["/srv/data/db.sqlite".to_string()],
+        protected_paths_touched: Vec::new(),
+        rename_extension_targets: Vec::new(),
+        content_indicators: Default::default(),
+        bytes_written: 0,
+        io_rate_bytes_per_sec: 0,
+    };
+    let correlation = CorrelationResult {
+        process: Some({
+            let mut proc = process(
+                4243,
+                "python3",
+                "/usr/bin/python3",
+                "python3 /opt/backup/runner.py --sync",
+            );
+            proc.service_unit = Some("backup.service".to_string());
+            proc.package_name = Some("python3".to_string());
+            proc.container_image = Some("ghcr.io/acme/backup:1.2.3".to_string());
+            proc.parent_process_name = Some("systemd".to_string());
+            proc.parent_command_line = Some("systemd".to_string());
+            proc
+        }),
+        protected_hits: 0,
+    };
+    let shared_risk = SharedRiskSnapshot {
+        process_profiles: vec![SharedProcessProfile {
+            identity: "/usr/bin/python3|backup.service|python3|ghcr.io/acme/backup:1.2.3"
+                .to_string(),
+            exe_path: "/usr/bin/python3".to_string(),
+            service_unit: Some("backup.service".to_string()),
+            package_name: Some("python3".to_string()),
+            container_image: Some("ghcr.io/acme/backup:1.2.3".to_string()),
+            trust_class: "trusted_package_managed_process".to_string(),
+            distinct_agents: 3,
+            event_count: 7,
+            highest_level: "observed".to_string(),
+            label: "shared:trusted-package".to_string(),
+        }],
+        ..Default::default()
+    };
+
+    let baseline_event = scorer.score(&batch, &correlation);
+    let shared_event = scorer.score_with_shared_risk(&batch, &correlation, &shared_risk);
+
+    assert_eq!(baseline_event.level, BehaviorLevel::Suspicious);
+    assert_eq!(shared_event.level, BehaviorLevel::Observed);
+    assert!(shared_event.score < baseline_event.score);
+    assert!(shared_event
+        .reasons
+        .iter()
+        .any(|reason| reason == "fleet-shared trusted package lineage (shared:trusted-package)"));
 }
 
 #[test]
@@ -824,6 +890,109 @@ fn content_rewrite_signals_raise_risk_and_chain_confidence() {
     assert!(event.reasons.iter().any(|reason| {
         reason
             == "behavior chain signals: weak_identity, high_entropy_rewrite, unreadable_rewrite, repeated_writes, user_data_targeting, directory_spread"
+    }));
+}
+
+#[test]
+fn simulated_ransomware_workload_scores_above_benign_maintenance() {
+    let benign_scorer = CompositeBehaviorScorer::from_config(&ContainmentConfig::default());
+    let ransomware_scorer = CompositeBehaviorScorer::from_config(&ContainmentConfig::default());
+
+    let benign_batch = FileActivityBatch {
+        timestamp: Utc::now(),
+        source: "aya_ringbuf".to_string(),
+        watched_root: "/usr/lib/firmware".to_string(),
+        poll_interval_ms: 1000,
+        file_ops: FileOperationCounts {
+            modified: 4,
+            ..Default::default()
+        },
+        touched_paths: vec!["/usr/lib/firmware/vendor.bin".to_string()],
+        protected_paths_touched: vec!["/usr/lib/firmware/vendor.bin".to_string()],
+        rename_extension_targets: Vec::new(),
+        content_indicators: crate::ebpf::events::FileContentIndicators {
+            unreadable_rewrites: 1,
+            high_entropy_rewrites: 1,
+        },
+        bytes_written: 2 * 1_048_576,
+        io_rate_bytes_per_sec: 2 * 1_048_576,
+    };
+    let benign_correlation = CorrelationResult {
+        process: Some({
+            let mut proc = process(
+                701,
+                "fwupd",
+                "/usr/libexec/fwupd/fwupd",
+                "/usr/libexec/fwupd/fwupd --daemon",
+            );
+            proc.parent_process_name = Some("systemd".to_string());
+            proc.parent_command_line = Some("systemd".to_string());
+            proc.service_unit = Some("fwupd.service".to_string());
+            proc.trust_class = ProcessTrustClass::TrustedPackageManaged;
+            proc.maintenance_activity = Some(MaintenanceActivity::TrustedMaintenance);
+            proc
+        }),
+        protected_hits: 1,
+    };
+
+    let ransomware_batch = FileActivityBatch {
+        timestamp: Utc::now(),
+        source: "aya_ringbuf".to_string(),
+        watched_root: "/srv/data".to_string(),
+        poll_interval_ms: 1000,
+        file_ops: FileOperationCounts {
+            modified: 8,
+            renamed: 12,
+            deleted: 3,
+            ..Default::default()
+        },
+        touched_paths: vec![
+            "/srv/data/finance/a.enc".to_string(),
+            "/srv/data/hr/b.enc".to_string(),
+            "/srv/data/legal/c.enc".to_string(),
+        ],
+        protected_paths_touched: Vec::new(),
+        rename_extension_targets: vec![
+            "enc".to_string(),
+            "enc".to_string(),
+            "enc".to_string(),
+            "enc".to_string(),
+        ],
+        content_indicators: crate::ebpf::events::FileContentIndicators {
+            unreadable_rewrites: 2,
+            high_entropy_rewrites: 2,
+        },
+        bytes_written: 8 * 1_048_576,
+        io_rate_bytes_per_sec: 8 * 1_048_576,
+    };
+    let ransomware_correlation = CorrelationResult {
+        process: Some({
+            let mut proc = process(
+                702,
+                "ransom",
+                "/tmp/ransom/payload",
+                "/tmp/ransom/payload --encrypt /srv/data",
+            );
+            proc.parent_process_name = Some("sh".to_string());
+            proc.parent_command_line =
+                Some("/bin/sh -c /tmp/ransom/payload --encrypt /srv/data".to_string());
+            proc
+        }),
+        protected_hits: 0,
+    };
+
+    let benign = benign_scorer.score(&benign_batch, &benign_correlation);
+    let ransomware = ransomware_scorer.score(&ransomware_batch, &ransomware_correlation);
+
+    assert_eq!(benign.level, BehaviorLevel::Observed);
+    assert!(matches!(
+        ransomware.level,
+        BehaviorLevel::HighRisk | BehaviorLevel::ContainmentCandidate
+    ));
+    assert!(ransomware.score > benign.score);
+    assert!(ransomware.reasons.iter().any(|reason| {
+        reason
+            == "behavior chain signals: weak_identity, meaningful_rename, extension_anomaly, high_entropy_rewrite, unreadable_rewrite, repeated_writes, user_data_targeting, suspicious_lineage, directory_spread, rapid_delete"
     }));
 }
 

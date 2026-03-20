@@ -4,6 +4,7 @@ use crate::ebpf::events::{
     BehaviorEvent, BehaviorLevel, FileActivityBatch, FileOperationCounts, MaintenanceActivity,
     ProcessInfo, ProcessTrustClass,
 };
+use crate::shared_risk::{SharedProcessTrustMatch, SharedRiskSnapshot};
 use chrono::{DateTime, Utc};
 use std::cell::RefCell;
 use std::collections::{HashSet, VecDeque};
@@ -177,8 +178,10 @@ struct ObservationContext {
     score: u32,
 }
 
-pub trait Scorer {
-    fn score(&self, batch: &FileActivityBatch, correlation: &CorrelationResult) -> BehaviorEvent;
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct EffectiveTrustContext {
+    trust_class: Option<ProcessTrustClass>,
+    shared_reason: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -396,6 +399,7 @@ impl CompositeBehaviorScorer {
         &self,
         batch: &FileActivityBatch,
         process: Option<&ProcessInfo>,
+        effective_trust: &EffectiveTrustContext,
         identity_bonus_signal: bool,
         activity_score: u32,
     ) -> ScoreAdjustment {
@@ -412,7 +416,10 @@ impl CompositeBehaviorScorer {
         };
 
         if identity_bonus_signal {
-            match process.trust_class {
+            match effective_trust
+                .trust_class
+                .unwrap_or(crate::ebpf::events::ProcessTrustClass::Unknown)
+            {
                 crate::ebpf::events::ProcessTrustClass::Unknown => {
                     adjustment.bonus = adjustment.bonus.saturating_add(self.unknown_process_bonus);
                     adjustment
@@ -433,7 +440,10 @@ impl CompositeBehaviorScorer {
         }
 
         if activity_score > 0 {
-            match process.trust_class {
+            match effective_trust
+                .trust_class
+                .unwrap_or(crate::ebpf::events::ProcessTrustClass::Unknown)
+            {
                 crate::ebpf::events::ProcessTrustClass::TrustedSystem
                 | crate::ebpf::events::ProcessTrustClass::TrustedPackageManaged => {
                     adjustment.penalty = adjustment
@@ -455,10 +465,18 @@ impl CompositeBehaviorScorer {
             }
         }
 
+        if activity_score > 0 {
+            if let Some(reason) = effective_trust.shared_reason.as_ref() {
+                adjustment.reasons.push(reason.clone());
+            }
+        }
+
         if identity_bonus_signal
             && activity_score > 0
             && matches!(
-                process.trust_class,
+                effective_trust
+                    .trust_class
+                    .unwrap_or(crate::ebpf::events::ProcessTrustClass::Unknown),
                 crate::ebpf::events::ProcessTrustClass::Unknown
                     | crate::ebpf::events::ProcessTrustClass::Suspicious
             )
@@ -476,16 +494,10 @@ impl CompositeBehaviorScorer {
     fn assess_behavior_chain(
         &self,
         batch: &FileActivityBatch,
-        process: Option<&ProcessInfo>,
+        weak_identity: bool,
         flags: ContextFlags,
         inputs: BehaviorChainInputs,
     ) -> BehaviorChainAssessment {
-        let weak_identity = process.is_none_or(|process| {
-            matches!(
-                process.trust_class,
-                ProcessTrustClass::Unknown | ProcessTrustClass::Suspicious
-            )
-        });
         let meaningful_rename = batch.file_ops.renamed >= self.meaningful_rename_count;
         let extension_anomaly = inputs.extension_anomaly_component > 0;
         let high_entropy_rewrite = inputs.high_entropy_rewrite_component > 0;
@@ -726,6 +738,46 @@ impl CompositeBehaviorScorer {
         adjustment
     }
 
+    fn effective_trust_context(
+        &self,
+        process: Option<&ProcessInfo>,
+        shared_risk: &SharedRiskSnapshot,
+        flags: ContextFlags,
+    ) -> EffectiveTrustContext {
+        let Some(process) = process else {
+            return EffectiveTrustContext::default();
+        };
+
+        let mut effective = EffectiveTrustContext {
+            trust_class: Some(process.trust_class),
+            shared_reason: None,
+        };
+
+        if flags.suspicious_lineage() {
+            return effective;
+        }
+
+        let Some(shared_match) = shared_risk.shared_process_trust(process) else {
+            return effective;
+        };
+        let Some(promoted) = promoted_trust_class(process.trust_class, &shared_match) else {
+            return effective;
+        };
+
+        effective.trust_class = Some(promoted);
+        effective.shared_reason = Some(shared_trust_reason(promoted, &shared_match));
+        effective
+    }
+
+    pub fn score_with_shared_risk(
+        &self,
+        batch: &FileActivityBatch,
+        correlation: &CorrelationResult,
+        shared_risk: &SharedRiskSnapshot,
+    ) -> BehaviorEvent {
+        self.score_impl(batch, correlation, shared_risk)
+    }
+
     pub fn score_temp_exec_trigger(
         &self,
         timestamp: DateTime<Utc>,
@@ -799,8 +851,21 @@ impl CompositeBehaviorScorer {
     }
 }
 
-impl Scorer for CompositeBehaviorScorer {
-    fn score(&self, batch: &FileActivityBatch, correlation: &CorrelationResult) -> BehaviorEvent {
+impl CompositeBehaviorScorer {
+    #[allow(dead_code)]
+    pub fn score(
+        &self,
+        batch: &FileActivityBatch,
+        correlation: &CorrelationResult,
+    ) -> BehaviorEvent {
+        self.score_impl(batch, correlation, &SharedRiskSnapshot::default())
+    }
+    fn score_impl(
+        &self,
+        batch: &FileActivityBatch,
+        correlation: &CorrelationResult,
+        shared_risk: &SharedRiskSnapshot,
+    ) -> BehaviorEvent {
         self.prune_recent_observations(batch.timestamp);
 
         let mut score = 0u32;
@@ -897,10 +962,11 @@ impl Scorer for CompositeBehaviorScorer {
 
         let process = correlation.process.as_ref();
         let flags = build_context_flags(batch, process);
+        let effective_trust = self.effective_trust_context(process, shared_risk, flags);
         let user_data_targeting = user_data_component > 0;
-        let weak_identity = process.is_none_or(|process| {
+        let weak_identity = effective_trust.trust_class.is_none_or(|trust_class| {
             matches!(
-                process.trust_class,
+                trust_class,
                 ProcessTrustClass::Unknown | ProcessTrustClass::Suspicious
             )
         });
@@ -956,7 +1022,7 @@ impl Scorer for CompositeBehaviorScorer {
             || directory_spread_component > 0;
         let behavior_chain = self.assess_behavior_chain(
             batch,
-            process,
+            weak_identity,
             flags,
             BehaviorChainInputs {
                 extension_anomaly_component,
@@ -968,7 +1034,13 @@ impl Scorer for CompositeBehaviorScorer {
                 recurrence_component,
             },
         );
-        let trust_adjustment = self.trust_adjustment(batch, process, identity_bonus_signal, score);
+        let trust_adjustment = self.trust_adjustment(
+            batch,
+            process,
+            &effective_trust,
+            identity_bonus_signal,
+            score,
+        );
         let adjustment = self.context_adjustment(
             process,
             ScoreComponents {
@@ -1070,9 +1142,7 @@ impl Scorer for CompositeBehaviorScorer {
 
         event
     }
-}
 
-impl CompositeBehaviorScorer {
     fn prune_recent_observations(&self, now: DateTime<Utc>) {
         let mut recent_observations = self.recent_observations.borrow_mut();
         while recent_observations.front().is_some_and(|entry| {
@@ -1312,6 +1382,41 @@ fn process_history_identity(process: Option<&ProcessInfo>) -> Option<String> {
         .map(normalize_history_value)
         .unwrap_or_else(|| "-".to_string());
     Some(format!("{identity}|{service_unit}|{container}"))
+}
+
+fn promoted_trust_class(
+    local: ProcessTrustClass,
+    shared_match: &SharedProcessTrustMatch,
+) -> Option<ProcessTrustClass> {
+    if matches!(local, ProcessTrustClass::Suspicious) {
+        return None;
+    }
+
+    (trust_rank(shared_match.trust_class) > trust_rank(local)).then_some(shared_match.trust_class)
+}
+
+fn trust_rank(trust_class: ProcessTrustClass) -> u8 {
+    match trust_class {
+        ProcessTrustClass::Suspicious => 0,
+        ProcessTrustClass::Unknown => 1,
+        ProcessTrustClass::AllowedLocal => 2,
+        ProcessTrustClass::TrustedPackageManaged => 3,
+        ProcessTrustClass::TrustedSystem => 4,
+    }
+}
+
+fn shared_trust_reason(
+    effective_trust_class: ProcessTrustClass,
+    shared_match: &SharedProcessTrustMatch,
+) -> String {
+    let baseline = match effective_trust_class {
+        ProcessTrustClass::TrustedSystem => "fleet-shared trusted system lineage",
+        ProcessTrustClass::TrustedPackageManaged => "fleet-shared trusted package lineage",
+        ProcessTrustClass::AllowedLocal => "fleet-shared allowed lineage",
+        ProcessTrustClass::Unknown => "fleet-shared observed lineage",
+        ProcessTrustClass::Suspicious => "fleet-shared suspicious lineage",
+    };
+    format!("{baseline} ({})", shared_match.label)
 }
 
 fn adjust_threshold_for_profile(

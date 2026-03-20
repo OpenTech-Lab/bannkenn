@@ -189,6 +189,7 @@ fn offline_agent_state_round_trips() {
             global_risk_score: 0.8,
             global_threshold_multiplier: 0.6,
             categories: Vec::new(),
+            process_profiles: Vec::new(),
         },
     };
 

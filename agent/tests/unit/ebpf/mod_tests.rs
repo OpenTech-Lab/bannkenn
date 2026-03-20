@@ -5,7 +5,10 @@ use crate::ebpf::events::{
     BehaviorLevel, RAW_BEHAVIOR_EVENT_KIND_FILE_ACTIVITY, RAW_BEHAVIOR_EVENT_KIND_PROCESS_EXEC,
 };
 use crate::ebpf::lifecycle::{LifecycleSnapshot, TrackedProcess};
+use crate::shared_risk::SharedRiskSnapshot;
 use chrono::Utc;
+use std::sync::Arc;
+use tokio::sync::RwLock;
 
 #[tokio::test]
 async fn simulated_mass_rename_triggers_score_above_suspicious_threshold() {
@@ -26,7 +29,11 @@ async fn simulated_mass_rename_triggers_score_above_suspicious_threshold() {
     config
         .protected_pid_allowlist
         .retain(|entry| entry != "bannkenn-agent");
-    let mut sensor = SensorManager::from_config(&config).expect("sensor should be enabled");
+    let mut sensor = SensorManager::from_config(
+        &config,
+        Arc::new(RwLock::new(SharedRiskSnapshot::default())),
+    )
+    .expect("sensor should be enabled");
     assert!(
         sensor.poll_once().await.unwrap().is_empty(),
         "baseline poll"
@@ -301,7 +308,11 @@ async fn recent_temp_write_followed_by_exec_emits_trigger_event() {
         watch_paths: vec![root.display().to_string()],
         ..ContainmentConfig::default()
     };
-    let mut sensor = SensorManager::from_config(&config).expect("sensor should be enabled");
+    let mut sensor = SensorManager::from_config(
+        &config,
+        Arc::new(RwLock::new(SharedRiskSnapshot::default())),
+    )
+    .expect("sensor should be enabled");
     sensor.recent_temp_writes.insert(
         "/tmp/payload".to_string(),
         RecentTempWrite {
@@ -371,7 +382,11 @@ async fn ringbuf_exec_events_fall_back_to_tracked_process_exe_path() {
         watch_paths: vec![root.display().to_string()],
         ..ContainmentConfig::default()
     };
-    let mut sensor = SensorManager::from_config(&config).expect("sensor should be enabled");
+    let mut sensor = SensorManager::from_config(
+        &config,
+        Arc::new(RwLock::new(SharedRiskSnapshot::default())),
+    )
+    .expect("sensor should be enabled");
     sensor.recent_temp_writes.insert(
         "/tmp/payload".to_string(),
         RecentTempWrite {

@@ -9,7 +9,8 @@ use crate::ebpf::events::{
 #[cfg(any(target_os = "linux", test))]
 use crate::ebpf::events::{RawBehaviorEventKind, RawBehaviorRingEvent};
 use crate::ebpf::lifecycle::{LifecycleEvent, ProcessLifecycleTracker};
-use crate::scorer::{CompositeBehaviorScorer, Scorer};
+use crate::scorer::CompositeBehaviorScorer;
+use crate::shared_risk::SharedRiskSnapshot;
 #[cfg(target_os = "linux")]
 use anyhow::anyhow;
 use anyhow::{Context, Result};
@@ -28,8 +29,9 @@ use std::future::Future;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
+use std::sync::Arc;
 use std::time::Instant;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, RwLock};
 use tokio::time::{interval, Duration};
 
 #[cfg(unix)]
@@ -91,6 +93,7 @@ pub struct SensorManager {
     lifecycle: ProcessLifecycleTracker,
     correlator: ProcessCorrelator,
     scorer: CompositeBehaviorScorer,
+    shared_risk_snapshot: Arc<RwLock<SharedRiskSnapshot>>,
     recent_temp_writes: HashMap<String, RecentTempWrite>,
     content_profile_tracker: Option<ContentProfileTracker>,
 }
@@ -259,7 +262,10 @@ impl RateLimitedWarning {
 
 impl SensorManager {
     #[allow(unreachable_code)]
-    pub fn from_config(config: &ContainmentConfig) -> Option<Self> {
+    pub fn from_config(
+        config: &ContainmentConfig,
+        shared_risk_snapshot: Arc<RwLock<SharedRiskSnapshot>>,
+    ) -> Option<Self> {
         if !config.enabled {
             return None;
         }
@@ -294,6 +300,7 @@ impl SensorManager {
             lifecycle: ProcessLifecycleTracker::new(config),
             correlator: ProcessCorrelator::new(),
             scorer: CompositeBehaviorScorer::from_config(config),
+            shared_risk_snapshot,
             recent_temp_writes: HashMap::new(),
             content_profile_tracker: Some(ContentProfileTracker::new(
                 content_profile_roots,
@@ -341,13 +348,16 @@ impl SensorManager {
         }
 
         let mut events = self.build_temp_exec_events(&lifecycle);
+        let shared_risk_snapshot = self.shared_risk_snapshot.read().await.clone();
         for batch in polled.batches {
             let correlation = self.correlator.correlate(&batch, &lifecycle);
             if correlation.process.is_none() && correlation.protected_hits > 0 {
                 continue;
             }
 
-            let event = self.scorer.score(&batch, &correlation);
+            let event =
+                self.scorer
+                    .score_with_shared_risk(&batch, &correlation, &shared_risk_snapshot);
             if !event.file_ops.is_empty() {
                 events.push(event);
             }

@@ -576,21 +576,20 @@ async fn run() -> Result<()> {
         }
     });
 
-    let behavior_handle = if let Some(manager) = config_arc
-        .containment
-        .as_ref()
-        .and_then(SensorManager::from_config)
-    {
-        *containment_sensor_name.write().await = Some(manager.backend_name().to_string());
-        Some(tokio::spawn(async move {
-            if let Err(e) = manager.run(behavior_tx).await {
-                tracing::error!("Behavior sensor error: {}", e);
-            }
-        }))
-    } else {
-        drop(behavior_tx);
-        None
-    };
+    let behavior_handle =
+        if let Some(manager) = config_arc.containment.as_ref().and_then(|config| {
+            SensorManager::from_config(config, Arc::clone(&shared_risk_snapshot))
+        }) {
+            *containment_sensor_name.write().await = Some(manager.backend_name().to_string());
+            Some(tokio::spawn(async move {
+                if let Err(e) = manager.run(behavior_tx).await {
+                    tracing::error!("Behavior sensor error: {}", e);
+                }
+            }))
+        } else {
+            drop(behavior_tx);
+            None
+        };
 
     let sync_client = ApiClient::new(
         config_arc.server_url.clone(),

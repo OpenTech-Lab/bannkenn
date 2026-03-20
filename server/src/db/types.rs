@@ -418,6 +418,20 @@ pub struct SharedRiskCategoryRow {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SharedProcessProfileRow {
+    pub identity: String,
+    pub exe_path: String,
+    pub service_unit: Option<String>,
+    pub package_name: Option<String>,
+    pub container_image: Option<String>,
+    pub trust_class: String,
+    pub distinct_agents: u32,
+    pub event_count: u32,
+    pub highest_level: String,
+    pub label: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct WhitelistEntryRow {
     pub id: i64,
     pub ip: String,
@@ -432,4 +446,5 @@ pub struct SharedRiskProfileRow {
     pub global_risk_score: f64,
     pub global_threshold_multiplier: f64,
     pub categories: Vec<SharedRiskCategoryRow>,
+    pub process_profiles: Vec<SharedProcessProfileRow>,
 }

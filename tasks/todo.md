@@ -63,14 +63,14 @@
   - [x] Back the new content-based signals with regression coverage for benign text rewrites, unreadable rewrites, and higher-entropy suspicious rewrites.
 - [x] Add container-aware attribution for container ID, image name, orchestrator metadata, and bind-mount or volume context.
 - [x] Gate containment actions behind higher-confidence scoring so weak signals do not trigger disruptive response.
-- [ ] Support fleet-wide baseline or trust sharing once local attribution and scoring are stable.
+- [x] Support fleet-wide baseline or trust sharing once local attribution and scoring are stable.
 
 ## Verification
 - [ ] Run package-update, `fwupd`, `snapd`, and unattended-upgrade scenarios and prove the new model reduces false positives on protected paths.
 - [ ] Benchmark before/after CPU usage under normal load and during synthetic event storms.
 - [ ] Validate journald-first behavior on systemd hosts and confirm sane fallback on legacy log-file setups.
-- [ ] Simulate ransomware-like rename/write workloads and compare alert quality against the current detector.
-- [ ] Document the default trust seeds, tuning knobs, and operator-facing severity semantics.
+- [x] Simulate ransomware-like rename/write workloads and compare alert quality against the current detector.
+- [x] Document the default trust seeds, tuning knobs, and operator-facing severity semantics.
 
 ## Optional Tasks
 - [x] Upgrade `sqlx-postgres` from `0.7.4` or otherwise resolve the current future-Rust incompatibility warning reported during `cargo test` and `cargo clippy`.
@@ -138,3 +138,7 @@
 - `ContainmentConfig` now exposes `auto_containment_requires_pid`, `containment_action_window_secs`, `throttle_action_min_events`, and `fuse_action_min_events` so operators can tune action confidence separately from scoring thresholds.
 - Regression coverage for this pass adds containment tests for repeated high-risk throttling, repeated containment-candidate fuse escalation, missing-PID suppression, and config-default assertions for the new action-gating knobs.
 - Verification for this pass: `cargo fmt --all`, `cargo fmt --all --check`, `cargo test -p bannkenn-agent`, and `cargo clippy -p bannkenn-agent --tests -- -D warnings`.
+- 2026-03-20: Fleet trust sharing now extends the existing shared-risk snapshot with low-risk cross-agent process baselines keyed by executable path plus stable service/package/container identity. The server only exports those shared profiles after they appear on multiple agents and never escalate beyond `suspicious`, and the agent scorer only uses them when local lineage is otherwise stable.
+- 2026-03-20: Operator-facing docs now describe the seeded maintenance trust classes, the primary scoring/correlation tuning knobs, the severity-band semantics, and the new fleet baseline sharing path in `README.md`.
+- Regression coverage for this pass adds agent scorer/shared-risk tests for fleet-shared process downgrades and identity matching, a benign-maintenance versus ransomware-workload comparison test, and server DB tests proving shared process baselines are exported only for multi-agent low-risk histories and are suppressed when any `high_risk` history exists.
+- Verification for this pass: `cargo fmt --all`, `cargo test -p bannkenn-agent --tests`, `cargo test -p bannkenn-server`, and `cargo clippy -p bannkenn-agent -p bannkenn-server --tests -- -D warnings`.

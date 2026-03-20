@@ -1,6 +1,21 @@
 use super::*;
 use sqlx::QueryBuilder;
 
+#[derive(Debug)]
+struct SharedProcessProfileAccumulator {
+    exe_path: String,
+    service_unit: Option<String>,
+    package_name: Option<String>,
+    container_image: Option<String>,
+    distinct_agents: std::collections::HashSet<String>,
+    event_count: u32,
+    highest_level_rank: u8,
+    highest_level: String,
+    trust_rank: u8,
+    trust_class: String,
+    label: String,
+}
+
 impl Db {
     pub async fn list_community_ips(&self, limit: i64) -> anyhow::Result<Vec<CommunityIpRow>> {
         let rows = sqlx::query_as::<_, (String, String, Option<i64>, Option<String>, i64, String)>(
@@ -534,6 +549,100 @@ impl Db {
         let global_risk_score = (global_weight / 30.0).clamp(0.0, 1.0);
         let global_threshold_multiplier = 1.0 - global_risk_score * 0.5;
 
+        let behavior_rows = sqlx::query_as::<
+            _,
+            (
+                String,
+                String,
+                Option<String>,
+                Option<String>,
+                Option<String>,
+                String,
+                String,
+            ),
+        >(
+            r#"
+            SELECT
+                agent_name,
+                exe_path,
+                service_unit,
+                package_name,
+                container_image,
+                trust_class,
+                level
+            FROM behavior_events
+            WHERE created_at >= ?
+              AND exe_path IS NOT NULL
+              AND trust_class IN (
+                'trusted_system_process',
+                'trusted_package_managed_process',
+                'allowed_local_process'
+              )
+            "#,
+        )
+        .bind(&cutoff)
+        .fetch_all(&self.0)
+        .await?;
+
+        let mut process_profiles: HashMap<String, SharedProcessProfileAccumulator> = HashMap::new();
+        for (
+            agent_name,
+            exe_path,
+            service_unit,
+            package_name,
+            container_image,
+            trust_class,
+            level,
+        ) in behavior_rows
+        {
+            let Some(exe_path) = trim_non_empty(exe_path) else {
+                continue;
+            };
+            let service_unit = service_unit.and_then(trim_non_empty);
+            let package_name = package_name.and_then(trim_non_empty);
+            let container_image = container_image.and_then(trim_non_empty);
+            let Some(identity) = shared_process_identity(
+                &exe_path,
+                service_unit.as_deref(),
+                package_name.as_deref(),
+                container_image.as_deref(),
+            ) else {
+                continue;
+            };
+            let Some((trust_rank, label)) = shared_process_trust_metadata(&trust_class) else {
+                continue;
+            };
+            let level_rank = behavior_level_rank(&level);
+
+            let entry = process_profiles.entry(identity.clone()).or_insert_with(|| {
+                SharedProcessProfileAccumulator {
+                    exe_path: exe_path.clone(),
+                    service_unit: service_unit.clone(),
+                    package_name: package_name.clone(),
+                    container_image: container_image.clone(),
+                    distinct_agents: HashSet::new(),
+                    event_count: 0,
+                    highest_level_rank: level_rank,
+                    highest_level: level.clone(),
+                    trust_rank,
+                    trust_class: trust_class.clone(),
+                    label: label.to_string(),
+                }
+            });
+
+            entry.distinct_agents.insert(agent_name);
+            entry.event_count = entry.event_count.saturating_add(1);
+            if level_rank > entry.highest_level_rank {
+                entry.highest_level_rank = level_rank;
+                entry.highest_level = level.clone();
+            }
+            if trust_rank < entry.trust_rank {
+                entry.trust_rank = trust_rank;
+                entry.trust_class = trust_class.clone();
+                entry.label = label.to_string();
+            }
+        }
+
         let mut categories = by_category
             .into_iter()
             .filter_map(|(category, (ips, agents, event_count, weighted_events))| {
@@ -580,12 +689,99 @@ impl Db {
                 .then(a.category.cmp(&b.category))
         });
 
+        let mut process_profiles = process_profiles
+            .into_iter()
+            .filter_map(|(identity, profile)| {
+                let distinct_agents = profile.distinct_agents.len() as u32;
+                if distinct_agents < 2 || profile.event_count < 3 || profile.highest_level_rank >= 2
+                {
+                    return None;
+                }
+
+                Some(SharedProcessProfileRow {
+                    identity,
+                    exe_path: profile.exe_path,
+                    service_unit: profile.service_unit,
+                    package_name: profile.package_name,
+                    container_image: profile.container_image,
+                    trust_class: profile.trust_class,
+                    distinct_agents,
+                    event_count: profile.event_count,
+                    highest_level: profile.highest_level,
+                    label: profile.label,
+                })
+            })
+            .collect::<Vec<_>>();
+
+        process_profiles.sort_by(|left, right| {
+            right
+                .distinct_agents
+                .cmp(&left.distinct_agents)
+                .then(right.event_count.cmp(&left.event_count))
+                .then(left.exe_path.cmp(&right.exe_path))
+                .then(left.identity.cmp(&right.identity))
+        });
+
         Ok(SharedRiskProfileRow {
             generated_at: Utc::now().to_rfc3339(),
             window_secs,
             global_risk_score,
             global_threshold_multiplier,
             categories,
+            process_profiles,
         })
+    }
+}
+
+fn trim_non_empty(value: String) -> Option<String> {
+    let trimmed = value.trim();
+    (!trimmed.is_empty()).then(|| trimmed.to_string())
+}
+
+fn normalize_shared_process_segment(value: &str) -> Option<String> {
+    let normalized = value.trim().to_ascii_lowercase();
+    (!normalized.is_empty()).then_some(normalized)
+}
+
+fn shared_process_identity(
+    exe_path: &str,
+    service_unit: Option<&str>,
+    package_name: Option<&str>,
+    container_image: Option<&str>,
+) -> Option<String> {
+    let exe_path = normalize_shared_process_segment(exe_path)?;
+    let service_unit = service_unit
+        .and_then(normalize_shared_process_segment)
+        .unwrap_or_else(|| "-".to_string());
+    let package_name = package_name
+        .and_then(normalize_shared_process_segment)
+        .unwrap_or_else(|| "-".to_string());
+    let container_image = container_image
+        .and_then(normalize_shared_process_segment)
+        .unwrap_or_else(|| "-".to_string());
+    if service_unit == "-" && package_name == "-" && container_image == "-" {
+        return None;
+    }
+
+    Some(format!(
+        "{exe_path}|{service_unit}|{package_name}|{container_image}"
+    ))
+}
+
+fn shared_process_trust_metadata(trust_class: &str) -> Option<(u8, &'static str)> {
+    match trust_class {
+        "allowed_local_process" => Some((0, "shared:allowed-lineage")),
+        "trusted_package_managed_process" => Some((1, "shared:trusted-package")),
+        "trusted_system_process" => Some((2, "shared:trusted-system")),
+        _ => None,
+    }
+}
+
+fn behavior_level_rank(level: &str) -> u8 {
+    match level {
+        "containment_candidate" => 3,
+        "high_risk" => 2,
+        "suspicious" => 1,
+        _ => 0,
     }
 }

@@ -123,6 +123,36 @@ sudo bannkenn-agent update --configure-containment
 
 If you want to manage certificates yourself, use `scripts/generate-ip-cert.sh` before the native-TLS install. Otherwise, `scripts/install.sh dashboard-native-tls` can generate the cert files from `.env`.
 
+## Behavior Detection Model
+
+BannKenn’s filesystem detector scores activity across path sensitivity, process trust, write/rename/delete pressure, extension anomalies, rewrite unreadability or entropy jumps, directory spread, recurrence, and suspicious lineage. User-facing severity is intentionally separate from automatic containment:
+
+- `observed`: visible activity that did not accumulate enough corroboration for escalation.
+- `suspicious`: enough weighted evidence to merit review, but not enough correlated ransomware-style signals for disruptive response.
+- `high_risk`: correlated multi-signal behavior that looks meaningfully ransomware-like, but still needs repeated corroboration before automatic throttle/fuse actions.
+- `containment_candidate`: the strongest user-facing severity band; automatic throttle/fuse still stays behind the separate action-confidence gates.
+
+Default Linux trust seeds and suppressions include common maintenance and self-noise paths so protected-path writes do not automatically look malicious:
+
+- trusted system or package-managed maintenance for `apt`, `dpkg`, `unattended-upgrades`, `snapd`, `fwupd`, `systemd`, and related helpers
+- package-manager temp activity and trusted maintenance windows
+- BannKenn-managed state paths and `bannkenn-agent` internal work
+
+The main operator tuning knobs live under `[containment]` in `agent.toml`:
+
+- severity thresholds: `suspicious_score`, `throttle_score`, `fuse_score`
+- correlation gates: `meaningful_rename_count`, `meaningful_write_count`, `high_risk_min_signals`, `containment_candidate_min_signals`
+- weighting knobs: `protected_path_bonus`, `user_data_bonus`, `unknown_process_bonus`, `extension_anomaly_score`, `recurrence_score`, `directory_spread_score`
+- profile tuning: `environment_profile = "conservative" | "balanced" | "aggressive"`
+- action confidence: `auto_containment_requires_pid`, `containment_action_window_secs`, `throttle_action_min_events`, `fuse_action_min_events`
+
+Agents also pull a shared server snapshot for two fleet-wide signals:
+
+- cross-agent IP attack pressure via the existing shared-risk categories
+- low-risk shared process baselines keyed by executable plus service unit, package name, and/or container image
+
+Those fleet process baselines are only exported after they appear on multiple agents and have no `high_risk` or `containment_candidate` history, so they reduce false positives for consistent managed workloads without blindly trusting one noisy host.
+
 ### Path sample: 
 ```
 /etc/passwd,/etc/shadow,/etc/sudoers,/etc/sudoers.d/,/etc/pam.d/,/root/.ssh/authorized_keys,/bin/,/sbin/,/usr/bin/,/usr/sbin/,/usr/local/bin/,/lib/modules/,/etc/systemd/system/,/usr/lib/systemd/system/,/etc/init.d/,/etc/crontab/,/etc/cron.d/,/etc/rc.local,/etc/ld.so.preload,/etc/profile.d/,/etc/bashrc,/etc/hosts,/tmp/,/var/tmp/,/dev/shm/
