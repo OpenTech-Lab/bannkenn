@@ -28,6 +28,11 @@
 - The runner stage only needs `node server.js` — no npm, no dev dependencies in the final image
 - Copy three paths from builder: `public/`, `.next/standalone/`, `.next/static/`
 
+### Next.js standalone output in a subdirectory app must be flattened deliberately in Docker
+- If `outputFileTracingRoot` points above the app directory, Next writes standalone output under a nested app path such as `.next/standalone/dashboard/server.js`, not at the standalone root.
+- Build the image with the same repo-style directory layout the config expects, then copy the nested app contents into the runtime root so `node server.js` resolves correctly.
+- Do not assume `.next/standalone/server.js` exists when the app lives below the tracing root.
+
 ### Public vs. auth for dashboard reads
 - Self-hosted dashboards should not require users to manage bearer tokens in the browser
 - Make GET (read) endpoints public; keep POST/DELETE (write) endpoints JWT-protected
