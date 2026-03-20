@@ -145,8 +145,22 @@ pub struct ContainmentConfig {
     pub delete_score: u32,
     #[serde(default = "default_protected_path_bonus")]
     pub protected_path_bonus: u32,
+    #[serde(default = "default_user_data_bonus")]
+    pub user_data_bonus: u32,
     #[serde(default = "default_unknown_process_bonus")]
     pub unknown_process_bonus: u32,
+    #[serde(default = "default_trusted_process_penalty")]
+    pub trusted_process_penalty: u32,
+    #[serde(default = "default_allowed_local_penalty")]
+    pub allowed_local_penalty: u32,
+    #[serde(default = "default_directory_spread_score")]
+    pub directory_spread_score: u32,
+    #[serde(default = "default_shell_parent_bonus")]
+    pub shell_parent_bonus: u32,
+    #[serde(default = "default_recent_process_bonus")]
+    pub recent_process_bonus: u32,
+    #[serde(default = "default_recent_process_window_secs")]
+    pub recent_process_window_secs: u64,
     #[serde(default = "default_bytes_per_score")]
     pub bytes_per_score: u64,
 }
@@ -178,7 +192,14 @@ impl Default for ContainmentConfig {
             write_score: default_write_score(),
             delete_score: default_delete_score(),
             protected_path_bonus: default_protected_path_bonus(),
+            user_data_bonus: default_user_data_bonus(),
             unknown_process_bonus: default_unknown_process_bonus(),
+            trusted_process_penalty: default_trusted_process_penalty(),
+            allowed_local_penalty: default_allowed_local_penalty(),
+            directory_spread_score: default_directory_spread_score(),
+            shell_parent_bonus: default_shell_parent_bonus(),
+            recent_process_bonus: default_recent_process_bonus(),
+            recent_process_window_secs: default_recent_process_window_secs(),
             bytes_per_score: default_bytes_per_score(),
         }
     }
@@ -309,8 +330,36 @@ fn default_protected_path_bonus() -> u32 {
     10
 }
 
+fn default_user_data_bonus() -> u32 {
+    8
+}
+
 fn default_unknown_process_bonus() -> u32 {
     8
+}
+
+fn default_trusted_process_penalty() -> u32 {
+    6
+}
+
+fn default_allowed_local_penalty() -> u32 {
+    3
+}
+
+fn default_directory_spread_score() -> u32 {
+    4
+}
+
+fn default_shell_parent_bonus() -> u32 {
+    10
+}
+
+fn default_recent_process_bonus() -> u32 {
+    6
+}
+
+fn default_recent_process_window_secs() -> u64 {
+    600
 }
 
 fn default_bytes_per_score() -> u64 {

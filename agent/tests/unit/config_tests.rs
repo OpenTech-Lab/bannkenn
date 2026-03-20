@@ -63,6 +63,13 @@ fn runtime_defaults_populate_containment_config_without_enabling_it() {
     assert_eq!(containment.throttle_io_write_bps, 1024 * 1024);
     assert_eq!(containment.throttle_network_kbit, 1024);
     assert_eq!(containment.management_allow_ports, vec![22]);
+    assert_eq!(containment.user_data_bonus, 8);
+    assert_eq!(containment.trusted_process_penalty, 6);
+    assert_eq!(containment.allowed_local_penalty, 3);
+    assert_eq!(containment.directory_spread_score, 4);
+    assert_eq!(containment.shell_parent_bonus, 10);
+    assert_eq!(containment.recent_process_bonus, 6);
+    assert_eq!(containment.recent_process_window_secs, 600);
     assert!(containment
         .protected_pid_allowlist
         .contains(&"bannkenn-agent".to_string()));

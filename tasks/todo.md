@@ -35,6 +35,10 @@
 
 ## Phase 3: Correlation And Scoring
 - [ ] Replace rule-only classification with weighted scoring across path sensitivity, trust level, burst size, write volume, extension anomaly, directory spread, parent reputation, recurrence, and container relevance.
+  - [x] Add explicit weighted dimensions for path sensitivity, trust class, directory spread, parent reputation, and container context using the current behavior-event telemetry.
+  - [x] Promote suspicious temp-path, shell-lineage, and process-mismatch combinations while downgrading trusted system/package/container maintenance activity.
+  - [x] Expose the new weighted dimensions through containment scoring config defaults so the model stays tunable.
+  - [x] Back the weighted scorer with regression coverage for benign maintenance/container cases and higher-confidence multi-signal suspicious cases.
 - [ ] Correlate low-level events into behavior chains instead of treating small isolated bursts as strong indicators by themselves.
 - [ ] Add severity bands such as observed, suspicious, high risk, and containment candidate with tunable environment profiles.
 - [ ] Require multi-signal correlation for ransomware-style alerts, including unknown process identity, meaningful rename bursts, repeated writes, and user/application data targeting without maintenance context.
@@ -83,3 +87,8 @@
 - 2026-03-19: Agent lifecycle profiling now resolves cached package ownership for tracked executables, uses that evidence to back `trusted_package_managed_process`, and captures bounded `/proc` ancestry chains that feed maintenance classification and container temp-activity suppression.
 - Regression coverage for this pass includes package-owner parser tests, fake-`/proc` ancestry extraction tests, package-name trust-policy matching, shell-ancestor regressions in lifecycle/scorer logic, agent outbox round-trips for the new fields, server behavior/archive round-trips, and the dashboard production build.
 - Verification for this pass: `cargo fmt --all`, `cargo test -p bannkenn-agent`, `cargo test -p bannkenn-server`, `cargo clippy -p bannkenn-agent -p bannkenn-server --tests -- -D warnings`, and `npm run build` in `dashboard/`.
+- 2026-03-20: The agent scorer now adds weighted path-sensitivity, trust-lineage, directory-spread, shell-lineage, and newly-observed-process signals on top of the existing burst/throughput model while still downgrading trusted maintenance, known JVM temp extraction, containerized service temp work, and BannKenn-internal activity.
+- 2026-03-20: `ContainmentConfig` now exposes the new scoring knobs (`user_data_bonus`, trust penalties, directory spread, shell lineage, and recent-process window/bonus) so later environment-profile tuning can build on explicit defaults instead of hard-coded constants.
+- Regression coverage for this pass adds multi-signal weighted-scorer tests for user-data targeting, cross-directory spread, shell ancestry, and trusted-lineage score reduction, plus config-default assertions for the new knobs.
+- Verification for this pass: `cargo fmt --all`, `cargo test -p bannkenn-agent`, and `cargo clippy -p bannkenn-agent --tests -- -D warnings`.
+- Remaining gap under the parent scoring task: rename-extension anomaly and true recurrence/history scoring are still open, so the top-level weighted-scoring checkbox intentionally remains unchecked.

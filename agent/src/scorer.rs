@@ -26,6 +26,9 @@ const MAINTENANCE_PATH_PREFIXES: &[&str] = &[
     "/var/lib/fwupd",
     "/snap",
 ];
+const USER_DATA_PATH_PREFIXES: &[&str] = &[
+    "/home", "/srv", "/var/www", "/var/lib", "/opt", "/data", "/mnt", "/media",
+];
 const AGENT_INTERNAL_PATTERNS: &[&str] = &["bannkenn-agent"];
 const AGENT_INTERNAL_PATH_PREFIXES: &[&str] = &[
     "/etc/bannkenn",
@@ -48,10 +51,12 @@ struct ScoreAdjustment {
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 struct ScoreComponents {
     protected_path: u32,
+    user_data: u32,
     rename: u32,
     write: u32,
     delete: u32,
     throughput: u32,
+    directory_spread: u32,
 }
 
 pub trait Scorer {
@@ -67,7 +72,14 @@ pub struct CompositeBehaviorScorer {
     write_score: u32,
     delete_score: u32,
     protected_path_bonus: u32,
+    user_data_bonus: u32,
     unknown_process_bonus: u32,
+    trusted_process_penalty: u32,
+    allowed_local_penalty: u32,
+    directory_spread_score: u32,
+    shell_parent_bonus: u32,
+    recent_process_bonus: u32,
+    recent_process_window_secs: u64,
     bytes_per_score: u64,
 }
 
@@ -81,7 +93,14 @@ impl CompositeBehaviorScorer {
             write_score: config.write_score,
             delete_score: config.delete_score,
             protected_path_bonus: config.protected_path_bonus,
+            user_data_bonus: config.user_data_bonus,
             unknown_process_bonus: config.unknown_process_bonus,
+            trusted_process_penalty: config.trusted_process_penalty,
+            allowed_local_penalty: config.allowed_local_penalty,
+            directory_spread_score: config.directory_spread_score,
+            shell_parent_bonus: config.shell_parent_bonus,
+            recent_process_bonus: config.recent_process_bonus,
+            recent_process_window_secs: config.recent_process_window_secs,
             bytes_per_score: config.bytes_per_score.max(1),
         }
     }
@@ -110,6 +129,133 @@ impl CompositeBehaviorScorer {
                 || batch.file_ops.deleted > 0
                 || !batch.protected_paths_touched.is_empty()
                 || throughput_score > 0)
+    }
+
+    fn protected_path_component(&self, batch: &FileActivityBatch) -> Option<(u32, String)> {
+        if !batch.protected_paths_touched.is_empty() {
+            return Some((
+                self.protected_path_bonus,
+                "protected path touched".to_string(),
+            ));
+        }
+        None
+    }
+
+    fn user_data_component(
+        &self,
+        batch: &FileActivityBatch,
+        activity_score: u32,
+    ) -> Option<(u32, String)> {
+        if activity_score == 0 || !batch_targets_user_data(batch) {
+            return None;
+        }
+
+        Some((
+            self.user_data_bonus,
+            "user/application data targeted".to_string(),
+        ))
+    }
+
+    fn directory_spread_component(
+        &self,
+        batch: &FileActivityBatch,
+        activity_score: u32,
+    ) -> Option<(u32, String)> {
+        if activity_score == 0 {
+            return None;
+        }
+
+        let directory_count = distinct_parent_dir_count(batch);
+        let extra_directories = directory_count.saturating_sub(2).min(4);
+        if extra_directories == 0 {
+            return None;
+        }
+
+        Some((
+            extra_directories.saturating_mul(self.directory_spread_score),
+            format!("directory spread x{}", directory_count),
+        ))
+    }
+
+    fn trust_adjustment(
+        &self,
+        batch: &FileActivityBatch,
+        process: Option<&ProcessInfo>,
+        identity_bonus_signal: bool,
+        activity_score: u32,
+    ) -> ScoreAdjustment {
+        let mut adjustment = ScoreAdjustment::default();
+
+        let Some(process) = process else {
+            if identity_bonus_signal {
+                adjustment.bonus = adjustment.bonus.saturating_add(self.unknown_process_bonus);
+                adjustment
+                    .reasons
+                    .push("unknown process activity".to_string());
+            }
+            return adjustment;
+        };
+
+        if identity_bonus_signal {
+            match process.trust_class {
+                crate::ebpf::events::ProcessTrustClass::Unknown => {
+                    adjustment.bonus = adjustment.bonus.saturating_add(self.unknown_process_bonus);
+                    adjustment
+                        .reasons
+                        .push("unknown process identity".to_string());
+                }
+                crate::ebpf::events::ProcessTrustClass::Suspicious => {
+                    adjustment.bonus = adjustment
+                        .bonus
+                        .saturating_add(self.unknown_process_bonus)
+                        .saturating_add(self.protected_path_bonus / 2);
+                    adjustment
+                        .reasons
+                        .push("suspicious process identity".to_string());
+                }
+                _ => {}
+            }
+        }
+
+        if activity_score > 0 {
+            match process.trust_class {
+                crate::ebpf::events::ProcessTrustClass::TrustedSystem
+                | crate::ebpf::events::ProcessTrustClass::TrustedPackageManaged => {
+                    adjustment.penalty = adjustment
+                        .penalty
+                        .saturating_add(self.trusted_process_penalty);
+                    adjustment
+                        .reasons
+                        .push("trusted process lineage".to_string());
+                }
+                crate::ebpf::events::ProcessTrustClass::AllowedLocal => {
+                    if !identity_bonus_signal {
+                        adjustment.penalty = adjustment
+                            .penalty
+                            .saturating_add(self.allowed_local_penalty);
+                        adjustment.reasons.push("allowed local lineage".to_string());
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        if identity_bonus_signal
+            && activity_score > 0
+            && matches!(
+                process.trust_class,
+                crate::ebpf::events::ProcessTrustClass::Unknown
+                    | crate::ebpf::events::ProcessTrustClass::Suspicious
+            )
+            && is_recent_process(process, batch.timestamp, self.recent_process_window_secs)
+        {
+            adjustment.bonus = adjustment.bonus.saturating_add(self.recent_process_bonus);
+            adjustment
+                .reasons
+                .push("newly observed process".to_string());
+        }
+
+        adjustment
     }
 
     fn context_adjustment(
@@ -148,6 +294,11 @@ impl CompositeBehaviorScorer {
             || trusted_maintenance_activity
             || containerized_service_temp_activity;
         let suppress_protected_path = trusted_maintenance_activity || agent_internal_activity;
+        let suppress_directory_spread = known_java_temp_extraction
+            || package_manager_helper_activity
+            || trusted_maintenance_activity
+            || containerized_service_temp_activity
+            || agent_internal_activity;
 
         if suppress_rename {
             adjustment.penalty = adjustment.penalty.saturating_add(components.rename);
@@ -167,6 +318,12 @@ impl CompositeBehaviorScorer {
 
         if suppress_protected_path {
             adjustment.penalty = adjustment.penalty.saturating_add(components.protected_path);
+        }
+
+        if suppress_directory_spread {
+            adjustment.penalty = adjustment
+                .penalty
+                .saturating_add(components.directory_spread);
         }
 
         if known_java_temp_extraction {
@@ -320,22 +477,29 @@ impl Scorer for CompositeBehaviorScorer {
             reasons.push(format!("delete burst x{}", batch.file_ops.deleted));
         }
 
-        let protected_path_component = if batch.protected_paths_touched.is_empty() {
-            0
-        } else {
-            self.protected_path_bonus
-        };
-        if !batch.protected_paths_touched.is_empty() {
-            score = score.saturating_add(protected_path_component);
-            reasons.push("protected path touched".to_string());
-        }
-
         let throughput_component =
             (batch.bytes_written / self.bytes_per_score).min(u64::from(u32::MAX)) as u32;
 
-        if self.should_add_unknown_process_bonus(batch, throughput_component, correlation) {
-            score = score.saturating_add(self.unknown_process_bonus);
-            reasons.push("unknown process activity".to_string());
+        let pre_path_activity_score = score.saturating_add(throughput_component);
+        let (protected_path_component, protected_path_reason) = self
+            .protected_path_component(batch)
+            .map(|(component, reason)| (component, Some(reason)))
+            .unwrap_or((0, None));
+        if protected_path_component > 0 {
+            score = score.saturating_add(protected_path_component);
+        }
+        if let Some(reason) = protected_path_reason {
+            reasons.push(reason);
+        }
+        let (user_data_component, user_data_reason) = self
+            .user_data_component(batch, pre_path_activity_score)
+            .map(|(component, reason)| (component, Some(reason)))
+            .unwrap_or((0, None));
+        if user_data_component > 0 {
+            score = score.saturating_add(user_data_component);
+        }
+        if let Some(reason) = user_data_reason {
+            reasons.push(reason);
         }
 
         if throughput_component > 0 {
@@ -347,21 +511,56 @@ impl Scorer for CompositeBehaviorScorer {
         }
 
         let process = correlation.process.as_ref();
+        let (directory_spread_component, directory_spread_reason) = self
+            .directory_spread_component(batch, score)
+            .map(|(component, reason)| (component, Some(reason)))
+            .unwrap_or((0, None));
+        if directory_spread_component > 0 {
+            score = score.saturating_add(directory_spread_component);
+        }
+        if let Some(reason) = directory_spread_reason {
+            reasons.push(reason);
+        }
+
+        let shell_parent_component = if score > 0 && process.is_some_and(has_shell_like_parent) {
+            self.shell_parent_bonus
+        } else {
+            0
+        };
+        if shell_parent_component > 0 {
+            score = score.saturating_add(shell_parent_component);
+            reasons.push("shell-like parent lineage".to_string());
+        }
+
+        let identity_bonus_signal = shell_parent_component > 0
+            || self.should_add_unknown_process_bonus(batch, throughput_component, correlation)
+            || rename_component > 0
+            || delete_component > 0
+            || throughput_component > 0
+            || protected_path_component > 0
+            || user_data_component > 0
+            || directory_spread_component > 0;
+        let trust_adjustment = self.trust_adjustment(batch, process, identity_bonus_signal, score);
         let adjustment = self.context_adjustment(
             batch,
             process,
             ScoreComponents {
                 protected_path: protected_path_component,
+                user_data: user_data_component,
                 rename: rename_component,
                 write: write_component,
                 delete: delete_component,
                 throughput: throughput_component,
+                directory_spread: directory_spread_component,
             },
         );
         score = score
             .saturating_sub(adjustment.penalty)
-            .saturating_add(adjustment.bonus);
+            .saturating_sub(trust_adjustment.penalty)
+            .saturating_add(adjustment.bonus)
+            .saturating_add(trust_adjustment.bonus);
         reasons.extend(adjustment.reasons);
+        reasons.extend(trust_adjustment.reasons);
         let level = self.classify_level(score);
 
         BehaviorEvent {
@@ -455,6 +654,51 @@ fn batch_touches_only_paths(batch: &FileActivityBatch, prefixes: &[&str]) -> boo
         true
     } else {
         path_matches_any_prefix(&batch.watched_root, prefixes)
+    }
+}
+
+fn batch_targets_user_data(batch: &FileActivityBatch) -> bool {
+    let mut saw_path = false;
+
+    for path in batch
+        .touched_paths
+        .iter()
+        .chain(batch.protected_paths_touched.iter())
+    {
+        saw_path = true;
+        if is_temp_path(path)
+            || path_matches_any_prefix(path, MAINTENANCE_PATH_PREFIXES)
+            || path_matches_any_prefix(path, AGENT_INTERNAL_PATH_PREFIXES)
+        {
+            continue;
+        }
+
+        if path_matches_any_prefix(path, USER_DATA_PATH_PREFIXES) {
+            return true;
+        }
+    }
+
+    !saw_path && path_matches_any_prefix(&batch.watched_root, USER_DATA_PATH_PREFIXES)
+}
+
+fn distinct_parent_dir_count(batch: &FileActivityBatch) -> u32 {
+    let directories = batch
+        .touched_paths
+        .iter()
+        .chain(batch.protected_paths_touched.iter())
+        .map(|path| {
+            Path::new(path)
+                .parent()
+                .unwrap_or_else(|| Path::new(path))
+                .display()
+                .to_string()
+        })
+        .collect::<HashSet<_>>();
+
+    if directories.is_empty() {
+        0
+    } else {
+        directories.len().min(u32::MAX as usize) as u32
     }
 }
 
@@ -656,6 +900,14 @@ fn has_process_name_mismatch(process: &ProcessInfo) -> bool {
     process_name != exe_name
         && !process_name.contains(&exe_name)
         && !exe_name.contains(&process_name)
+}
+
+fn is_recent_process(process: &ProcessInfo, now: DateTime<Utc>, window_secs: u64) -> bool {
+    let window_secs = window_secs.max(1);
+    let age = now
+        .signed_duration_since(process.first_seen_at)
+        .num_seconds();
+    age >= 0 && age <= i64::try_from(window_secs).unwrap_or(i64::MAX)
 }
 
 fn normalize_process_name(value: &str) -> String {

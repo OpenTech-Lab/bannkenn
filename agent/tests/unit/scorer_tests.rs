@@ -510,6 +510,7 @@ fn overlapping_benign_contexts_do_not_double_subtract_the_same_components() {
         Some(&proc),
         ScoreComponents {
             protected_path: 0,
+            user_data: 0,
             rename: effective_burst_score(
                 batch.file_ops.renamed,
                 RENAME_BURST_GRACE,
@@ -523,6 +524,7 @@ fn overlapping_benign_contexts_do_not_double_subtract_the_same_components() {
             ),
             throughput: (batch.bytes_written / scorer.bytes_per_score).min(u64::from(u32::MAX))
                 as u32,
+            directory_spread: 0,
         },
     );
 
@@ -649,4 +651,127 @@ fn temp_exec_trigger_starts_at_suspicious_and_includes_mismatch_when_present() {
         .reasons
         .iter()
         .any(|reason| reason == "process name/executable mismatch"));
+}
+
+#[test]
+fn weighted_multi_signal_user_data_case_escalates_beyond_simple_burst_scoring() {
+    let scorer = CompositeBehaviorScorer::from_config(&ContainmentConfig::default());
+    let batch = FileActivityBatch {
+        timestamp: Utc::now(),
+        source: "userspace_polling".to_string(),
+        watched_root: "/srv/data".to_string(),
+        poll_interval_ms: 1000,
+        file_ops: FileOperationCounts {
+            modified: 6,
+            renamed: 8,
+            ..Default::default()
+        },
+        touched_paths: vec![
+            "/srv/data/finance/q1.enc".to_string(),
+            "/srv/data/hr/payroll.enc".to_string(),
+            "/srv/data/legal/contracts.enc".to_string(),
+        ],
+        protected_paths_touched: Vec::new(),
+        bytes_written: 3 * 1_048_576,
+        io_rate_bytes_per_sec: 3 * 1_048_576,
+    };
+    let correlation = CorrelationResult {
+        process: Some({
+            let mut proc = process(
+                404,
+                "python3",
+                "/usr/bin/python3",
+                "/usr/bin/python3 /tmp/encrypt.py /srv/data",
+            );
+            proc.parent_process_name = Some("sh".to_string());
+            proc.parent_command_line =
+                Some("/bin/sh -c /usr/bin/python3 /tmp/encrypt.py /srv/data".to_string());
+            proc
+        }),
+        protected_hits: 0,
+    };
+
+    let event = scorer.score(&batch, &correlation);
+
+    assert_eq!(event.level, BehaviorLevel::ThrottleCandidate);
+    assert!(event
+        .reasons
+        .iter()
+        .any(|reason| reason == "user/application data targeted"));
+    assert!(event
+        .reasons
+        .iter()
+        .any(|reason| reason == "directory spread x3"));
+    assert!(event
+        .reasons
+        .iter()
+        .any(|reason| reason == "shell-like parent lineage"));
+    assert!(event
+        .reasons
+        .iter()
+        .any(|reason| reason == "unknown process identity"));
+    assert!(event
+        .reasons
+        .iter()
+        .any(|reason| reason == "newly observed process"));
+}
+
+#[test]
+fn trusted_process_lineage_reduces_weighted_score() {
+    let scorer = CompositeBehaviorScorer::from_config(&ContainmentConfig::default());
+    let batch = FileActivityBatch {
+        timestamp: Utc::now(),
+        source: "userspace_polling".to_string(),
+        watched_root: "/srv/data".to_string(),
+        poll_interval_ms: 1000,
+        file_ops: FileOperationCounts {
+            modified: 5,
+            renamed: 7,
+            ..Default::default()
+        },
+        touched_paths: vec![
+            "/srv/data/team-a/a.locked".to_string(),
+            "/srv/data/team-b/b.locked".to_string(),
+            "/srv/data/team-c/c.locked".to_string(),
+        ],
+        protected_paths_touched: Vec::new(),
+        bytes_written: 2 * 1_048_576,
+        io_rate_bytes_per_sec: 2 * 1_048_576,
+    };
+
+    let unknown = scorer.score(
+        &batch,
+        &CorrelationResult {
+            process: Some(process(
+                505,
+                "python3",
+                "/usr/bin/python3",
+                "/usr/bin/python3 /srv/data/job.py",
+            )),
+            protected_hits: 0,
+        },
+    );
+    let trusted = scorer.score(
+        &batch,
+        &CorrelationResult {
+            process: Some({
+                let mut proc = process(
+                    506,
+                    "python3",
+                    "/usr/bin/python3",
+                    "/usr/bin/python3 /srv/data/job.py",
+                );
+                proc.trust_class = ProcessTrustClass::TrustedPackageManaged;
+                proc.package_name = Some("python3".to_string());
+                proc
+            }),
+            protected_hits: 0,
+        },
+    );
+
+    assert!(trusted.score < unknown.score);
+    assert!(trusted
+        .reasons
+        .iter()
+        .any(|reason| reason == "trusted process lineage"));
 }
