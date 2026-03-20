@@ -16,7 +16,7 @@ async fn behavior_events_round_trip_structured_payloads() {
     event.protected_paths_touched = vec!["/srv/data/secret.txt".to_string()];
     event.score = 67;
     event.reasons = vec!["rename burst".to_string(), "protected path".to_string()];
-    event.level = "throttle_candidate".to_string();
+    event.level = "high_risk".to_string();
 
     let id = db.insert_behavior_event(&event).await.unwrap();
     assert!(id > 0);
@@ -66,7 +66,7 @@ async fn behavior_events_round_trip_structured_payloads() {
         rows[0].container_image.as_deref(),
         Some("ghcr.io/acme/backup:1.2.3")
     );
-    assert_eq!(rows[0].level, "throttle_candidate");
+    assert_eq!(rows[0].level, "high_risk");
 
     let agent_rows = db
         .list_behavior_events_by_agent("agent-a", 10)

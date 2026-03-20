@@ -5,7 +5,8 @@ use crate::ebpf::events::{
     ProcessInfo, ProcessTrustClass,
 };
 use chrono::{DateTime, Utc};
-use std::collections::HashSet;
+use std::cell::RefCell;
+use std::collections::{HashSet, VecDeque};
 use std::path::Path;
 
 const TEMP_ROOTS: &[&str] = &["/tmp", "/var/tmp"];
@@ -38,6 +39,10 @@ const AGENT_INTERNAL_PATH_PREFIXES: &[&str] = &[
     "/opt/bannkenn",
     "/.config/bannkenn",
 ];
+const BENIGN_RENAME_EXTENSION_TARGETS: &[&str] = &[
+    "tmp", "temp", "bak", "backup", "old", "new", "part", "partial", "swp", "swx", "dpkg-new",
+    "dpkg-old", "rpmnew", "rpmsave", "pacnew", "pacsave",
+];
 const RENAME_BURST_GRACE: u32 = 3;
 const DELETE_BURST_GRACE: u32 = 2;
 
@@ -56,6 +61,15 @@ struct ScoreComponents {
     delete: u32,
     throughput: u32,
     directory_spread: u32,
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct BehaviorChainInputs {
+    extension_anomaly_component: u32,
+    user_data_component: u32,
+    directory_spread_component: u32,
+    throughput_component: u32,
+    recurrence_component: u32,
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -89,11 +103,13 @@ struct BehaviorChainAssessment {
     signal_count: u32,
     weak_identity: bool,
     meaningful_rename: bool,
+    extension_anomaly: bool,
     repeated_writes: bool,
     user_data_targeting: bool,
     suspicious_lineage: bool,
     directory_spread: bool,
     rapid_delete: bool,
+    recurrence_history: bool,
     maintenance_context: bool,
     signal_names: Vec<&'static str>,
 }
@@ -103,9 +119,9 @@ impl BehaviorChainAssessment {
         !self.maintenance_context
             && self.signal_count >= min_signals
             && self.weak_identity
-            && self.meaningful_rename
             && self.repeated_writes
             && self.user_data_targeting
+            && (self.meaningful_rename || self.extension_anomaly || self.recurrence_history)
     }
 
     fn qualifies_for_containment_candidate(
@@ -115,12 +131,37 @@ impl BehaviorChainAssessment {
     ) -> bool {
         self.qualifies_for_high_risk(high_risk_min_signals)
             && self.signal_count >= containment_candidate_min_signals
+            && (self.meaningful_rename || self.extension_anomaly)
+            && (self.suspicious_lineage
+                || self.directory_spread
+                || self.rapid_delete
+                || self.recurrence_history)
     }
 
     fn summary_reason(&self) -> Option<String> {
         (!self.signal_names.is_empty())
             .then(|| format!("behavior chain signals: {}", self.signal_names.join(", ")))
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RecentBehaviorObservation {
+    timestamp: DateTime<Utc>,
+    watched_root: String,
+    process_identity: Option<String>,
+    dominant_extension: Option<String>,
+    weak_identity: bool,
+    user_data_targeting: bool,
+    suspicious_lineage: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ObservationContext {
+    dominant_extension: Option<String>,
+    weak_identity: bool,
+    user_data_targeting: bool,
+    suspicious_lineage: bool,
+    score: u32,
 }
 
 pub trait Scorer {
@@ -130,11 +171,13 @@ pub trait Scorer {
 #[derive(Debug, Clone)]
 pub struct CompositeBehaviorScorer {
     suspicious_score: u32,
-    throttle_score: u32,
-    fuse_score: u32,
+    high_risk_score: u32,
+    containment_candidate_score: u32,
     rename_score: u32,
     write_score: u32,
     delete_score: u32,
+    extension_anomaly_score: u32,
+    extension_anomaly_min_count: u32,
     protected_path_bonus: u32,
     user_data_bonus: u32,
     unknown_process_bonus: u32,
@@ -148,18 +191,42 @@ pub struct CompositeBehaviorScorer {
     meaningful_write_count: u32,
     high_risk_min_signals: u32,
     containment_candidate_min_signals: u32,
+    recurrence_score: u32,
+    recurrence_window_secs: u64,
+    recurrence_min_events: u32,
     bytes_per_score: u64,
+    recent_observations: RefCell<VecDeque<RecentBehaviorObservation>>,
 }
 
 impl CompositeBehaviorScorer {
     pub fn from_config(config: &ContainmentConfig) -> Self {
+        let suspicious_score =
+            adjust_threshold_for_profile(config.suspicious_score, config.environment_profile, 5);
+        let high_risk_score =
+            adjust_threshold_for_profile(config.throttle_score, config.environment_profile, 10);
+        let containment_candidate_score =
+            adjust_threshold_for_profile(config.fuse_score, config.environment_profile, 10);
+        let high_risk_min_signals = adjust_signal_requirement_for_profile(
+            config.high_risk_min_signals.max(1),
+            config.environment_profile,
+        );
+        let containment_candidate_min_signals = adjust_signal_requirement_for_profile(
+            config
+                .containment_candidate_min_signals
+                .max(config.high_risk_min_signals.max(1)),
+            config.environment_profile,
+        )
+        .max(high_risk_min_signals);
+
         Self {
-            suspicious_score: config.suspicious_score,
-            throttle_score: config.throttle_score,
-            fuse_score: config.fuse_score,
+            suspicious_score,
+            high_risk_score,
+            containment_candidate_score,
             rename_score: config.rename_score,
             write_score: config.write_score,
             delete_score: config.delete_score,
+            extension_anomaly_score: config.extension_anomaly_score,
+            extension_anomaly_min_count: config.extension_anomaly_min_count.max(1),
             protected_path_bonus: config.protected_path_bonus,
             user_data_bonus: config.user_data_bonus,
             unknown_process_bonus: config.unknown_process_bonus,
@@ -171,19 +238,21 @@ impl CompositeBehaviorScorer {
             recent_process_window_secs: config.recent_process_window_secs,
             meaningful_rename_count: config.meaningful_rename_count.max(RENAME_BURST_GRACE + 1),
             meaningful_write_count: config.meaningful_write_count.max(1),
-            high_risk_min_signals: config.high_risk_min_signals.max(1),
-            containment_candidate_min_signals: config
-                .containment_candidate_min_signals
-                .max(config.high_risk_min_signals.max(1)),
+            high_risk_min_signals,
+            containment_candidate_min_signals,
+            recurrence_score: config.recurrence_score,
+            recurrence_window_secs: config.recurrence_window_secs.max(1),
+            recurrence_min_events: config.recurrence_min_events.max(2),
             bytes_per_score: config.bytes_per_score.max(1),
+            recent_observations: RefCell::new(VecDeque::new()),
         }
     }
 
     fn classify_level(&self, score: u32) -> BehaviorLevel {
-        if score >= self.fuse_score {
-            BehaviorLevel::FuseCandidate
-        } else if score >= self.throttle_score {
-            BehaviorLevel::ThrottleCandidate
+        if score >= self.containment_candidate_score {
+            BehaviorLevel::ContainmentCandidate
+        } else if score >= self.high_risk_score {
+            BehaviorLevel::HighRisk
         } else if score >= self.suspicious_score {
             BehaviorLevel::Suspicious
         } else {
@@ -248,6 +317,29 @@ impl CompositeBehaviorScorer {
         Some((
             extra_directories.saturating_mul(self.directory_spread_score),
             format!("directory spread x{}", directory_count),
+        ))
+    }
+
+    fn extension_anomaly_component(
+        &self,
+        batch: &FileActivityBatch,
+        activity_score: u32,
+    ) -> Option<(u32, String, String)> {
+        if activity_score == 0 {
+            return None;
+        }
+
+        let (extension, count) = dominant_rename_extension(batch)?;
+        if count < self.extension_anomaly_min_count
+            || BENIGN_RENAME_EXTENSION_TARGETS.contains(&extension.as_str())
+        {
+            return None;
+        }
+
+        Some((
+            count.saturating_mul(self.extension_anomaly_score),
+            format!("rename extension anomaly .{} x{}", extension, count),
+            extension,
         ))
     }
 
@@ -337,9 +429,7 @@ impl CompositeBehaviorScorer {
         batch: &FileActivityBatch,
         process: Option<&ProcessInfo>,
         flags: ContextFlags,
-        user_data_component: u32,
-        directory_spread_component: u32,
-        throughput_component: u32,
+        inputs: BehaviorChainInputs,
     ) -> BehaviorChainAssessment {
         let weak_identity = process.is_none_or(|process| {
             matches!(
@@ -348,12 +438,14 @@ impl CompositeBehaviorScorer {
             )
         });
         let meaningful_rename = batch.file_ops.renamed >= self.meaningful_rename_count;
-        let repeated_writes =
-            batch.file_ops.modified >= self.meaningful_write_count || throughput_component > 0;
-        let user_data_targeting = user_data_component > 0;
+        let extension_anomaly = inputs.extension_anomaly_component > 0;
+        let repeated_writes = batch.file_ops.modified >= self.meaningful_write_count
+            || inputs.throughput_component > 0;
+        let user_data_targeting = inputs.user_data_component > 0;
         let suspicious_lineage = flags.suspicious_lineage();
-        let directory_spread = directory_spread_component > 0;
+        let directory_spread = inputs.directory_spread_component > 0;
         let rapid_delete = batch.file_ops.deleted > DELETE_BURST_GRACE;
+        let recurrence_history = inputs.recurrence_component > 0;
         let maintenance_context = flags.maintenance_context();
         let mut signal_names = Vec::new();
 
@@ -362,6 +454,9 @@ impl CompositeBehaviorScorer {
         }
         if meaningful_rename {
             signal_names.push("meaningful_rename");
+        }
+        if extension_anomaly {
+            signal_names.push("extension_anomaly");
         }
         if repeated_writes {
             signal_names.push("repeated_writes");
@@ -378,16 +473,21 @@ impl CompositeBehaviorScorer {
         if rapid_delete {
             signal_names.push("rapid_delete");
         }
+        if recurrence_history {
+            signal_names.push("recurrence_history");
+        }
 
         BehaviorChainAssessment {
             signal_count: signal_names.len().min(u32::MAX as usize) as u32,
             weak_identity,
             meaningful_rename,
+            extension_anomaly,
             repeated_writes,
             user_data_targeting,
             suspicious_lineage,
             directory_spread,
             rapid_delete,
+            recurrence_history,
             maintenance_context,
             signal_names,
         }
@@ -399,17 +499,17 @@ impl CompositeBehaviorScorer {
         chain: &BehaviorChainAssessment,
     ) -> (BehaviorLevel, Option<String>) {
         match raw_level {
-            BehaviorLevel::FuseCandidate => {
+            BehaviorLevel::ContainmentCandidate => {
                 if chain.qualifies_for_containment_candidate(
                     self.high_risk_min_signals,
                     self.containment_candidate_min_signals,
                 ) {
-                    (BehaviorLevel::FuseCandidate, None)
+                    (BehaviorLevel::ContainmentCandidate, None)
                 } else if chain.qualifies_for_high_risk(self.high_risk_min_signals) {
                     (
-                        BehaviorLevel::ThrottleCandidate,
+                        BehaviorLevel::HighRisk,
                         Some(
-                            "insufficient correlated ransomware-style signals for containment escalation"
+                            "insufficient correlated ransomware-style signals for containment-candidate escalation"
                                 .to_string(),
                         ),
                     )
@@ -423,9 +523,9 @@ impl CompositeBehaviorScorer {
                     )
                 }
             }
-            BehaviorLevel::ThrottleCandidate => {
+            BehaviorLevel::HighRisk => {
                 if chain.qualifies_for_high_risk(self.high_risk_min_signals) {
-                    (BehaviorLevel::ThrottleCandidate, None)
+                    (BehaviorLevel::HighRisk, None)
                 } else {
                     (
                         BehaviorLevel::Suspicious,
@@ -625,6 +725,8 @@ impl CompositeBehaviorScorer {
 
 impl Scorer for CompositeBehaviorScorer {
     fn score(&self, batch: &FileActivityBatch, correlation: &CorrelationResult) -> BehaviorEvent {
+        self.prune_recent_observations(batch.timestamp);
+
         let mut score = 0u32;
         let mut reasons = Vec::new();
 
@@ -656,8 +758,18 @@ impl Scorer for CompositeBehaviorScorer {
 
         let throughput_component =
             (batch.bytes_written / self.bytes_per_score).min(u64::from(u32::MAX)) as u32;
-
         let pre_path_activity_score = score.saturating_add(throughput_component);
+        let (extension_anomaly_component, extension_anomaly_reason, dominant_extension) = self
+            .extension_anomaly_component(batch, pre_path_activity_score)
+            .map(|(component, reason, extension)| (component, Some(reason), Some(extension)))
+            .unwrap_or((0, None, None));
+        if extension_anomaly_component > 0 {
+            score = score.saturating_add(extension_anomaly_component);
+        }
+        if let Some(reason) = extension_anomaly_reason {
+            reasons.push(reason);
+        }
+
         let (protected_path_component, protected_path_reason) = self
             .protected_path_component(batch)
             .map(|(component, reason)| (component, Some(reason)))
@@ -689,6 +801,30 @@ impl Scorer for CompositeBehaviorScorer {
 
         let process = correlation.process.as_ref();
         let flags = build_context_flags(batch, process);
+        let user_data_targeting = user_data_component > 0;
+        let weak_identity = process.is_none_or(|process| {
+            matches!(
+                process.trust_class,
+                ProcessTrustClass::Unknown | ProcessTrustClass::Suspicious
+            )
+        });
+        let recurrence_component = self
+            .recurrence_component(
+                batch,
+                process,
+                dominant_extension.as_deref(),
+                weak_identity,
+                user_data_targeting,
+                flags.suspicious_lineage(),
+            )
+            .map(|(component, reason)| {
+                reasons.push(reason);
+                component
+            })
+            .unwrap_or(0);
+        if recurrence_component > 0 {
+            score = score.saturating_add(recurrence_component);
+        }
         let (directory_spread_component, directory_spread_reason) = self
             .directory_spread_component(batch, score)
             .map(|(component, reason)| (component, Some(reason)))
@@ -715,16 +851,22 @@ impl Scorer for CompositeBehaviorScorer {
             || rename_component > 0
             || delete_component > 0
             || throughput_component > 0
+            || extension_anomaly_component > 0
             || protected_path_component > 0
             || user_data_component > 0
+            || recurrence_component > 0
             || directory_spread_component > 0;
         let behavior_chain = self.assess_behavior_chain(
             batch,
             process,
             flags,
-            user_data_component,
-            directory_spread_component,
-            throughput_component,
+            BehaviorChainInputs {
+                extension_anomaly_component,
+                user_data_component,
+                directory_spread_component,
+                throughput_component,
+                recurrence_component,
+            },
         );
         let trust_adjustment = self.trust_adjustment(batch, process, identity_bonus_signal, score);
         let adjustment = self.context_adjustment(
@@ -751,7 +893,7 @@ impl Scorer for CompositeBehaviorScorer {
         if (level != raw_level)
             || matches!(
                 level,
-                BehaviorLevel::ThrottleCandidate | BehaviorLevel::FuseCandidate
+                BehaviorLevel::HighRisk | BehaviorLevel::ContainmentCandidate
             )
         {
             if let Some(reason) = behavior_chain.summary_reason() {
@@ -762,7 +904,7 @@ impl Scorer for CompositeBehaviorScorer {
             reasons.push(reason);
         }
 
-        BehaviorEvent {
+        let event = BehaviorEvent {
             timestamp: batch.timestamp,
             source: batch.source.clone(),
             watched_root: batch.watched_root.clone(),
@@ -804,7 +946,111 @@ impl Scorer for CompositeBehaviorScorer {
             score,
             reasons,
             level,
+        };
+
+        self.remember_observation(
+            batch,
+            process,
+            ObservationContext {
+                dominant_extension,
+                weak_identity,
+                user_data_targeting,
+                suspicious_lineage: flags.suspicious_lineage(),
+                score: event.score,
+            },
+        );
+
+        event
+    }
+}
+
+impl CompositeBehaviorScorer {
+    fn prune_recent_observations(&self, now: DateTime<Utc>) {
+        let mut recent_observations = self.recent_observations.borrow_mut();
+        while recent_observations.front().is_some_and(|entry| {
+            now.signed_duration_since(entry.timestamp).num_seconds()
+                > self.recurrence_window_secs as i64
+        }) {
+            recent_observations.pop_front();
         }
+    }
+
+    fn recurrence_component(
+        &self,
+        batch: &FileActivityBatch,
+        process: Option<&ProcessInfo>,
+        dominant_extension: Option<&str>,
+        weak_identity: bool,
+        user_data_targeting: bool,
+        suspicious_lineage: bool,
+    ) -> Option<(u32, String)> {
+        if !user_data_targeting {
+            return None;
+        }
+
+        let recent_observations = self.recent_observations.borrow();
+        let watched_root = normalize_history_value(&batch.watched_root);
+        let process_identity = process_history_identity(process);
+        let matching_history = recent_observations
+            .iter()
+            .filter(|entry| {
+                if entry.watched_root != watched_root {
+                    return false;
+                }
+                if !entry.user_data_targeting {
+                    return false;
+                }
+
+                let process_match = process_identity
+                    .as_ref()
+                    .zip(entry.process_identity.as_ref())
+                    .is_some_and(|(current, previous)| current == previous);
+                let extension_match = dominant_extension
+                    .zip(entry.dominant_extension.as_deref())
+                    .is_some_and(|(current, previous)| current == previous);
+                let suspicious_context_match = weak_identity
+                    && entry.weak_identity
+                    && suspicious_lineage
+                    && entry.suspicious_lineage;
+
+                process_match || extension_match || suspicious_context_match
+            })
+            .count()
+            .min(u32::MAX as usize) as u32;
+        let total_occurrences = matching_history.saturating_add(1);
+        if total_occurrences < self.recurrence_min_events {
+            return None;
+        }
+
+        Some((
+            matching_history
+                .max(1)
+                .saturating_mul(self.recurrence_score),
+            format!("recent recurrent activity x{}", total_occurrences),
+        ))
+    }
+
+    fn remember_observation(
+        &self,
+        batch: &FileActivityBatch,
+        process: Option<&ProcessInfo>,
+        context: ObservationContext,
+    ) {
+        if context.score == 0 {
+            return;
+        }
+
+        self.recent_observations
+            .borrow_mut()
+            .push_back(RecentBehaviorObservation {
+                timestamp: batch.timestamp,
+                watched_root: normalize_history_value(&batch.watched_root),
+                process_identity: process_history_identity(process),
+                dominant_extension: context.dominant_extension,
+                weak_identity: context.weak_identity,
+                user_data_targeting: context.user_data_targeting,
+                suspicious_lineage: context.suspicious_lineage,
+            });
     }
 }
 
@@ -916,6 +1162,70 @@ fn distinct_parent_dir_count(batch: &FileActivityBatch) -> u32 {
         0
     } else {
         directories.len().min(u32::MAX as usize) as u32
+    }
+}
+
+fn dominant_rename_extension(batch: &FileActivityBatch) -> Option<(String, u32)> {
+    let mut counts = std::collections::HashMap::<String, u32>::new();
+
+    for extension in &batch.rename_extension_targets {
+        let normalized = extension.trim().to_ascii_lowercase();
+        if normalized.is_empty() {
+            continue;
+        }
+        *counts.entry(normalized).or_insert(0) += 1;
+    }
+
+    counts
+        .into_iter()
+        .max_by(|left, right| left.1.cmp(&right.1).then_with(|| right.0.cmp(&left.0)))
+}
+
+fn normalize_history_value(value: &str) -> String {
+    value.trim().to_ascii_lowercase()
+}
+
+fn process_history_identity(process: Option<&ProcessInfo>) -> Option<String> {
+    let process = process?;
+    let identity = process.exe_path.trim().to_ascii_lowercase();
+    if identity.is_empty() {
+        return None;
+    }
+
+    let service_unit = process
+        .service_unit
+        .as_deref()
+        .map(normalize_history_value)
+        .unwrap_or_else(|| "-".to_string());
+    let container = process
+        .container_image
+        .as_deref()
+        .or(process.container_id.as_deref())
+        .map(normalize_history_value)
+        .unwrap_or_else(|| "-".to_string());
+    Some(format!("{identity}|{service_unit}|{container}"))
+}
+
+fn adjust_threshold_for_profile(
+    base: u32,
+    profile: crate::config::ContainmentEnvironmentProfile,
+    delta: u32,
+) -> u32 {
+    match profile {
+        crate::config::ContainmentEnvironmentProfile::Conservative => base.saturating_add(delta),
+        crate::config::ContainmentEnvironmentProfile::Balanced => base,
+        crate::config::ContainmentEnvironmentProfile::Aggressive => base.saturating_sub(delta),
+    }
+}
+
+fn adjust_signal_requirement_for_profile(
+    base: u32,
+    profile: crate::config::ContainmentEnvironmentProfile,
+) -> u32 {
+    match profile {
+        crate::config::ContainmentEnvironmentProfile::Conservative => base.saturating_add(1),
+        crate::config::ContainmentEnvironmentProfile::Balanced => base,
+        crate::config::ContainmentEnvironmentProfile::Aggressive => base.saturating_sub(1).max(1),
     }
 }
 

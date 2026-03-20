@@ -1115,24 +1115,24 @@ fn log_behavior_event(event: &BehaviorEvent, containment: Option<&ContainmentCon
         .unwrap_or("none");
     let enforcement_mode = match event.level {
         BehaviorLevel::Observed | BehaviorLevel::Suspicious => "observe-only",
-        BehaviorLevel::ThrottleCandidate => {
+        BehaviorLevel::HighRisk => {
             if containment
                 .map(|cfg| cfg.throttle_enabled && !cfg.dry_run)
                 .unwrap_or(false)
             {
                 "throttle-active"
             } else {
-                "dry-run throttle candidate"
+                "dry-run high-risk candidate"
             }
         }
-        BehaviorLevel::FuseCandidate => {
+        BehaviorLevel::ContainmentCandidate => {
             if containment
                 .map(|cfg| cfg.fuse_enabled && !cfg.dry_run)
                 .unwrap_or(false)
             {
                 "fuse-active"
             } else {
-                "dry-run fuse candidate"
+                "dry-run containment candidate"
             }
         }
     };
@@ -1155,7 +1155,7 @@ fn log_behavior_event(event: &BehaviorEvent, containment: Option<&ContainmentCon
             reasons,
             enforcement_mode
         ),
-        BehaviorLevel::Suspicious | BehaviorLevel::ThrottleCandidate => tracing::warn!(
+        BehaviorLevel::Suspicious | BehaviorLevel::HighRisk => tracing::warn!(
             "Behavior activity: level={} score={} pid={} process={} parent={} policy={} maintenance={} ops=create:{} write:{} rename:{} delete:{} root={} reasons={} mode={}",
             event.level.as_str(),
             event.score,
@@ -1172,7 +1172,7 @@ fn log_behavior_event(event: &BehaviorEvent, containment: Option<&ContainmentCon
             reasons,
             enforcement_mode
         ),
-        BehaviorLevel::FuseCandidate => tracing::error!(
+        BehaviorLevel::ContainmentCandidate => tracing::error!(
             "Behavior activity: level={} score={} pid={} process={} parent={} policy={} maintenance={} ops=create:{} write:{} rename:{} delete:{} root={} reasons={} mode={}",
             event.level.as_str(),
             event.score,

@@ -24,7 +24,7 @@ fn archive_record_preserves_ingested_behavior_fields() {
         support::sample_behavior_event("agent-a", "/srv/data", "2026-03-14T09:00:00+00:00");
     event.file_ops.deleted = 1;
     event.score = 88;
-    event.level = "fuse_candidate".to_string();
+    event.level = "containment_candidate".to_string();
     event.reasons = vec!["rename burst x4".to_string()];
     event.protected_paths_touched = vec!["/srv/data/secret.txt".to_string()];
 
@@ -63,6 +63,6 @@ fn archive_record_preserves_ingested_behavior_fields() {
         record.container_image.as_deref(),
         Some("ghcr.io/acme/backup:1.2.3")
     );
-    assert_eq!(record.level, "fuse_candidate");
+    assert_eq!(record.level, "containment_candidate");
     assert!(record.reasons_json.contains("rename burst x4"));
 }

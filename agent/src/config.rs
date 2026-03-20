@@ -97,6 +97,15 @@ pub struct TrustPolicyRule {
     pub maintenance_windows: Vec<MaintenanceWindow>,
 }
 
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ContainmentEnvironmentProfile {
+    Conservative,
+    #[default]
+    Balanced,
+    Aggressive,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ContainmentConfig {
     #[serde(default)]
@@ -133,6 +142,8 @@ pub struct ContainmentConfig {
     pub ebpf_object_path: Option<String>,
     #[serde(default = "default_ebpf_ringbuf_map")]
     pub ebpf_ringbuf_map: String,
+    #[serde(default)]
+    pub environment_profile: ContainmentEnvironmentProfile,
     #[serde(default = "default_suspicious_score")]
     pub suspicious_score: u32,
     #[serde(default = "default_throttle_score")]
@@ -145,6 +156,10 @@ pub struct ContainmentConfig {
     pub write_score: u32,
     #[serde(default = "default_delete_score")]
     pub delete_score: u32,
+    #[serde(default = "default_extension_anomaly_score")]
+    pub extension_anomaly_score: u32,
+    #[serde(default = "default_extension_anomaly_min_count")]
+    pub extension_anomaly_min_count: u32,
     #[serde(default = "default_protected_path_bonus")]
     pub protected_path_bonus: u32,
     #[serde(default = "default_user_data_bonus")]
@@ -171,6 +186,12 @@ pub struct ContainmentConfig {
     pub high_risk_min_signals: u32,
     #[serde(default = "default_containment_candidate_min_signals")]
     pub containment_candidate_min_signals: u32,
+    #[serde(default = "default_recurrence_score")]
+    pub recurrence_score: u32,
+    #[serde(default = "default_recurrence_window_secs")]
+    pub recurrence_window_secs: u64,
+    #[serde(default = "default_recurrence_min_events")]
+    pub recurrence_min_events: u32,
     #[serde(default = "default_bytes_per_score")]
     pub bytes_per_score: u64,
 }
@@ -195,12 +216,15 @@ impl Default for ContainmentConfig {
             trust_policies: Vec::new(),
             ebpf_object_path: None,
             ebpf_ringbuf_map: default_ebpf_ringbuf_map(),
+            environment_profile: ContainmentEnvironmentProfile::default(),
             suspicious_score: default_suspicious_score(),
             throttle_score: default_throttle_score(),
             fuse_score: default_fuse_score(),
             rename_score: default_rename_score(),
             write_score: default_write_score(),
             delete_score: default_delete_score(),
+            extension_anomaly_score: default_extension_anomaly_score(),
+            extension_anomaly_min_count: default_extension_anomaly_min_count(),
             protected_path_bonus: default_protected_path_bonus(),
             user_data_bonus: default_user_data_bonus(),
             unknown_process_bonus: default_unknown_process_bonus(),
@@ -214,6 +238,9 @@ impl Default for ContainmentConfig {
             meaningful_write_count: default_meaningful_write_count(),
             high_risk_min_signals: default_high_risk_min_signals(),
             containment_candidate_min_signals: default_containment_candidate_min_signals(),
+            recurrence_score: default_recurrence_score(),
+            recurrence_window_secs: default_recurrence_window_secs(),
+            recurrence_min_events: default_recurrence_min_events(),
             bytes_per_score: default_bytes_per_score(),
         }
     }
@@ -340,6 +367,14 @@ fn default_delete_score() -> u32 {
     3
 }
 
+fn default_extension_anomaly_score() -> u32 {
+    5
+}
+
+fn default_extension_anomaly_min_count() -> u32 {
+    3
+}
+
 fn default_protected_path_bonus() -> u32 {
     10
 }
@@ -390,6 +425,18 @@ fn default_high_risk_min_signals() -> u32 {
 
 fn default_containment_candidate_min_signals() -> u32 {
     5
+}
+
+fn default_recurrence_score() -> u32 {
+    6
+}
+
+fn default_recurrence_window_secs() -> u64 {
+    900
+}
+
+fn default_recurrence_min_events() -> u32 {
+    2
 }
 
 fn default_bytes_per_score() -> u64 {

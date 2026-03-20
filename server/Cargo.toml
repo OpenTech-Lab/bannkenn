@@ -21,7 +21,7 @@ thiserror = { workspace = true }
 axum = { version = "0.7", features = ["macros"] }
 hyper = { version = "1", features = ["server", "http1", "http2"] }
 hyper-util = { version = "0.1", features = ["server-auto", "tokio", "service"] }
-sqlx = { version = "0.7", features = ["runtime-tokio-rustls", "sqlite", "postgres", "chrono"] }
+sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "sqlite", "postgres", "chrono"] }
 jsonwebtoken = "9"
 rustls = "0.21"
 rustls-pemfile = "1"

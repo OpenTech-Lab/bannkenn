@@ -64,7 +64,7 @@ pub fn sample_behavior_event(
         io_rate_bytes_per_sec: 4096,
         score: 58,
         reasons: vec!["rename burst".to_string()],
-        level: "throttle_candidate".to_string(),
+        level: "high_risk".to_string(),
         timestamp: Some(timestamp.to_string()),
     }
 }

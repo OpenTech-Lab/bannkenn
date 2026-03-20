@@ -16,6 +16,7 @@ fn correlator_prefers_non_protected_process_with_exact_path_hits() {
         },
         touched_paths: vec!["/srv/data/file-a".to_string()],
         protected_paths_touched: Vec::new(),
+        rename_extension_targets: Vec::new(),
         bytes_written: 0,
         io_rate_bytes_per_sec: 0,
     };

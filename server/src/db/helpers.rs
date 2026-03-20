@@ -160,8 +160,8 @@ pub(super) fn max_severity(current: &str, candidate: &str) -> &'static str {
 
 pub(super) fn behavior_level_to_severity(level: &str) -> &'static str {
     match level {
-        "fuse_candidate" => "critical",
-        "throttle_candidate" => "high",
+        "containment_candidate" | "fuse_candidate" => "critical",
+        "high_risk" | "throttle_candidate" => "high",
         "suspicious" => "medium",
         _ => "low",
     }

@@ -19,6 +19,7 @@ fn batch_with_ops(
         file_ops,
         touched_paths: touched_paths.into_iter().map(str::to_string).collect(),
         protected_paths_touched: Vec::new(),
+        rename_extension_targets: Vec::new(),
         bytes_written,
         io_rate_bytes_per_sec: bytes_written,
     }
@@ -65,6 +66,7 @@ fn mass_rename_scores_as_suspicious() {
         },
         touched_paths: vec!["/srv/data/a".to_string()],
         protected_paths_touched: Vec::new(),
+        rename_extension_targets: Vec::new(),
         bytes_written: 0,
         io_rate_bytes_per_sec: 0,
     };
@@ -263,6 +265,7 @@ fn trusted_maintenance_activity_is_downgraded() {
         },
         touched_paths: vec!["/usr/lib/firmware/vendor.bin".to_string()],
         protected_paths_touched: vec!["/usr/lib/firmware/vendor.bin".to_string()],
+        rename_extension_targets: Vec::new(),
         bytes_written: 2 * 1_048_576,
         io_rate_bytes_per_sec: 2 * 1_048_576,
     };
@@ -342,6 +345,7 @@ fn agent_internal_activity_is_downgraded() {
         },
         touched_paths: vec!["/var/lib/bannkenn/policy/state.json".to_string()],
         protected_paths_touched: vec!["/etc/bannkenn/agent.toml".to_string()],
+        rename_extension_targets: Vec::new(),
         bytes_written: 0,
         io_rate_bytes_per_sec: 0,
     };
@@ -608,6 +612,7 @@ fn process_name_mismatch_adds_bonus() {
         },
         touched_paths: vec!["/srv/data/file.txt".to_string()],
         protected_paths_touched: Vec::new(),
+        rename_extension_targets: Vec::new(),
         bytes_written: 0,
         io_rate_bytes_per_sec: 0,
     };
@@ -671,6 +676,7 @@ fn raw_score_only_rename_burst_is_downgraded_without_full_behavior_chain() {
             "/srv/data/customer/b.locked".to_string(),
         ],
         protected_paths_touched: Vec::new(),
+        rename_extension_targets: Vec::new(),
         bytes_written: 0,
         io_rate_bytes_per_sec: 0,
     };
@@ -719,6 +725,7 @@ fn raw_fuse_score_without_extra_corroboration_is_held_at_throttle() {
         },
         touched_paths: vec!["/srv/data/customer/archive.enc".to_string()],
         protected_paths_touched: Vec::new(),
+        rename_extension_targets: Vec::new(),
         bytes_written: 8 * 1_048_576,
         io_rate_bytes_per_sec: 8 * 1_048_576,
     };
@@ -734,17 +741,156 @@ fn raw_fuse_score_without_extra_corroboration_is_held_at_throttle() {
 
     let event = scorer.score(&batch, &correlation);
 
-    assert_eq!(event.level, BehaviorLevel::ThrottleCandidate);
+    assert_eq!(event.level, BehaviorLevel::HighRisk);
     assert!(
         event.score >= 90,
         "expected raw score pressure to hit fuse range"
     );
     assert!(event.reasons.iter().any(|reason| {
-        reason == "insufficient correlated ransomware-style signals for containment escalation"
+        reason
+            == "insufficient correlated ransomware-style signals for containment-candidate escalation"
     }));
     assert!(event.reasons.iter().any(|reason| {
         reason
             == "behavior chain signals: weak_identity, meaningful_rename, repeated_writes, user_data_targeting"
+    }));
+}
+
+#[test]
+fn rename_extension_anomaly_adds_weight_and_reason() {
+    let baseline_scorer = CompositeBehaviorScorer::from_config(&ContainmentConfig::default());
+    let anomaly_scorer = CompositeBehaviorScorer::from_config(&ContainmentConfig::default());
+    let mut correlation_process = process(
+        603,
+        "python3",
+        "/usr/bin/python3",
+        "/usr/bin/python3 /srv/data/encrypt.py",
+    );
+    correlation_process.first_seen_at = Utc::now() - chrono::Duration::minutes(30);
+    let correlation = CorrelationResult {
+        process: Some(correlation_process),
+        protected_hits: 0,
+    };
+    let baseline_batch = FileActivityBatch {
+        timestamp: Utc::now(),
+        source: "userspace_polling".to_string(),
+        watched_root: "/srv/data".to_string(),
+        poll_interval_ms: 1000,
+        file_ops: FileOperationCounts {
+            modified: 5,
+            renamed: 5,
+            ..Default::default()
+        },
+        touched_paths: vec![
+            "/srv/data/customer/a.enc".to_string(),
+            "/srv/data/customer/b.enc".to_string(),
+        ],
+        protected_paths_touched: Vec::new(),
+        rename_extension_targets: Vec::new(),
+        bytes_written: 3 * 1_048_576,
+        io_rate_bytes_per_sec: 3 * 1_048_576,
+    };
+    let anomaly_batch = FileActivityBatch {
+        timestamp: Utc::now(),
+        source: "userspace_polling".to_string(),
+        watched_root: "/srv/data".to_string(),
+        poll_interval_ms: 1000,
+        file_ops: FileOperationCounts {
+            modified: 5,
+            renamed: 5,
+            ..Default::default()
+        },
+        touched_paths: vec![
+            "/srv/data/customer/a.enc".to_string(),
+            "/srv/data/customer/b.enc".to_string(),
+        ],
+        protected_paths_touched: Vec::new(),
+        rename_extension_targets: vec![
+            "enc".to_string(),
+            "enc".to_string(),
+            "enc".to_string(),
+            "enc".to_string(),
+        ],
+        bytes_written: 3 * 1_048_576,
+        io_rate_bytes_per_sec: 3 * 1_048_576,
+    };
+
+    let baseline = baseline_scorer.score(&baseline_batch, &correlation);
+    let anomaly = anomaly_scorer.score(&anomaly_batch, &correlation);
+
+    assert!(anomaly.score > baseline.score);
+    assert!(anomaly
+        .reasons
+        .iter()
+        .any(|reason| reason == "rename extension anomaly .enc x4"));
+}
+
+#[test]
+fn recurrent_medium_confidence_batches_escalate_to_high_risk() {
+    let scorer = CompositeBehaviorScorer::from_config(&ContainmentConfig::default());
+    let start = Utc::now();
+    let mut proc = process(
+        604,
+        "python3",
+        "/usr/bin/python3",
+        "/usr/bin/python3 /srv/data/job.py",
+    );
+    proc.first_seen_at = start - chrono::Duration::minutes(30);
+    let correlation = CorrelationResult {
+        process: Some(proc),
+        protected_hits: 0,
+    };
+    let first = FileActivityBatch {
+        timestamp: start,
+        source: "userspace_polling".to_string(),
+        watched_root: "/srv/data".to_string(),
+        poll_interval_ms: 1000,
+        file_ops: FileOperationCounts {
+            modified: 8,
+            ..Default::default()
+        },
+        touched_paths: vec![
+            "/srv/data/finance/a.txt".to_string(),
+            "/srv/data/hr/b.txt".to_string(),
+            "/srv/data/legal/c.txt".to_string(),
+        ],
+        protected_paths_touched: Vec::new(),
+        rename_extension_targets: Vec::new(),
+        bytes_written: 10 * 1_048_576,
+        io_rate_bytes_per_sec: 10 * 1_048_576,
+    };
+    let second = FileActivityBatch {
+        timestamp: start + chrono::Duration::seconds(60),
+        source: "userspace_polling".to_string(),
+        watched_root: "/srv/data".to_string(),
+        poll_interval_ms: 1000,
+        file_ops: FileOperationCounts {
+            modified: 8,
+            ..Default::default()
+        },
+        touched_paths: vec![
+            "/srv/data/finance/d.txt".to_string(),
+            "/srv/data/hr/e.txt".to_string(),
+            "/srv/data/legal/f.txt".to_string(),
+        ],
+        protected_paths_touched: Vec::new(),
+        rename_extension_targets: Vec::new(),
+        bytes_written: 10 * 1_048_576,
+        io_rate_bytes_per_sec: 10 * 1_048_576,
+    };
+
+    let first_event = scorer.score(&first, &correlation);
+    let second_event = scorer.score(&second, &correlation);
+
+    assert_eq!(first_event.level, BehaviorLevel::Suspicious);
+    assert_eq!(second_event.level, BehaviorLevel::HighRisk);
+    assert!(second_event
+        .reasons
+        .iter()
+        .any(|reason| reason == "recent recurrent activity x2"));
+    assert!(second_event.reasons.iter().any(|reason| {
+        reason
+            == "behavior chain signals: weak_identity, repeated_writes, user_data_targeting, directory_spread, recurrence_history"
     }));
 }
 
@@ -767,6 +913,7 @@ fn weighted_multi_signal_user_data_case_escalates_beyond_simple_burst_scoring() 
             "/srv/data/legal/contracts.enc".to_string(),
         ],
         protected_paths_touched: Vec::new(),
+        rename_extension_targets: Vec::new(),
         bytes_written: 3 * 1_048_576,
         io_rate_bytes_per_sec: 3 * 1_048_576,
     };
@@ -788,7 +935,7 @@ fn weighted_multi_signal_user_data_case_escalates_beyond_simple_burst_scoring() 
 
     let event = scorer.score(&batch, &correlation);
 
-    assert_eq!(event.level, BehaviorLevel::ThrottleCandidate);
+    assert_eq!(event.level, BehaviorLevel::HighRisk);
     assert!(event
         .reasons
         .iter()
@@ -812,6 +959,53 @@ fn weighted_multi_signal_user_data_case_escalates_beyond_simple_burst_scoring() 
 }
 
 #[test]
+fn environment_profiles_shift_thresholds_without_changing_actions() {
+    let batch = FileActivityBatch {
+        timestamp: Utc::now(),
+        source: "userspace_polling".to_string(),
+        watched_root: "/srv/data".to_string(),
+        poll_interval_ms: 1000,
+        file_ops: FileOperationCounts {
+            modified: 4,
+            ..Default::default()
+        },
+        touched_paths: vec!["/srv/data/customer/a.txt".to_string()],
+        protected_paths_touched: Vec::new(),
+        rename_extension_targets: Vec::new(),
+        bytes_written: 2 * 1_048_576,
+        io_rate_bytes_per_sec: 2 * 1_048_576,
+    };
+    let mut proc = process(
+        605,
+        "python3",
+        "/usr/bin/python3",
+        "/usr/bin/python3 /srv/data/job.py",
+    );
+    proc.first_seen_at = Utc::now() - chrono::Duration::minutes(30);
+    let correlation = CorrelationResult {
+        process: Some(proc),
+        protected_hits: 0,
+    };
+    let conservative = CompositeBehaviorScorer::from_config(&ContainmentConfig {
+        environment_profile: crate::config::ContainmentEnvironmentProfile::Conservative,
+        ..ContainmentConfig::default()
+    });
+    let balanced = CompositeBehaviorScorer::from_config(&ContainmentConfig::default());
+    let aggressive = CompositeBehaviorScorer::from_config(&ContainmentConfig {
+        environment_profile: crate::config::ContainmentEnvironmentProfile::Aggressive,
+        ..ContainmentConfig::default()
+    });
+
+    let conservative_event = conservative.score(&batch, &correlation);
+    let balanced_event = balanced.score(&batch, &correlation);
+    let aggressive_event = aggressive.score(&batch, &correlation);
+
+    assert_eq!(conservative_event.level, BehaviorLevel::Observed);
+    assert_eq!(balanced_event.level, BehaviorLevel::Suspicious);
+    assert_eq!(aggressive_event.level, BehaviorLevel::Suspicious);
+}
+
+#[test]
 fn trusted_process_lineage_reduces_weighted_score() {
     let scorer = CompositeBehaviorScorer::from_config(&ContainmentConfig::default());
     let batch = FileActivityBatch {
@@ -830,6 +1024,7 @@ fn trusted_process_lineage_reduces_weighted_score() {
             "/srv/data/team-c/c.locked".to_string(),
         ],
         protected_paths_touched: Vec::new(),
+        rename_extension_targets: Vec::new(),
         bytes_written: 2 * 1_048_576,
         io_rate_bytes_per_sec: 2 * 1_048_576,
     };

@@ -63,6 +63,12 @@ fn runtime_defaults_populate_containment_config_without_enabling_it() {
     assert_eq!(containment.throttle_io_write_bps, 1024 * 1024);
     assert_eq!(containment.throttle_network_kbit, 1024);
     assert_eq!(containment.management_allow_ports, vec![22]);
+    assert_eq!(
+        containment.environment_profile,
+        crate::config::ContainmentEnvironmentProfile::Balanced
+    );
+    assert_eq!(containment.extension_anomaly_score, 5);
+    assert_eq!(containment.extension_anomaly_min_count, 3);
     assert_eq!(containment.user_data_bonus, 8);
     assert_eq!(containment.trusted_process_penalty, 6);
     assert_eq!(containment.allowed_local_penalty, 3);
@@ -74,6 +80,9 @@ fn runtime_defaults_populate_containment_config_without_enabling_it() {
     assert_eq!(containment.meaningful_write_count, 5);
     assert_eq!(containment.high_risk_min_signals, 4);
     assert_eq!(containment.containment_candidate_min_signals, 5);
+    assert_eq!(containment.recurrence_score, 6);
+    assert_eq!(containment.recurrence_window_secs, 900);
+    assert_eq!(containment.recurrence_min_events, 2);
     assert!(containment
         .protected_pid_allowlist
         .contains(&"bannkenn-agent".to_string()));

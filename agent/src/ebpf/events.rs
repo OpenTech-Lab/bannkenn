@@ -44,6 +44,8 @@ pub struct FileActivityBatch {
     pub file_ops: FileOperationCounts,
     pub touched_paths: Vec<String>,
     pub protected_paths_touched: Vec<String>,
+    #[serde(default)]
+    pub rename_extension_targets: Vec<String>,
     pub bytes_written: u64,
     pub io_rate_bytes_per_sec: u64,
 }
@@ -150,8 +152,8 @@ impl MaintenanceActivity {
 pub enum BehaviorLevel {
     Observed,
     Suspicious,
-    ThrottleCandidate,
-    FuseCandidate,
+    HighRisk,
+    ContainmentCandidate,
 }
 
 impl BehaviorLevel {
@@ -159,8 +161,8 @@ impl BehaviorLevel {
         match self {
             Self::Observed => "observed",
             Self::Suspicious => "suspicious",
-            Self::ThrottleCandidate => "throttle_candidate",
-            Self::FuseCandidate => "fuse_candidate",
+            Self::HighRisk => "high_risk",
+            Self::ContainmentCandidate => "containment_candidate",
         }
     }
 }

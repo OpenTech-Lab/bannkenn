@@ -91,7 +91,7 @@ fn suspicious_and_throttle_events_escalate_state() {
 
     let throttle = coordinator
         .handle_event_at(
-            &event(BehaviorLevel::ThrottleCandidate, 70, Some(42)),
+            &event(BehaviorLevel::HighRisk, 70, Some(42)),
             start + Duration::seconds(5),
         )
         .expect("throttle transition");
@@ -120,7 +120,10 @@ fn fuse_decay_waits_for_rate_limit_then_releases_to_throttle() {
     let mut coordinator = ContainmentCoordinator::new(&config);
 
     let fuse = coordinator
-        .handle_event_at(&event(BehaviorLevel::FuseCandidate, 100, Some(77)), start)
+        .handle_event_at(
+            &event(BehaviorLevel::ContainmentCandidate, 100, Some(77)),
+            start,
+        )
         .expect("fuse transition");
     assert_eq!(fuse.state, ContainmentState::Fuse);
     assert!(matches!(
@@ -215,7 +218,10 @@ fn manual_fuse_release_returns_to_throttle_when_enabled() {
     let mut coordinator = ContainmentCoordinator::new(&config);
 
     coordinator
-        .handle_event_at(&event(BehaviorLevel::FuseCandidate, 100, Some(77)), start)
+        .handle_event_at(
+            &event(BehaviorLevel::ContainmentCandidate, 100, Some(77)),
+            start,
+        )
         .expect("fuse transition");
 
     let result = coordinator.apply_operator_action_at(

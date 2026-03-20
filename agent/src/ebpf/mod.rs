@@ -710,6 +710,9 @@ fn merge_activity_batch(target: &mut FileActivityBatch, mut incoming: FileActivi
         .append(&mut incoming.protected_paths_touched);
     target.protected_paths_touched.sort();
     target.protected_paths_touched.dedup();
+    target
+        .rename_extension_targets
+        .append(&mut incoming.rename_extension_targets);
 }
 
 #[cfg(target_os = "linux")]
@@ -775,6 +778,7 @@ fn raw_ring_event_to_batch(
         file_ops,
         touched_paths,
         protected_paths_touched,
+        rename_extension_targets: Vec::new(),
         bytes_written: raw.bytes_written,
         io_rate_bytes_per_sec: if poll_interval_ms == 0 {
             raw.bytes_written
@@ -795,6 +799,7 @@ fn build_activity_batch(
     let mut file_ops = FileOperationCounts::default();
     let mut touched_paths = BTreeSet::new();
     let mut protected_touched = BTreeSet::new();
+    let mut rename_extension_targets = Vec::new();
     let mut bytes_written = 0u64;
 
     for (identity, now) in current {
@@ -802,6 +807,11 @@ fn build_activity_batch(
             Some(before) => {
                 if before.path != now.path {
                     file_ops.renamed = file_ops.renamed.saturating_add(1);
+                    if let Some(extension) =
+                        renamed_extension_target(before.path.as_path(), now.path.as_path())
+                    {
+                        rename_extension_targets.push(extension);
+                    }
                     insert_touched_path(
                         before.path.as_path(),
                         protected_paths,
@@ -870,9 +880,21 @@ fn build_activity_batch(
         file_ops,
         touched_paths: touched_paths.into_iter().collect(),
         protected_paths_touched: protected_touched.into_iter().collect(),
+        rename_extension_targets,
         bytes_written,
         io_rate_bytes_per_sec,
     })
+}
+
+fn renamed_extension_target(before: &Path, after: &Path) -> Option<String> {
+    let previous = normalized_extension(before)?;
+    let current = normalized_extension(after)?;
+    (previous != current).then_some(current)
+}
+
+fn normalized_extension(path: &Path) -> Option<String> {
+    let extension = path.extension()?.to_str()?.trim().to_ascii_lowercase();
+    (!extension.is_empty()).then_some(extension)
 }
 
 fn process_info_from_tracked(

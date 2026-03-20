@@ -86,8 +86,10 @@ export function containmentStateSeverity(state: string): TimelineSeverity {
 
 export function behaviorLevelSeverity(level: string): TimelineSeverity {
   switch (level) {
+    case 'containment_candidate':
     case 'fuse_candidate':
       return 'critical';
+    case 'high_risk':
     case 'throttle_candidate':
       return 'high';
     case 'suspicious':

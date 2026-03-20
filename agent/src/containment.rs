@@ -174,7 +174,7 @@ impl ContainmentCoordinator {
         let target = self.target_state_for_event(event.level);
 
         if self.state == ContainmentState::Fuse
-            && matches!(event.level, BehaviorLevel::FuseCandidate)
+            && matches!(event.level, BehaviorLevel::ContainmentCandidate)
         {
             self.refresh_fuse_timer(event, now);
         }
@@ -185,8 +185,8 @@ impl ContainmentCoordinator {
 
         let reason = match target {
             ContainmentState::Suspicious => "suspicious score threshold crossed",
-            ContainmentState::Throttle => "throttle score threshold crossed",
-            ContainmentState::Fuse => "fuse score threshold crossed",
+            ContainmentState::Throttle => "high-risk score threshold crossed",
+            ContainmentState::Fuse => "containment-candidate score threshold crossed",
             ContainmentState::Normal => "containment cleared",
         };
 
@@ -373,7 +373,7 @@ impl ContainmentCoordinator {
         let event = synthetic_operator_event(
             pid,
             watched_root.clone(),
-            BehaviorLevel::FuseCandidate,
+            BehaviorLevel::ContainmentCandidate,
             self.config.fuse_score,
             "manual fuse trigger".to_string(),
             now,
@@ -431,8 +431,8 @@ impl ContainmentCoordinator {
         let pid = action.pid.or(self.active_fuse_pid);
         let level = match target {
             ContainmentState::Normal | ContainmentState::Suspicious => BehaviorLevel::Suspicious,
-            ContainmentState::Throttle => BehaviorLevel::ThrottleCandidate,
-            ContainmentState::Fuse => BehaviorLevel::FuseCandidate,
+            ContainmentState::Throttle => BehaviorLevel::HighRisk,
+            ContainmentState::Fuse => BehaviorLevel::ContainmentCandidate,
         };
         let event = synthetic_operator_event(
             pid,
@@ -460,14 +460,14 @@ impl ContainmentCoordinator {
         match level {
             BehaviorLevel::Observed => self.state,
             BehaviorLevel::Suspicious => ContainmentState::Suspicious,
-            BehaviorLevel::ThrottleCandidate => {
+            BehaviorLevel::HighRisk => {
                 if self.config.throttle_enabled {
                     ContainmentState::Throttle
                 } else {
                     ContainmentState::Suspicious
                 }
             }
-            BehaviorLevel::FuseCandidate => {
+            BehaviorLevel::ContainmentCandidate => {
                 if self.config.fuse_enabled {
                     ContainmentState::Fuse
                 } else if self.config.throttle_enabled {
@@ -493,8 +493,8 @@ fn synthetic_decay_event(
 ) -> BehaviorEvent {
     let level = match state {
         ContainmentState::Normal | ContainmentState::Suspicious => BehaviorLevel::Suspicious,
-        ContainmentState::Throttle => BehaviorLevel::ThrottleCandidate,
-        ContainmentState::Fuse => BehaviorLevel::FuseCandidate,
+        ContainmentState::Throttle => BehaviorLevel::HighRisk,
+        ContainmentState::Fuse => BehaviorLevel::ContainmentCandidate,
     };
 
     BehaviorEvent {

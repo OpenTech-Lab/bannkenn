@@ -71,13 +71,13 @@ pub async fn create(
     agent: AuthenticatedAgent,
     Json(payload): Json<CreateBehaviorEventRequest>,
 ) -> Result<impl IntoResponse, StatusCode> {
-    let level = payload.level.trim().to_lowercase();
-    if !matches!(
-        level.as_str(),
-        "observed" | "suspicious" | "throttle_candidate" | "fuse_candidate"
-    ) {
-        return Err(StatusCode::BAD_REQUEST);
-    }
+    let level = match payload.level.trim().to_lowercase().as_str() {
+        "observed" => "observed".to_string(),
+        "suspicious" => "suspicious".to_string(),
+        "high_risk" | "throttle_candidate" => "high_risk".to_string(),
+        "containment_candidate" | "fuse_candidate" => "containment_candidate".to_string(),
+        _ => return Err(StatusCode::BAD_REQUEST),
+    };
 
     let event = NewBehaviorEvent {
         agent_name: agent.0.clone(),

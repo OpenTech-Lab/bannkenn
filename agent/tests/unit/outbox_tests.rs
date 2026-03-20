@@ -127,7 +127,7 @@ fn outbox_round_trips_behavior_and_containment_reports() {
                 container_image: Some("ghcr.io/acme/backup:1.2.3".to_string()),
                 score: 61,
                 reasons: vec!["rename burst".to_string()],
-                level: "throttle_candidate".to_string(),
+                level: "high_risk".to_string(),
             }),
         })
         .unwrap();
@@ -158,7 +158,7 @@ fn outbox_round_trips_behavior_and_containment_reports() {
     match reloaded.peek().unwrap().payload {
         OutboxPayload::BehaviorEvent { report } => {
             assert_eq!(report.source, "ebpf_ringbuf");
-            assert_eq!(report.level, "throttle_candidate");
+            assert_eq!(report.level, "high_risk");
             assert_eq!(report.parent_process_name.as_deref(), Some("systemd"));
             assert_eq!(report.package_name.as_deref(), Some("python3-minimal"));
             assert_eq!(report.trust_policy_name.as_deref(), Some("backup-window"));
